@@ -12,6 +12,11 @@ type Config struct {
 	GroqAPIKey string // /api/transcribe: comart's mic recorder (Exscriptor) -> Groq Whisper
 	GroqModel  string
 
+	// Verbatim import transcription (/api/transcribe-verbatim) runs on
+	// Azure Speech (MAI-Transcribe-2) via the Fast Transcription API.
+	AzureSpeechKey      string
+	AzureSpeechEndpoint string // e.g. https://eastus.api.cognitive.microsoft.com
+
 	// Word explanations (/api/explain) run on OpenRouter.
 	OpenRouterAPIKey string
 	ExplainModel     string // OpenRouter model id (google/gemini-3.8-flash)
@@ -38,6 +43,9 @@ func Load() (Config, []string) {
 		GroqAPIKey: os.Getenv("GROQ_API_KEY"),
 		GroqModel:  env("GROQ_MODEL", "whisper-large-v3-turbo"),
 
+		AzureSpeechKey:      os.Getenv("AZURE_SPEECH_KEY"),
+		AzureSpeechEndpoint: env("AZURE_SPEECH_ENDPOINT", "https://eastus.api.cognitive.microsoft.com"),
+
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
 		ExplainModel:           env("EXPLAIN_MODEL", "google/gemini-3.8-flash"),
 		ExplainReasoningTokens: envInt("EXPLAIN_REASONING_TOKENS", 1024),
@@ -52,6 +60,7 @@ func Load() (Config, []string) {
 		{"GROQ_API_KEY", c.GroqAPIKey},
 		{"OPENROUTER_API_KEY", c.OpenRouterAPIKey},
 		{"CEREBRAS_API_KEY", c.CerebrasAPIKey},
+		{"AZURE_SPEECH_KEY", c.AzureSpeechKey},
 	} {
 		if k.val == "" {
 			missing = append(missing, k.name)

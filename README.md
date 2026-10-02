@@ -26,6 +26,7 @@ calls it.
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"remaining":null,"low":false}`. The server tracks no balance. comart calls it after each explanation. |
 | `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*`). Sends it to Groq Whisper and returns `{"text": …}`. |
+| `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn | Proofreads an entry (`{"content": …}`, max 12000 characters). Plain JSON. |
 | `POST /api/memoir/paraphrase` | Cairn | Other ways to say a selected span (`{"text": …}`, max 600 characters). Plain JSON. |
 
@@ -54,7 +55,7 @@ macOS and Linux are supported.
 2. Builds `bin/llm-service` (`CGO_ENABLED=0`).
 3. Creates `llm-service.env` from `.env.example` (mode 600) if it is missing.
    For each empty API key (`GROQ_API_KEY`, `OPENROUTER_API_KEY`,
-   `CEREBRAS_API_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
+   `CEREBRAS_API_KEY`, `AZURE_SPEECH_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
    zenity dialog, or a hidden terminal prompt without a display). It never
    prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
@@ -156,6 +157,8 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` | OpenRouter model for `/api/explain`. |
 | `EXPLAIN_REASONING_TOKENS` | `1024` | Thinking budget for that model (OpenRouter's `reasoning.max_tokens`). |
 | `CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. |
+| `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
+| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim`. |
 | `MEMOIR_MODEL` | `qwen-3.8-27b` | Cerebras model for `/api/memoir/*`. |
 | `MEMOIR_REASONING_EFFORT` | `medium` | `low`, `medium`, `high`, or `none` to turn reasoning off. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
@@ -171,7 +174,8 @@ server at start; the service manager retries every 10 s and the error is in
 `logs/llm-service.log`.
 
 After an edit, restart the service. A missing API key is only a warning at
-start: `/api/transcribe` then answers 500, `/api/explain` sends an `error`
+start: `/api/transcribe` then answers 500, `/api/transcribe-verbatim` answers
+500, `/api/explain` sends an `error`
 event and `/api/memoir/*` answer 503, each naming the missing key, until it is
 set.
 
@@ -199,7 +203,8 @@ The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
 - `application/json` on `/api/explain` and `/api/memoir/*`;
-- `audio/*` (or `video/*`) on `/api/transcribe`.
+- `audio/*` (or `video/*`) on `/api/transcribe`;
+- `multipart/form-data` on `/api/transcribe-verbatim`.
 
 A web page can send a cross-site POST without a CORS preflight only as
 `text/plain` or a form type, and a sandboxed iframe (`Origin: null`) passes the
@@ -211,6 +216,7 @@ Request limits:
 - `/api/memoir/*`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe`: 25 MiB audio (413 `recording too long`), Groq's own limit.
+- `/api/transcribe-verbatim`: 300 MiB audio (413 `audio too long`), Azure Fast Transcription's limit.
 
 **Still not protected:**
 

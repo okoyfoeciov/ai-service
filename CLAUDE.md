@@ -1,10 +1,12 @@
 # llm-service — project notes
 
-One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves two clients: the
-comart Chrome extension (`~/comart`) and Cairn's Memoir tab (`~/cairn`).
+One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves three clients: the
+comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`), and
+daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
 security model and models. `/api/explain` runs on OpenRouter
-(`google/gemini-3.8-flash`), `/api/memoir/*` on Cerebras (`qwen-3.8-27b`).
+(`google/gemini-3.8-flash`), `/api/memoir/*` on Cerebras (`qwen-3.8-27b`),
+`/api/transcribe-verbatim` on Azure Speech (`MAI-Transcribe-2`).
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -28,8 +30,9 @@ security model and models. `/api/explain` runs on OpenRouter
   copy of a client would have to be kept in step with the real one by hand.
 - **The client API stays as it is.** The comart extension was built against it
   with no server change: no CORS, no auth, no new route. Keep that. Memoir's
-  two routes (`/api/memoir/check`, `/api/memoir/paraphrase`) are the deliberate
-  addition. Change a route only together with the client that calls it.
+  two routes (`/api/memoir/check`, `/api/memoir/paraphrase`) and
+  daily-dictation's one (`/api/transcribe-verbatim`) are the deliberate
+  additions. Change a route only together with the client that calls it.
 
 ## Hosting and security
 

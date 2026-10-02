@@ -135,6 +135,7 @@ KEYS=(
   "GROQ_API_KEY|transcription via Groq Whisper"
   "OPENROUTER_API_KEY|word explanations via OpenRouter"
   "CEREBRAS_API_KEY|Memoir via Cerebras"
+  "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
 )
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open llm-service.env at all — not even grep -q.

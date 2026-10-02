@@ -1,6 +1,6 @@
 // Package server is the HTTP layer: stdlib net/http routing and handlers for
-// llm-service, the localhost LLM backend for the comart Chrome extension and
-// Cairn's Memoir tab. The server binds 127.0.0.1 and nothing fronts it, so
+// llm-service, the localhost LLM backend for the comart Chrome extension,
+// Cairn's Memoir tab and daily-dictation. The server binds 127.0.0.1 and nothing fronts it, so
 // loopback on this machine is the trust boundary and there is no auth.
 // loopbackOnly and requireType keep out web pages from other sites open in
 // this machine's browser.
@@ -43,6 +43,7 @@ type Server struct {
 
 	httpShort  *http.Client // Groq transcription (bounded)
 	httpStream *http.Client // model calls. No timeout: a stream can run for minutes; ctx-cancelled
+	httpAzure  *http.Client // Azure verbatim transcription (bounded, generous: files up to ~2 h)
 
 	// inflight counts running handlers, so Drain can wait for handlers that
 	// http.Server.Close cut off.
@@ -64,6 +65,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 		mw:         mw.New(st),
 		httpShort:  &http.Client{Timeout: 120 * time.Second},
 		httpStream: &http.Client{}, // no timeout; see the field comment
+		httpAzure:  &http.Client{Timeout: 10 * time.Minute},
 	}
 	if cfg.OpenRouterAPIKey != "" {
 		s.explainLLM = llm.New(llm.Config{
@@ -126,6 +128,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && p == "/api/transcribe":
 		s.handleTranscribe(w, r)
+	case r.Method == http.MethodPost && p == "/api/transcribe-verbatim":
+		s.handleTranscribeVerbatim(w, r)
 	case p == "/api/explain" && r.Method == http.MethodPost:
 		s.handleExplain(w, r)
 	case p == "/api/pron" && r.Method == http.MethodGet:
@@ -222,7 +226,7 @@ func writeRoot(w http.ResponseWriter) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 	_, _ = w.Write([]byte("llm-service. No UI here — clients are the comart " +
-		"Chrome extension and Cairn's Memoir tab. See /api/* and the README.\n"))
+		"Chrome extension, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 
 // maxJSONBody caps the JSON request bodies of /api/explain and /api/memoir/*.
