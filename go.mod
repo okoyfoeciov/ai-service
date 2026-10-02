@@ -1,4 +1,4 @@
-module llm-service
+module ai-service
 
 go 1.26.4
 

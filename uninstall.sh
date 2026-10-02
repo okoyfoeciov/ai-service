@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# uninstall.sh — stop llm-service and remove the service definition install.sh wrote
+# uninstall.sh — stop ai-service and remove the service definition install.sh wrote
 # (macOS: the LaunchAgent plist; Linux: the systemd user unit).
 #
 # The reverse of install.sh's service step and nothing more. It deletes no data,
-# no secrets and no build output: bin/, data/, logs/ and llm-service.env all
+# no secrets and no build output: bin/, data/, logs/ and ai-service.env all
 # stay exactly where they are, so ./install.sh brings everything back.
 set -euo pipefail
 
-LABEL="com.llm-service.backend"
-UNIT="llm-service.service"
+LABEL="com.ai-service.backend"
+UNIT="ai-service.service"
 
 case "$(uname -s)" in
   Darwin)
@@ -43,4 +43,4 @@ case "$(uname -s)" in
     ;;
 esac
 
-echo "Left alone: bin/, data/, logs/ and llm-service.env."
+echo "Left alone: bin/, data/, logs/ and ai-service.env."

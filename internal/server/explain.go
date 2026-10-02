@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"llm-service/internal/mw"
-	"llm-service/internal/prompt"
+	"ai-service/internal/mw"
+	"ai-service/internal/prompt"
 )
 
 // handleExplain streams a plain-English explanation of the chosen words as SSE.

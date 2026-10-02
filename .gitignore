@@ -7,8 +7,8 @@
 /backups/
 
 # Secrets: never commit these.
-/llm-service.env
-.llm-service.env.*
+/ai-service.env
+.ai-service.env.*
 *.env
 # Raw network captures.
 *.har

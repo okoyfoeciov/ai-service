@@ -1,6 +1,6 @@
 // Package llm streams a chat completion from an OpenAI-compatible
 // /chat/completions endpoint, calling OnText for every answer fragment as it
-// arrives. llm-service runs two Clients: OpenRouter (Google Gemini 3.8 Flash)
+// arrives. ai-service runs two Clients: OpenRouter (Google Gemini 3.8 Flash)
 // for /api/explain and Cerebras (Qwen 3.8 27B) for Memoir.
 //
 // Both providers speak the same streaming shape: SSE `data:` lines holding

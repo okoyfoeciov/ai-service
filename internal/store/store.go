@@ -1,4 +1,4 @@
-// Package store is llm-service's cache: one on-disk SQLite file of key/value
+// Package store is ai-service's cache: one on-disk SQLite file of key/value
 // rows, each with an optional expiry. Its only user is internal/mw, which keeps
 // Merriam-Webster lookups under "mw:<word>" for 30 days. Pure-Go driver
 // (modernc.org/sqlite), so the binary is static (CGO disabled).

@@ -1,4 +1,4 @@
-# llm-service
+# ai-service
 
 A small localhost **LLM backend**: one static Go binary on `127.0.0.1:8770`,
 speaking JSON and SSE. It has two clients:
@@ -39,8 +39,8 @@ macOS and Linux are supported.
 
 | OS | Service | Definition file |
 | --- | --- | --- |
-| macOS | launchd LaunchAgent `com.llm-service.backend` | `~/Library/LaunchAgents/com.llm-service.backend.plist` |
-| Linux | systemd user unit `llm-service.service` | `~/.config/systemd/user/llm-service.service` |
+| macOS | launchd LaunchAgent `com.ai-service.backend` | `~/Library/LaunchAgents/com.ai-service.backend.plist` |
+| Linux | systemd user unit `ai-service.service` | `~/.config/systemd/user/ai-service.service` |
 
 ```sh
 ./install.sh             # install, or update after a code change
@@ -52,8 +52,8 @@ macOS and Linux are supported.
 
 1. Checks the OS and that `go` is on `PATH` (on macOS, for example
    `brew install go`).
-2. Builds `bin/llm-service` (`CGO_ENABLED=0`).
-3. Creates `llm-service.env` from `.env.example` (mode 600) if it is missing.
+2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
+3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each empty API key (`GROQ_API_KEY`, `OPENROUTER_API_KEY`,
    `CEREBRAS_API_KEY`, `AZURE_SPEECH_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
    zenity dialog, or a hidden terminal prompt without a display). It never
@@ -68,14 +68,14 @@ macOS and Linux are supported.
 
 The first run needs the network (Go modules).
 
-`--dry-run` builds nothing, never opens `llm-service.env` and starts nothing. It
+`--dry-run` builds nothing, never opens `ai-service.env` and starts nothing. It
 prints the temp dir it wrote the definition to; delete that dir afterwards.
 
 `uninstall.sh` removes only the service definition. It keeps `bin/`, `data/`,
-`logs/` and `llm-service.env`, so `./install.sh` brings the service back.
+`logs/` and `ai-service.env`, so `./install.sh` brings the service back.
 
 Both service managers run `run.sh` at login, restart it whenever it exits, and
-append its output to `logs/llm-service.log`. The systemd unit has
+append its output to `logs/ai-service.log`. The systemd unit has
 `StartLimitIntervalSec=0`, so like launchd's `KeepAlive` it never gives up
 restarting.
 
@@ -101,11 +101,11 @@ Linux:
 
 ```sh
 curl -fsS http://127.0.0.1:8770/                 # is it up? one line of text
-systemctl --user status llm-service
-systemctl --user restart llm-service
-systemctl --user stop llm-service                # until you start it, re-run install.sh, or reboot
-tail -f logs/llm-service.log                     # the server's own log
-journalctl --user -u llm-service                 # systemd's start/stop/crash messages only
+systemctl --user status ai-service
+systemctl --user restart ai-service
+systemctl --user stop ai-service                # until you start it, re-run install.sh, or reboot
+tail -f logs/ai-service.log                     # the server's own log
+journalctl --user -u ai-service                 # systemd's start/stop/crash messages only
 ```
 
 macOS:
@@ -113,11 +113,11 @@ macOS:
 ```sh
 U=gui/$(id -u)
 curl -fsS http://127.0.0.1:8770/
-launchctl print $U/com.llm-service.backend | grep -E 'state|pid|last exit'
-launchctl kickstart -k $U/com.llm-service.backend     # restart
-launchctl bootout $U/com.llm-service.backend          # stop, until the next login or install.sh
-launchctl bootstrap $U ~/Library/LaunchAgents/com.llm-service.backend.plist   # start again
-tail -f logs/llm-service.log
+launchctl print $U/com.ai-service.backend | grep -E 'state|pid|last exit'
+launchctl kickstart -k $U/com.ai-service.backend     # restart
+launchctl bootout $U/com.ai-service.backend          # stop, until the next login or install.sh
+launchctl bootstrap $U ~/Library/LaunchAgents/com.ai-service.backend.plist   # start again
+tail -f logs/ai-service.log
 ```
 
 On macOS these are **gui-domain** agents (`gui/<uid>`), and on Linux a **user**
@@ -138,15 +138,15 @@ Stop the service first, or port 8770 is taken. Then:
 ./run.sh      # foreground; Ctrl-C stops it
 ```
 
-`run.sh` is what both service managers run. It loads `llm-service.env`,
+`run.sh` is what both service managers run. It loads `ai-service.env`,
 defaults `CACHE_DB` to a path in this folder, and `exec`s
-`bin/llm-service`. Use it rather than the bare binary: the binary does not read
-`llm-service.env` itself, and without `run.sh` it assumes the folder is
-`~/llm-service`. Start the service again when you are done.
+`bin/ai-service`. Use it rather than the bare binary: the binary does not read
+`ai-service.env` itself, and without `run.sh` it assumes the folder is
+`~/ai-service`. Start the service again when you are done.
 
 ## Configuration
 
-`llm-service.env` is a **secret** file (mode 600). `install.sh` creates it from
+`ai-service.env` is a **secret** file (mode 600). `install.sh` creates it from
 `.env.example`, which documents every key:
 
 | Key | Default | Meaning |
@@ -171,7 +171,7 @@ folder can move without an edit. On Linux the unit may only write `data/` and
 and put single quotes around any value with spaces, `$` or parentheses (inside
 double quotes, bash still expands `$`). A line bash cannot run stops the
 server at start; the service manager retries every 10 s and the error is in
-`logs/llm-service.log`.
+`logs/ai-service.log`.
 
 After an edit, restart the service. A missing API key is only a warning at
 start: `/api/transcribe` then answers 500, `/api/transcribe-verbatim` answers
@@ -227,7 +227,7 @@ Request limits:
   no Origin header is sent, so the guard lets them through. The page cannot
   read the answer. The GET routes bill nothing; `/api/pron` can at most cause
   Merriam-Webster lookups.
-- The API keys are in a plain file on disk, `llm-service.env`. It is not
+- The API keys are in a plain file on disk, `ai-service.env`. It is not
   encrypted: any program that runs as you (or as root) can read and use them.
   The older zips in `backups/` hold secrets too; keep that folder private.
 
@@ -292,7 +292,7 @@ at a time, and waits at most 10 s in total before it explains without the rest.
 ## Code layout
 
 ```
-cmd/llm-service/    main: config, cache, server, graceful shutdown
+cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers
@@ -309,23 +309,23 @@ prompts byte for byte, so a change there must be deliberate.
 ## Build and test
 
 ```sh
-CGO_ENABLED=0 go build -o bin/llm-service ./cmd/llm-service
+CGO_ENABLED=0 go build -o bin/ai-service ./cmd/ai-service
 go vet ./...
 go test ./...
 ```
 
 The result is one static binary with no cgo. It needs only the SQLite file it
 creates on first run. After a build, restart the service to run the new binary
-(`systemctl --user restart llm-service`, or
-`launchctl kickstart -k gui/$(id -u)/com.llm-service.backend`), or just run
+(`systemctl --user restart ai-service`, or
+`launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run
 `./install.sh`.
 
 ## Version control and secrets
 
-The code is in git (GitHub repository `okoyfoeciov/llm-service`). Git is the undo for code.
+The code is in git (GitHub repository `okoyfoeciov/ai-service`). Git is the undo for code.
 
 `.gitignore` keeps out build output (`bin/`), runtime state (`data/`, `logs/`,
-`backups/`) and every secret: `llm-service.env`, any `*.env` and `*.har`
+`backups/`) and every secret: `ai-service.env`, any `*.env` and `*.har`
 network captures. **Never commit a secret**, and never force-add an ignored
 file.
 

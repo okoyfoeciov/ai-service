@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# install.sh — build llm-service and keep it running on this machine.
+# install.sh — build ai-service and keep it running on this machine.
 #
-# llm-service is the localhost LLM backend (127.0.0.1:8770) for the comart
+# ai-service is the localhost LLM backend (127.0.0.1:8770) for the comart
 # Chrome extension and Cairn's Memoir tab. Nothing fronts the server, so
 # loopback is the trust boundary.
 #
 # Supported hosts, and the service each one gets:
-#   macOS  launchd LaunchAgent  ~/Library/LaunchAgents/com.llm-service.backend.plist
-#   Linux  systemd user unit    ~/.config/systemd/user/llm-service.service
+#   macOS  launchd LaunchAgent  ~/Library/LaunchAgents/com.ai-service.backend.plist
+#   Linux  systemd user unit    ~/.config/systemd/user/ai-service.service
 # Either way the service runs run.sh at login, restarts it whenever it exits,
-# and appends its output to logs/llm-service.log.
+# and appends its output to logs/ai-service.log.
 #
 # Idempotent. Re-run it after changing the code or after moving this folder
 # (the service definition carries absolute paths). Every run rebuilds, checks
@@ -23,9 +23,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENVFILE="$HERE/llm-service.env"
-LABEL="com.llm-service.backend"   # macOS LaunchAgent label
-UNIT="llm-service.service"        # Linux systemd user unit
+ENVFILE="$HERE/ai-service.env"
+LABEL="com.ai-service.backend"   # macOS LaunchAgent label
+UNIT="ai-service.service"        # Linux systemd user unit
 HEALTH_URL="http://127.0.0.1:8770/"
 
 DRY_RUN=0
@@ -59,7 +59,7 @@ case "$OS" in
         loc_msg="$REAL_HERE is inside a macOS privacy-protected folder (~/Documents, ~/Desktop,
    ~/Downloads, iCloud Drive or ~/Library/CloudStorage). launchd jobs cannot read it, so the
    LaunchAgent would fail with 'Operation not permitted'. Move the folder elsewhere
-   (e.g. ~/llm-service) and re-run install.sh from there."
+   (e.g. ~/ai-service) and re-run install.sh from there."
         if [ "$DRY_RUN" = 1 ]; then warn "$loc_msg (dry run continues)"; else die "$loc_msg"; fi
         ;;
     esac
@@ -102,11 +102,11 @@ if [ "$DRY_RUN" = 1 ]; then
   say "[c] dry run — skipping go build"
 else
   mkdir -p "$HERE/bin"
-  CGO_ENABLED=0 go build -o "$HERE/bin/llm-service" ./cmd/llm-service
-  say "[c] built bin/llm-service"
+  CGO_ENABLED=0 go build -o "$HERE/bin/ai-service" ./cmd/ai-service
+  say "[c] built bin/ai-service"
 fi
 
-# --- d. llm-service.env ------------------------------------------------------
+# --- d. ai-service.env ------------------------------------------------------
 # A SECRET FILE. Nothing below prints any part of it: emptiness is tested with
 # grep -q, and a key typed into the prompt goes to disk through an environment
 # variable, never argv and never stdout.
@@ -118,9 +118,9 @@ file_mode() {  # octal permission bits of a file, on either OS
 # display, else a hidden read from the terminal. Returns non-zero on cancel.
 ask_secret() {
   if [ "$OS" = Darwin ]; then
-    osascript -e "text returned of (display dialog \"$1\" with title \"llm-service install\" default answer \"\" with hidden answer)" 2>/dev/null
+    osascript -e "text returned of (display dialog \"$1\" with title \"ai-service install\" default answer \"\" with hidden answer)" 2>/dev/null
   elif command -v zenity >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-    zenity --entry --hide-text --title="llm-service install" --text="$1" 2>/dev/null
+    zenity --entry --hide-text --title="ai-service install" --text="$1" 2>/dev/null
   elif [ -r /dev/tty ]; then
     local v
     IFS= read -rs -p "$1: " v </dev/tty || return 1
@@ -138,23 +138,23 @@ KEYS=(
   "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
 )
 if [ "$DRY_RUN" = 1 ]; then
-  # A dry run does not open llm-service.env at all — not even grep -q.
+  # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
-    say "[d] dry run — llm-service.env exists (mode $(file_mode "$ENVFILE")); API key check skipped"
+    say "[d] dry run — ai-service.env exists (mode $(file_mode "$ENVFILE")); API key check skipped"
   else
-    say "[d] dry run — llm-service.env missing; a real run creates it from .env.example and asks for the API keys"
+    say "[d] dry run — ai-service.env missing; a real run creates it from .env.example and asks for the API keys"
   fi
 else
   if [ ! -f "$ENVFILE" ]; then
     ( umask 077; cp "$HERE/.env.example" "$ENVFILE" )
-    say "[d] created llm-service.env from .env.example"
+    say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
   for entry in "${KEYS[@]}"; do
     key="${entry%%|*}"
     purpose="${entry#*|}"
     if grep -qE "^$key=[\"']?[^\"'[:space:]#]" "$ENVFILE"; then
-      say "[d] llm-service.env: $key is set"
+      say "[d] ai-service.env: $key is set"
       continue
     fi
     val=$(ask_secret "Enter $key (used for: $purpose)") || { echo "cancelled"; exit 1; }
@@ -167,7 +167,7 @@ else
     esac
     (
       umask 077
-      tmp="$(mktemp "$HERE/.llm-service.env.XXXXXX")"
+      tmp="$(mktemp "$HERE/.ai-service.env.XXXXXX")"
       # $tmp holds the key until the mv: remove it on any other way out (a failed
       # awk, Ctrl-C). Harmless after the mv. The INT/TERM/HUP trap makes those
       # signals exit through the EXIT trap. .gitignore also excludes the name.
@@ -191,7 +191,7 @@ fi
 
 # --- e. service definition ---------------------------------------------------
 if [ "$DRY_RUN" = 1 ]; then
-  SVC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/llm-service-install.XXXXXX")"
+  SVC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-service-install.XXXXXX")"
 else
   # Neither launchd nor systemd creates a missing log directory.
   mkdir -p "$HERE/logs" "$HERE/data"
@@ -235,9 +235,9 @@ write_plist() {
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>$(xml "$HERE/logs/llm-service.log")</string>
+	<string>$(xml "$HERE/logs/ai-service.log")</string>
 	<key>StandardErrorPath</key>
-	<string>$(xml "$HERE/logs/llm-service.log")</string>
+	<string>$(xml "$HERE/logs/ai-service.log")</string>
 </dict>
 </plist>
 EOF
@@ -248,7 +248,7 @@ write_unit() {
 # Written by $HERE/install.sh — edit that script, not this file; re-running it
 # overwrites this unit. Remove with $HERE/uninstall.sh.
 [Unit]
-Description=llm-service — localhost LLM backend for the comart extension and Cairn's Memoir tab
+Description=ai-service — localhost LLM backend for the comart extension and Cairn's Memoir tab
 Documentation=file://$HERE/README.md
 # No After=network-online.target: that is a system target, which a user unit
 # cannot order against. The server binds loopback, which needs no network.
@@ -259,14 +259,14 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=$HERE
-# run.sh, not the binary: it sources llm-service.env with bash and defaults
+# run.sh, not the binary: it sources ai-service.env with bash and defaults
 # CACHE_DB relative to itself. Not an EnvironmentFile=, which parses quoting
 # differently from bash.
 ExecStart=$HERE/run.sh
 Restart=always
 RestartSec=10
-StandardOutput=append:$HERE/logs/llm-service.log
-StandardError=append:$HERE/logs/llm-service.log
+StandardOutput=append:$HERE/logs/ai-service.log
+StandardError=append:$HERE/logs/ai-service.log
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -341,8 +341,8 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 if [ "$up" != 1 ]; then
-  say "[f] $HEALTH_URL did not answer within ~15s. Last lines of logs/llm-service.log:"
-  tail -n 30 "$HERE/logs/llm-service.log" 2>/dev/null || say "    (no log yet)"
+  say "[f] $HEALTH_URL did not answer within ~15s. Last lines of logs/ai-service.log:"
+  tail -n 30 "$HERE/logs/ai-service.log" 2>/dev/null || say "    (no log yet)"
   exit 1
 fi
 
@@ -380,7 +380,7 @@ if [ -z "$svc_pid" ]; then
   warn "$HEALTH_URL answers (pid ${listen_pid:-?}), but the service has no running process —
    it is crash-looping, most likely on 'address in use'. Another server is holding
    port 8770 (a ./run.sh in a terminal?); stop it, then re-run install.sh.
-   Log: $HERE/logs/llm-service.log"
+   Log: $HERE/logs/ai-service.log"
   exit 1
 fi
 if [ -n "$listen_pid" ] && [ "$svc_pid" != "$listen_pid" ]; then
@@ -388,4 +388,4 @@ if [ -n "$listen_pid" ] && [ "$svc_pid" != "$listen_pid" ]; then
    Another server is holding port 8770; stop it, then re-run install.sh."
   exit 1
 fi
-say "[f] $HEALTH_URL answers (pid ${listen_pid:-?}) — llm-service is up"
+say "[f] $HEALTH_URL answers (pid ${listen_pid:-?}) — ai-service is up"

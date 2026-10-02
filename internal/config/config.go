@@ -1,4 +1,4 @@
-// Package config loads llm-service's runtime configuration from environment
+// Package config loads ai-service's runtime configuration from environment
 // variables (see .env.example).
 package config
 

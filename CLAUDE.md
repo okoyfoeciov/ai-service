@@ -1,4 +1,4 @@
-# llm-service — project notes
+# ai-service — project notes
 
 One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves three clients: the
 comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`), and
@@ -20,8 +20,8 @@ security model and models. `/api/explain` runs on OpenRouter
   Their `com.comart.backend`, `back-end/logs/comart.log`,
   `deploy/r2_backup.py` and "macOS only" are old too (`deploy/` is gone).
   The current names are
-  `com.llm-service.backend` (macOS) or `llm-service.service` (Linux) and
-  `logs/llm-service.log`.
+  `com.ai-service.backend` (macOS) or `ai-service.service` (Linux) and
+  `logs/ai-service.log`.
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one
@@ -36,8 +36,8 @@ security model and models. `/api/explain` runs on OpenRouter
 
 ## Hosting and security
 
-- It runs on macOS (launchd LaunchAgent `com.llm-service.backend`) or Linux
-  (systemd user unit `llm-service.service`). Git shares this file with every
+- It runs on macOS (launchd LaunchAgent `com.ai-service.backend`) or Linux
+  (systemd user unit `ai-service.service`). Git shares this file with every
   copy, so check `uname -s` before you run service commands. `./install.sh`
   writes either definition and restarts the service (`--dry-run` only writes
   to a temp dir). Re-run it after moving this folder, because the definition
@@ -57,8 +57,8 @@ security model and models. `/api/explain` runs on OpenRouter
 
 ## Version control and secrets
 
-- **Git.** GitHub repo `okoyfoeciov/llm-service`. Git is the undo for code.
+- **Git.** GitHub repo `okoyfoeciov/ai-service`. Git is the undo for code.
 - **Secrets never go into git, and never into the chat.** Do not read or print
-  `llm-service.env` (it holds the API keys), `*.har` captures, `data/` or
+  `ai-service.env` (it holds the API keys), `*.har` captures, `data/` or
   `backups/`. `.gitignore` keeps them out; never force-add an ignored file.
   Old `backups/` zips may hold secrets.

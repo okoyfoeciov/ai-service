@@ -1,5 +1,5 @@
 // Package server is the HTTP layer: stdlib net/http routing and handlers for
-// llm-service, the localhost LLM backend for the comart Chrome extension,
+// ai-service, the localhost LLM backend for the comart Chrome extension,
 // Cairn's Memoir tab and daily-dictation. The server binds 127.0.0.1 and nothing fronts it, so
 // loopback on this machine is the trust boundary and there is no auth.
 // loopbackOnly and requireType keep out web pages from other sites open in
@@ -25,10 +25,10 @@ import (
 	"sync"
 	"time"
 
-	"llm-service/internal/config"
-	"llm-service/internal/llm"
-	"llm-service/internal/mw"
-	"llm-service/internal/store"
+	"ai-service/internal/config"
+	"ai-service/internal/llm"
+	"ai-service/internal/mw"
+	"ai-service/internal/store"
 )
 
 type Server struct {
@@ -208,7 +208,7 @@ func isLoopbackName(host string) bool {
 
 // writeRoot answers the bare host with one line of plain text.
 //
-// THIS IS NOT A PAGE, AND IT IS NOT THE START OF ONE. llm-service serves no HTML,
+// THIS IS NOT A PAGE, AND IT IS NOT THE START OF ONE. ai-service serves no HTML,
 // no CSS, no fonts and no favicon.
 //
 // The route exists for two small reasons. "Is it up?" should not need a path
@@ -225,7 +225,7 @@ func writeRoot(w http.ResponseWriter) {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
-	_, _ = w.Write([]byte("llm-service. No UI here — clients are the comart " +
+	_, _ = w.Write([]byte("ai-service. No UI here — clients are the comart " +
 		"Chrome extension, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 

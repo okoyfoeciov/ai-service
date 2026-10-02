@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"llm-service/internal/llm"
-	"llm-service/internal/memoir"
-	"llm-service/internal/mw"
+	"ai-service/internal/llm"
+	"ai-service/internal/memoir"
+	"ai-service/internal/mw"
 )
 
 func decodeError(t *testing.T, rec *httptest.ResponseRecorder) string {

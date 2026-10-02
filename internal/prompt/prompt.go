@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"llm-service/internal/mw"
+	"ai-service/internal/mw"
 )
 
 //go:embed part1.txt

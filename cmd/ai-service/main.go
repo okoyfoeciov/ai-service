@@ -1,4 +1,4 @@
-// Command llm-service is the localhost LLM backend for the comart Chrome
+// Command ai-service is the localhost LLM backend for the comart Chrome
 // extension (word explanations, pronunciations, mic transcription) and Cairn's
 // Memoir tab (proofreading and paraphrase). It binds to loopback and nothing
 // fronts it, so loopback is the trust boundary. run.sh starts it, under the
@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"llm-service/internal/config"
-	"llm-service/internal/server"
-	"llm-service/internal/store"
+	"ai-service/internal/config"
+	"ai-service/internal/server"
+	"ai-service/internal/store"
 )
 
 func main() {
@@ -30,13 +30,13 @@ func main() {
 	dbPath := os.Getenv("CACHE_DB")
 	// run.sh always sets CACHE_DB (by default to data/cache.db in its own
 	// directory); this fallback only matters for a binary started by hand, and
-	// assumes ~/llm-service.
+	// assumes ~/ai-service.
 	if dbPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			home = "."
 		}
-		dbPath = filepath.Join(home, "llm-service", "data", "cache.db")
+		dbPath = filepath.Join(home, "ai-service", "data", "cache.db")
 	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		log.Fatalf("create data dir: %v", err)
@@ -89,7 +89,7 @@ func main() {
 		app.Drain(dctx)
 	}()
 
-	log.Printf("llm-service listening on http://%s  (cache: %s)", cfg.ListenAddr, dbPath)
+	log.Printf("ai-service listening on http://%s  (cache: %s)", cfg.ListenAddr, dbPath)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}

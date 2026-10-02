@@ -6,8 +6,8 @@ import (
 	"strings"
 	"unicode/utf16"
 
-	"llm-service/internal/llm"
-	"llm-service/internal/memoir"
+	"ai-service/internal/llm"
+	"ai-service/internal/memoir"
 )
 
 // Memoir handlers for Cairn's Memoir tab: proofread-an-entry (check) and
