@@ -1,12 +1,13 @@
-// Package llm streams a chat completion from an OpenAI-compatible
-// /chat/completions endpoint, calling OnText for every answer fragment as it
-// arrives. ai-service runs two Clients: OpenRouter (Google Gemini 3.8 Flash)
-// for /api/explain and Cerebras (Qwen 3.8 27B) for Memoir.
+// Package llm streams a model's answer, calling onText for every fragment as it
+// arrives. ai-service runs two Clients over OpenAI-compatible /chat/completions
+// endpoints: OpenRouter (Google Gemini 3.8 Flash) for /api/explain and Cerebras
+// (Qwen 3.8 27B) for Memoir. /api/explain can instead run on Claude, which has
+// its own type (see claude.go) because the Messages API streams differently.
 //
-// Both providers speak the same streaming shape: SSE `data:` lines holding
-// chunk objects, `: comment` keep-alives, and `data: [DONE]` at the end. They
-// differ only in the request fields that set the token budget and reasoning,
-// so those arrive as Config.Params rather than being hard-coded here.
+// Both chat-completions providers speak the same streaming shape: SSE `data:`
+// lines holding chunk objects, `: comment` keep-alives, and `data: [DONE]` at
+// the end. They differ only in the request fields that set the token budget and
+// reasoning, so those arrive as Config.Params rather than being hard-coded here.
 package llm
 
 import (
@@ -41,6 +42,12 @@ type Result struct {
 	OK      bool
 	Code    string
 	Message string
+}
+
+// Streamer is what a handler needs from a model client: Client and Claude both
+// satisfy it.
+type Streamer interface {
+	Stream(ctx context.Context, prompt string, onText func(string)) Result
 }
 
 type Client struct {
@@ -91,33 +98,53 @@ func (c *Client) Stream(ctx context.Context, prompt string, onText func(string))
 		}
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		res.Body.Close()
-		retryable := res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500
-		wait := time.Duration(0)
-		if attempt < len(retryDelays) {
-			wait = retryDelays[attempt]
-		}
-		if secs, err := strconv.Atoi(strings.TrimSpace(res.Header.Get("Retry-After"))); err == nil {
-			if after := time.Duration(secs) * time.Second; after > maxRetryAfter {
-				retryable = false
-			} else if after > wait {
-				wait = after
-			}
-		}
-		if retryable && attempt < len(retryDelays) {
+		if wait, retry := retryPlan(res.StatusCode, res.Header, attempt); retry {
 			log.Printf("llm[%s]: HTTP %d, retrying: %s", c.cfg.Provider, res.StatusCode, truncate(string(raw), 200))
-			select {
-			case <-time.After(wait):
-				continue
-			case <-ctx.Done():
+			if !sleep(ctx, wait) {
 				return Result{Code: "cancelled"}
 			}
+			continue
 		}
 		log.Printf("llm[%s]: HTTP %d: %s", c.cfg.Provider, res.StatusCode, truncate(string(raw), 300))
 		return Result{
-			Code:    fmt.Sprintf("http-%d", res.StatusCode),
-			Message: fmt.Sprintf("%s error (HTTP %d): %s", c.cfg.Provider, res.StatusCode, errMessage(raw)),
+			Code:    httpCode(res.StatusCode),
+			Message: httpMessage(c.cfg.Provider, res.StatusCode, raw),
 		}
 	}
+}
+
+// retryPlan says whether a request that failed with status should be tried
+// again after attempt earlier tries, and how long to wait first. Only a busy or
+// broken upstream (429, 5xx) is retried, and only while retryDelays has a slot.
+func retryPlan(status int, h http.Header, attempt int) (wait time.Duration, retry bool) {
+	retry = status == http.StatusTooManyRequests || status >= 500
+	if attempt < len(retryDelays) {
+		wait = retryDelays[attempt]
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(h.Get("Retry-After"))); err == nil {
+		if after := time.Duration(secs) * time.Second; after > maxRetryAfter {
+			retry = false
+		} else if after > wait {
+			wait = after
+		}
+	}
+	return wait, retry && attempt < len(retryDelays)
+}
+
+// sleep waits d and reports false if ctx ended first.
+func sleep(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func httpCode(status int) string { return fmt.Sprintf("http-%d", status) }
+
+func httpMessage(provider string, status int, raw []byte) string {
+	return fmt.Sprintf("%s error (HTTP %d): %s", provider, status, errMessage(raw))
 }
 
 func (c *Client) send(ctx context.Context, payload []byte) (*http.Response, error) {

@@ -5,7 +5,9 @@ comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`), and
 daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
 security model and models. `/api/explain` runs on OpenRouter
-(`google/gemini-3.8-flash`), `/api/memoir/*` on Cerebras (`qwen-3.8-27b`),
+(`google/gemini-3.8-flash`) or, when `CLAUDE_API_KEY` is set instead, on the
+Claude Platform (`claude-opus-5-5`, effort `medium`); `config.Load` refuses to
+start with both keys set. `/api/memoir/*` runs on Cerebras (`qwen-3.8-27b`),
 `/api/transcribe-verbatim` on Azure Speech (`MAI-Transcribe-2`).
 
 ## This is a BACKEND. The front ends live elsewhere.

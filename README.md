@@ -54,9 +54,12 @@ macOS and Linux are supported.
    `brew install go`).
 2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
-   For each empty API key (`GROQ_API_KEY`, `OPENROUTER_API_KEY`,
-   `CEREBRAS_API_KEY`, `AZURE_SPEECH_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
-   zenity dialog, or a hidden terminal prompt without a display). It never
+   For each empty API key (`GROQ_API_KEY`, `CEREBRAS_API_KEY`,
+   `AZURE_SPEECH_KEY`, and one key for `/api/explain`: `OPENROUTER_API_KEY` or
+   `CLAUDE_API_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
+   zenity dialog, or a hidden terminal prompt without a display). For the
+   explain key it asks for OpenRouter first; an empty answer there moves on to
+   Claude. It stops if both explain keys are already set. It never
    prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -153,9 +156,11 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | --- | --- | --- |
 | `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. |
-| `EXPLAIN_MODEL` | `google/gemini-3.8-flash` | OpenRouter model for `/api/explain`. |
-| `EXPLAIN_REASONING_TOKENS` | `1024` | Thinking budget for that model (OpenRouter's `reasoning.max_tokens`). |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
+| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
+| `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
+| `EXPLAIN_REASONING_TOKENS` | `1024` | OpenRouter only: thinking budget (`reasoning.max_tokens`). Claude ignores it. |
+| `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no token budget, so this is the thinking control. OpenRouter ignores it. |
 | `CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. |
 | `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
 | `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim`. |
@@ -178,6 +183,25 @@ start: `/api/transcribe` then answers 500, `/api/transcribe-verbatim` answers
 500, `/api/explain` sends an `error`
 event and `/api/memoir/*` answer 503, each naming the missing key, until it is
 set.
+
+**The service refuses to start** (it logs `config: …` and exits 1; the service
+manager keeps retrying every 10 s) when the explain route would be unclear:
+
+- both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
+  as unset, so leave the unused key as an empty `KEY=` line (that also beats
+  a copy of the variable in your login environment, because `run.sh` sources the
+  file over it);
+- `CLAUDE_API_KEY` is set and `EXPLAIN_MODEL` is not a `claude-…` id (for
+  example a leftover `google/gemini-3.8-flash`), or `EXPLAIN_EFFORT` is not one
+  of the five levels.
+
+Why: with two possible routes it is easy to believe one model answers while
+another does. Every start logs the route it chose, for example
+`explain route: Claude Platform, model claude-opus-5-5, effort medium`, and every
+Claude request whose stream starts logs the model it asked for next to the model
+the API says answered. The Anthropic SDK's own `ANTHROPIC_*` environment variables are
+switched off, so a stray `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` cannot
+re-route the call.
 
 ## Security model
 
@@ -221,7 +245,7 @@ Request limits:
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter, Cerebras and Groq quota. There is no rate
+  route and spend the OpenRouter or Claude, Cerebras and Groq quota. There is no rate
   limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
@@ -235,14 +259,27 @@ Request limits:
 
 | Used by | Provider | Model | Reasoning |
 | --- | --- | --- | --- |
-| `/api/explain` | OpenRouter | `google/gemini-3.8-flash` | 1024-token thinking budget |
+| `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
+| `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
 | `/api/memoir/*` | Cerebras | `qwen-3.8-27b` | `medium` |
 
-Both providers speak OpenAI's streaming chat completions, so one client
-(`internal/llm`) serves both. The only difference is the request fields for
+OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
+(`internal/llm`'s `Client`) serves both. The only difference is the request fields for
 the token budget and reasoning, which `server.New` sets per provider:
 OpenRouter takes `max_tokens` and `reasoning: {max_tokens, exclude}`; Cerebras
 takes `max_completion_tokens` and `reasoning_effort` (or `disable_reasoning`).
+
+Claude is called directly on the Claude Platform with the official Go SDK
+(`internal/llm/claude.go`), through the Messages API. The request carries the
+model, `max_tokens`, adaptive thinking (`thinking: {type: "adaptive"}`,
+requested explicitly because omitting it means no thinking on some older
+models), `output_config.effort` and the prompt, and nothing else. Thinking text
+is dropped, never streamed, and effort is the only depth control: Opus 5.5
+rejects a token budget. No refusal fallback is enabled: it would answer from another model
+after a refusal, which is the silent re-routing the one-key rule exists to
+prevent. A refusal reaches the client as an `error` event instead. Retries,
+error codes and the "judge the answer at the end" rule below apply to Claude
+too; Claude's stream is complete once its stop reason has arrived.
 
 How a call works:
 
@@ -252,7 +289,7 @@ How a call works:
   or the provider's `Retry-After` if longer; one over 5 s fails at once).
   Other HTTP errors fail at once, with the provider's message.
 - An answer is judged when the stream ends. An error inside the stream, a
-  connection that breaks before `[DONE]`, a stop at the token limit and an
+  connection that breaks before `[DONE]` (Claude: before a stop reason), a stop at the token limit and an
   empty answer are all errors, even if some text already went out. A break
   after the final `finish_reason` is not: the answer is already whole. So neither
   the panel nor Memoir's parser takes a partial answer for a whole one.
@@ -299,7 +336,7 @@ internal/server     HTTP routing, the security guard, the handlers
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompts (check.txt, paraphrase.txt) and result parsing
-internal/llm        the streaming chat-completions client (OpenRouter, Cerebras)
+internal/llm        streaming model clients: chat completions (OpenRouter, Cerebras) and Claude
 install.sh, uninstall.sh, run.sh
 ```
 

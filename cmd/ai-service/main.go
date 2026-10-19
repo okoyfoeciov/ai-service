@@ -22,7 +22,12 @@ import (
 )
 
 func main() {
-	cfg, missing := config.Load()
+	cfg, missing, err := config.Load()
+	if err != nil {
+		// A configuration that makes the model routing unclear is not run at
+		// all: the service manager keeps retrying and the reason is in the log.
+		log.Fatalf("config: %v", err)
+	}
 	for _, m := range missing {
 		log.Printf("WARNING: %s is missing — its feature reports an error until you add it and restart the service", m)
 	}
@@ -89,6 +94,7 @@ func main() {
 		app.Drain(dctx)
 	}()
 
+	log.Printf("explain route: %s", cfg.ExplainRoute())
 	log.Printf("ai-service listening on http://%s  (cache: %s)", cfg.ListenAddr, dbPath)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)

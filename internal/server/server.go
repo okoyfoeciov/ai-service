@@ -34,11 +34,12 @@ import (
 type Server struct {
 	cfg config.Config
 	mw  *mw.Client
-	// explainLLM is /api/explain's model (OpenRouter), memoirLLM is Memoir's
+	// explainLLM is /api/explain's model (OpenRouter or Claude, whichever key
+	// config.Load found; it refuses to run with both), memoirLLM is Memoir's
 	// (Cerebras). Each is nil when its API key is missing; the handler then
 	// reports that instead of the whole server refusing to start, matching how
 	// every other handler degrades on a missing secret.
-	explainLLM *llm.Client
+	explainLLM llm.Streamer
 	memoirLLM  *llm.Client
 
 	httpShort  *http.Client // Groq transcription (bounded)
@@ -50,10 +51,12 @@ type Server struct {
 	inflight sync.WaitGroup
 }
 
-// Model endpoints. Both speak OpenAI's streaming chat completions.
+// Model endpoints. OpenRouter and Cerebras speak OpenAI's streaming chat
+// completions; Claude is the Messages API at its API root.
 const (
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 	cerebrasURL   = "https://api.cerebras.ai/v1/chat/completions"
+	claudeURL     = "https://api.anthropic.com"
 	// maxAnswerTokens bounds one answer, thinking included. Both prompts need
 	// far less; the cap only stops a runaway reply.
 	maxAnswerTokens = 32000
@@ -67,7 +70,16 @@ func New(cfg config.Config, st *store.Store) *Server {
 		httpStream: &http.Client{}, // no timeout; see the field comment
 		httpAzure:  &http.Client{Timeout: 10 * time.Minute},
 	}
-	if cfg.OpenRouterAPIKey != "" {
+	switch cfg.ExplainProvider {
+	case config.ProviderClaude:
+		s.explainLLM = llm.NewClaude(llm.ClaudeConfig{
+			APIKey:    cfg.ClaudeAPIKey,
+			BaseURL:   claudeURL,
+			Model:     cfg.ExplainModel,
+			MaxTokens: maxAnswerTokens,
+			Effort:    cfg.ExplainEffort,
+		}, s.httpStream)
+	case config.ProviderOpenRouter:
 		s.explainLLM = llm.New(llm.Config{
 			Provider: "OpenRouter",
 			URL:      openRouterURL,
@@ -151,8 +163,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // loopbackOnly is the guard ServeHTTP runs before every route. Binding
 // 127.0.0.1 keeps other machines out, but not web pages open in this machine's
 // browser: a DNS-rebinding page (Host: evil.example:8770) could read every
-// response, and any site can fire blind cross-site POSTs that bill the OpenRouter,
-// Cerebras and Groq accounts. So the Host must name loopback, and so must an http(s)
+// response, and any site can fire blind cross-site POSTs that bill the OpenRouter or
+// Claude, Cerebras and Groq accounts. So the Host must name loopback, and so must an http(s)
 // Origin. An absent or "null" Origin, or a non-web one (chrome-extension:// for
 // comart, file:// for Cairn's Electron renderer), passes: loopback stays the
 // trust boundary, and those are the clients.

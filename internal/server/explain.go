@@ -61,7 +61,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if s.explainLLM == nil {
-		send("error", map[string]any{"message": "OPENROUTER_API_KEY is not set."})
+		send("error", map[string]any{"message": "Neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set."})
 		return
 	}
 	if len(body.Items) == 0 {

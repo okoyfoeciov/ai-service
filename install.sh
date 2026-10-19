@@ -130,10 +130,58 @@ ask_secret() {
     return 1
   fi
 }
-# KEYS: every API key the service needs, with what it is used for.
+# env_set <KEY>: is KEY= followed by a real value in ai-service.env? (Quotes
+# alone, whitespace and a comment do not count.)
+env_set() { grep -qE "^$1=[\"']?[^\"'[:space:]#]" "$ENVFILE"; }
+
+# ask_key <KEY> <purpose> [allow-empty]: ask for one key in a hidden prompt and
+# write it into ai-service.env. Cancelling, an empty value (unless allow-empty is
+# 1, which returns 1 instead) or a value with a space, quote, backslash, $ or
+# backtick stops the whole script.
+ask_key() {
+  local key="$1" purpose="$2" allow_empty="${3:-0}" val
+  val=$(ask_secret "Enter $key (used for: $purpose)") || { echo "cancelled"; exit 1; }
+  # Trim surrounding whitespace a paste may carry.
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  if [ -z "$val" ]; then
+    [ "$allow_empty" = 1 ] && return 1
+    echo "empty value"; exit 1
+  fi
+  case "$val" in
+    *[[:space:]\'\"\\\$\`]*) echo "rejected: the key contains a space, quote, backslash, \$ or backtick"; exit 1 ;;
+  esac
+  # Every step below ends in an explicit `|| exit 1`, not in set -e: the caller
+  # may run ask_key as the left side of `||`, and bash then turns errexit off for
+  # this whole body. Without them a failed awk would still reach the mv and
+  # replace ai-service.env with a truncated file.
+  (
+    umask 077
+    tmp="$(mktemp "$HERE/.ai-service.env.XXXXXX")" || exit 1
+    # $tmp holds the key until the mv: remove it on any other way out (a failed
+    # awk, Ctrl-C). Harmless after the mv. The INT/TERM/HUP trap makes those
+    # signals exit through the EXIT trap. .gitignore also excludes the name.
+    trap 'rm -f "$tmp"' EXIT
+    trap 'exit 1' INT TERM HUP
+    # Replace the existing KEY= line (first one wins, duplicates are dropped)
+    # or append one. The value arrives via ENVIRON, not awk -v, which would
+    # put it in argv and interpret backslash escapes.
+    LLM_KEY="$key" LLM_VAL="$val" awk '
+      index($0, ENVIRON["LLM_KEY"] "=") == 1 { if (!done) { print ENVIRON["LLM_KEY"] "=" ENVIRON["LLM_VAL"]; done = 1 } next }
+      { print }
+      END { if (!done) print ENVIRON["LLM_KEY"] "=" ENVIRON["LLM_VAL"] }
+    ' "$ENVFILE" >"$tmp" || exit 1
+    chmod 600 "$tmp" || exit 1
+    mv -f "$tmp" "$ENVFILE" || exit 1
+  ) || { echo "could not write $ENVFILE; it was not changed" >&2; exit 1; }
+  echo "saved $key"
+}
+
+# KEYS: every API key the service always needs, with what it is used for.
+# /api/explain's key is not here: it takes exactly one of OPENROUTER_API_KEY and
+# CLAUDE_API_KEY, which the block below handles.
 KEYS=(
   "GROQ_API_KEY|transcription via Groq Whisper"
-  "OPENROUTER_API_KEY|word explanations via OpenRouter"
   "CEREBRAS_API_KEY|Memoir via Cerebras"
   "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
 )
@@ -150,43 +198,29 @@ else
     say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
+  # The service refuses to start when both explain keys are set (the model
+  # routing would be unclear). Stop here instead of restarting it into that.
+  if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
+    die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
+  fi
   for entry in "${KEYS[@]}"; do
     key="${entry%%|*}"
     purpose="${entry#*|}"
-    if grep -qE "^$key=[\"']?[^\"'[:space:]#]" "$ENVFILE"; then
+    if env_set "$key"; then
       say "[d] ai-service.env: $key is set"
       continue
     fi
-    val=$(ask_secret "Enter $key (used for: $purpose)") || { echo "cancelled"; exit 1; }
-    # Trim surrounding whitespace a paste may carry.
-    val="${val#"${val%%[![:space:]]*}"}"
-    val="${val%"${val##*[![:space:]]}"}"
-    [ -n "$val" ] || { echo "empty value"; exit 1; }
-    case "$val" in
-      *[[:space:]\'\"\\\$\`]*) echo "rejected: the key contains a space, quote, backslash, \$ or backtick"; exit 1 ;;
-    esac
-    (
-      umask 077
-      tmp="$(mktemp "$HERE/.ai-service.env.XXXXXX")"
-      # $tmp holds the key until the mv: remove it on any other way out (a failed
-      # awk, Ctrl-C). Harmless after the mv. The INT/TERM/HUP trap makes those
-      # signals exit through the EXIT trap. .gitignore also excludes the name.
-      trap 'rm -f "$tmp"' EXIT
-      trap 'exit 1' INT TERM HUP
-      # Replace the existing KEY= line (first one wins, duplicates are dropped)
-      # or append one. The value arrives via ENVIRON, not awk -v, which would
-      # put it in argv and interpret backslash escapes.
-      LLM_KEY="$key" LLM_VAL="$val" awk '
-        index($0, ENVIRON["LLM_KEY"] "=") == 1 { if (!done) { print ENVIRON["LLM_KEY"] "=" ENVIRON["LLM_VAL"]; done = 1 } next }
-        { print }
-        END { if (!done) print ENVIRON["LLM_KEY"] "=" ENVIRON["LLM_VAL"] }
-      ' "$ENVFILE" >"$tmp"
-      chmod 600 "$tmp"
-      mv -f "$tmp" "$ENVFILE"
-    )
-    unset val
-    echo "saved $key"
+    ask_key "$key" "$purpose"
   done
+  if env_set OPENROUTER_API_KEY; then
+    say "[d] ai-service.env: OPENROUTER_API_KEY is set — /api/explain runs on OpenRouter"
+  elif env_set CLAUDE_API_KEY; then
+    say "[d] ai-service.env: CLAUDE_API_KEY is set — /api/explain runs on the Claude Platform"
+  else
+    # Neither: ask for OpenRouter first, and an empty answer there means Claude.
+    ask_key OPENROUTER_API_KEY "word explanations via OpenRouter. Leave it empty to use a Claude key instead" 1 ||
+      ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
+  fi
 fi
 
 # --- e. service definition ---------------------------------------------------
