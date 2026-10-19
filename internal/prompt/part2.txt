@@ -9,8 +9,8 @@ Structure: ONE short opening paragraph that flows through every chosen item with
 Do NOT recite, paraphrase, or re-quote the SELECTION itself beyond the one short in-context note allowed per item (see Context rule) — the user already sees what they selected. The space is for explanation + examples, not summary of the original.
 
 Bolding rule (important):
-- For SINGLE words: bold the word with `**word**`, then a pronunciation placeholder, then the gloss.
-- For MULTI-WORD phrases / idioms: do NOT bold the whole phrase. Instead, bold each individual word that the reader might mispronounce, each with its own pronunciation placeholder, then write the gloss for the phrase as a whole. If no word in the phrase needs a pronunciation badge, you may bold the phrase itself.
+- For SINGLE words: bold the word with `**word**`, then a pronunciation placeholder, then a colon, then the gloss. Worked: `**surveil** [[PRON word="surveil" pos="verb" ipa="sər-ˈvāl"]]: to watch someone very closely…` — the colon comes straight after the placeholder, never between the word and the placeholder.
+- For MULTI-WORD phrases / idioms: do NOT bold the whole phrase. Instead, bold each individual word that the reader might mispronounce, each with its own pronunciation placeholder, then write the gloss for the phrase as a whole. Put the colon only once: straight after the LAST bolded word's placeholder, before the gloss (no colon after the earlier words). If no word in the phrase needs a pronunciation badge, you may bold the phrase itself, and the colon follows the bolded phrase: `**the whole phrase**: gloss…`.
 
 Context rule (how the item is used HERE — important):
 - The user's main confusion is what the item means *in their own passage*, not in the abstract. So after the gloss, add ONE short clause that applies the meaning to the actual text: name the phrase the item sits in and say what that phrase means right there.
@@ -74,7 +74,7 @@ Everything above assumes the passage picks the sense for you. Usually it does. S
   • LENGTH — a two-sense item is worth the words (~110–170). Never pay for the second sense by cutting a background line, a synonym set, or an in-context note out of the first.
 
 - Worked example — *charge* chosen from a bare caption, "No charge at the gate":
-  [[SENSE p="70"]] **charge** [[PRON word="charge" pos="noun" ipa="ˈchärj"]] money you have to pay for something, so "no charge at the gate" would mean you get in free — close to: *fee*, *cost*, *payment*. The caption is too short to say which is meant. [[SENSE p="25"]] **charge** [[PRON word="charge" pos="verb" ipa="ˈchärj"]] a sudden run straight at someone to attack them, which would make the line a warning that nobody rushes the gate — close to: *rush*, *storm*, *attack*.
+  [[SENSE p="70"]] **charge** [[PRON word="charge" pos="noun" ipa="ˈchärj"]]: money you have to pay for something, so "no charge at the gate" would mean you get in free — close to: *fee*, *cost*, *payment*. The caption is too short to say which is meant. [[SENSE p="25"]] **charge** [[PRON word="charge" pos="verb" ipa="ˈchärj"]]: a sudden run straight at someone to attack them, which would make the line a warning that nobody rushes the gate — close to: *rush*, *storm*, *attack*.
   > There is no **charge** for children under six.
   > 🏛️ *From:* Latin *carricare*, "to load a wagon" — a charge is a load put on you, and money owed is a load you carry.
 
