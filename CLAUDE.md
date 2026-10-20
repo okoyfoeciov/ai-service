@@ -7,7 +7,10 @@ daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 security model and models. `/api/explain` runs on OpenRouter
 (`google/gemini-3.8-flash`) or, when `CLAUDE_API_KEY` is set instead, on the
 Claude Platform (`claude-opus-5-5`, effort `medium`); `config.Load` refuses to
-start with both keys set. `/api/memoir/*` runs on Cerebras (`qwen-3.8-27b`),
+start with both keys set. `/api/memoir/*` runs the same way: on Claude
+(`claude-opus-5-5`, effort `medium`) when `MEMOIR_CLAUDE_API_KEY` is set, or on
+Cerebras (`qwen-3.8-27b`) when `MEMOIR_CEREBRAS_API_KEY` is. Every Memoir
+variable starts with `MEMOIR_`, and the same refusal applies to both keys.
 `/api/transcribe-verbatim` on Azure Speech (`MAI-Transcribe-2`).
 
 ## This is a BACKEND. The front ends live elsewhere.
@@ -52,8 +55,9 @@ start with both keys set. `/api/memoir/*` runs on Cerebras (`qwen-3.8-27b`),
   no auth by design. The Host/Origin guard (`loopbackOnly` in
   `internal/server/server.go`) and the Content-Type rule on the billed routes
   keep web pages out. Do not weaken them.
-- Keep Memoir's reasoning on (`MEMOIR_REASONING_EFFORT` not `none`): without
-  it Qwen breaks the JSON contract and edits text it must leave alone.
+- On Cerebras, keep Memoir's reasoning on (`MEMOIR_REASONING_EFFORT` not
+  `none`): without it Qwen breaks the JSON contract and edits text it must
+  leave alone.
 - `internal/prompt/*.txt` and `internal/memoir/*.txt` are product prompts.
   `TestPromptParity` pins the Memoir ones by hash. Do not edit them in passing.
 

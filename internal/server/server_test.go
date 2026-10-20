@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ai-service/internal/config"
 	"ai-service/internal/llm"
 	"ai-service/internal/memoir"
 	"ai-service/internal/mw"
@@ -139,11 +140,11 @@ func TestMemoirCapsCountUTF16(t *testing.T) {
 		wantStatus              int
 		wantError               string
 	}{
-		{"paraphrase 600 curly quotes", "/api/memoir/paraphrase", "text", strings.Repeat("’", 600), http.StatusServiceUnavailable, "CEREBRAS_API_KEY is not set."},
+		{"paraphrase 600 curly quotes", "/api/memoir/paraphrase", "text", strings.Repeat("’", 600), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
 		{"paraphrase 601 curly quotes", "/api/memoir/paraphrase", "text", strings.Repeat("’", 601), http.StatusBadRequest, "selection too long (max 600 chars)"},
-		{"paraphrase 300 emoji", "/api/memoir/paraphrase", "text", strings.Repeat("😀", 300), http.StatusServiceUnavailable, "CEREBRAS_API_KEY is not set."},
+		{"paraphrase 300 emoji", "/api/memoir/paraphrase", "text", strings.Repeat("😀", 300), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
 		{"paraphrase 301 emoji", "/api/memoir/paraphrase", "text", strings.Repeat("😀", 301), http.StatusBadRequest, "selection too long (max 600 chars)"},
-		{"check 12000 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "CEREBRAS_API_KEY is not set."},
+		{"check 12000 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
 		{"check 12001 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
 	}
 	for _, tc := range cases {
@@ -484,6 +485,32 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 			}
 			if len(body.Issues) != tc.want {
 				t.Fatalf("got %d issues, want %d", len(body.Issues), tc.want)
+			}
+		})
+	}
+}
+
+// New builds Memoir's client from the provider config.Load picked, and leaves
+// it nil (so the handlers report the missing key) when neither key is set.
+func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		wantNil bool
+		wantTyp string
+	}{
+		{"no key", config.Config{}, true, ""},
+		{"cerebras", config.Config{MemoirProvider: config.ProviderCerebras, MemoirCerebrasAPIKey: "k", MemoirModel: "qwen-3.8-27b", MemoirReasoningEffort: "medium"}, false, "*llm.Client"},
+		{"claude", config.Config{MemoirProvider: config.ProviderClaude, MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5", MemoirEffort: "medium"}, false, "*llm.Claude"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(tc.cfg, nil)
+			if (s.memoirLLM == nil) != tc.wantNil {
+				t.Fatalf("memoirLLM nil = %v, want %v", s.memoirLLM == nil, tc.wantNil)
+			}
+			if got := fmt.Sprintf("%T", s.memoirLLM); !tc.wantNil && got != tc.wantTyp {
+				t.Errorf("memoirLLM is %s, want %s", got, tc.wantTyp)
 			}
 		})
 	}

@@ -54,12 +54,15 @@ macOS and Linux are supported.
    `brew install go`).
 2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
-   For each empty API key (`GROQ_API_KEY`, `CEREBRAS_API_KEY`,
-   `AZURE_SPEECH_KEY`, and one key for `/api/explain`: `OPENROUTER_API_KEY` or
-   `CLAUDE_API_KEY`) it asks in a hidden prompt (a macOS dialog; on Linux a
+   For each empty API key (`GROQ_API_KEY`, `AZURE_SPEECH_KEY`, one key for
+   `/api/explain`: `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`, and one for
+   `/api/memoir/*`: `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`) it asks
+   in a hidden prompt (a macOS dialog; on Linux a
    zenity dialog, or a hidden terminal prompt without a display). For the
    explain key it asks for OpenRouter first; an empty answer there moves on to
-   Claude. It stops if both explain keys are already set. It never
+   Claude. For the Memoir key it asks for Claude first; an empty answer there
+   moves on to Cerebras. It stops if both keys of either pair are already set,
+   or if the retired `CEREBRAS_API_KEY` is still there. It never
    prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -161,11 +164,13 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `EXPLAIN_REASONING_TOKENS` | `1024` | OpenRouter only: thinking budget (`reasoning.max_tokens`). Claude ignores it. |
 | `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no token budget, so this is the thinking control. OpenRouter ignores it. |
-| `CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. |
+| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/*`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
+| `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
 | `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
 | `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim`. |
-| `MEMOIR_MODEL` | `qwen-3.8-27b` | Cerebras model for `/api/memoir/*`. |
-| `MEMOIR_REASONING_EFFORT` | `medium` | `low`, `medium`, `high`, or `none` to turn reasoning off. |
+| `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/*`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
+| `MEMOIR_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Cerebras ignores it. |
+| `MEMOIR_REASONING_EFFORT` | `medium` | Cerebras only: `low`, `medium`, `high`, or `none` to turn reasoning off. Claude ignores it. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
@@ -185,7 +190,8 @@ event and `/api/memoir/*` answer 503, each naming the missing key, until it is
 set.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
-manager keeps retrying every 10 s) when the explain route would be unclear:
+manager keeps retrying every 10 s) when the explain or the Memoir route would
+be unclear:
 
 - both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
   as unset, so leave the unused key as an empty `KEY=` line (that also beats
@@ -193,13 +199,21 @@ manager keeps retrying every 10 s) when the explain route would be unclear:
   file over it);
 - `CLAUDE_API_KEY` is set and `EXPLAIN_MODEL` is not a `claude-…` id (for
   example a leftover `google/gemini-3.8-flash`), or `EXPLAIN_EFFORT` is not one
-  of the five levels.
+  of the five levels;
+- both `MEMOIR_CEREBRAS_API_KEY` and `MEMOIR_CLAUDE_API_KEY` are set (same rule:
+  leave the unused one empty or commented out);
+- `MEMOIR_CLAUDE_API_KEY` is set and `MEMOIR_MODEL` is not a `claude-…` id (for
+  example a leftover `qwen-3.8-27b`), or `MEMOIR_EFFORT` is not one of the five
+  levels;
+- the retired `CEREBRAS_API_KEY` is still set. It is `MEMOIR_CEREBRAS_API_KEY`
+  now; the old name would otherwise sit in the file doing nothing.
 
 Why: with two possible routes it is easy to believe one model answers while
 another does. Every start logs the route it chose, for example
-`explain route: Claude Platform, model claude-opus-5-5, effort medium`, and every
-Claude request whose stream starts logs the model it asked for next to the model
-the API says answered. The Anthropic SDK's own `ANTHROPIC_*` environment variables are
+`explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
+same for `memoir route: …`, and every Claude request whose stream starts logs
+the model it asked for next to the model the API says answered (`llm[Claude/explain]`
+or `llm[Claude/memoir]`). The Anthropic SDK's own `ANTHROPIC_*` environment variables are
 switched off, so a stray `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` cannot
 re-route the call.
 
@@ -261,7 +275,8 @@ Request limits:
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
-| `/api/memoir/*` | Cerebras | `qwen-3.8-27b` | `medium` |
+| `/api/memoir/*` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
+| `/api/memoir/*` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
 (`internal/llm`'s `Client`) serves both. The only difference is the request fields for
@@ -269,7 +284,8 @@ the token budget and reasoning, which `server.New` sets per provider:
 OpenRouter takes `max_tokens` and `reasoning: {max_tokens, exclude}`; Cerebras
 takes `max_completion_tokens` and `reasoning_effort` (or `disable_reasoning`).
 
-Claude is called directly on the Claude Platform with the official Go SDK
+Claude is called directly on the Claude Platform with the official Go SDK, for
+whichever of the two routes (explain, Memoir) has a Claude key
 (`internal/llm/claude.go`), through the Messages API. The request carries the
 model, `max_tokens`, adaptive thinking (`thinking: {type: "adaptive"}`,
 requested explicitly because omitting it means no thinking on some older
@@ -277,7 +293,8 @@ models), `output_config.effort` and the prompt, and nothing else. Thinking text
 is dropped, never streamed, and effort is the only depth control: Opus 5.5
 rejects a token budget. No refusal fallback is enabled: it would answer from another model
 after a refusal, which is the silent re-routing the one-key rule exists to
-prevent. A refusal reaches the client as an `error` event instead. Retries,
+prevent. A refusal reaches the client as an `error` event on explain, and as a
+502 on Memoir. Retries,
 error codes and the "judge the answer at the end" rule below apply to Claude
 too; Claude's stream is complete once its stop reason has arrived.
 
@@ -294,11 +311,13 @@ How a call works:
   after the final `finish_reason` is not: the answer is already whole. So neither
   the panel nor Memoir's parser takes a partial answer for a whole one.
 
-**Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged):
+**Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged;
+Memoir moved to Claude Opus 5.5 on 2026-10-20 and Qwen stays as the Cerebras
+option):
 on Memoir, Qwen at `medium` was as good as the previous, much larger model and
 answered 3–5× faster (check: 1.6 s median). On explain, Gemini 3.8 Flash clearly beat Qwen
-at every reasoning level: Qwen got pronunciations wrong. **Never run Memoir
-with reasoning off:** Qwen then breaks the JSON contract, edits other people's
+at every reasoning level: Qwen got pronunciations wrong. **Never run Memoir on
+Cerebras with reasoning off:** Qwen then breaks the JSON contract, edits other people's
 quoted words and leaves unlisted edits in `corrected`.
 
 Cerebras allows 150k tokens a minute on this account. An explain prompt is

@@ -179,10 +179,10 @@ ask_key() {
 
 # KEYS: every API key the service always needs, with what it is used for.
 # /api/explain's key is not here: it takes exactly one of OPENROUTER_API_KEY and
-# CLAUDE_API_KEY, which the block below handles.
+# CLAUDE_API_KEY, and Memoir's exactly one of MEMOIR_CLAUDE_API_KEY and
+# MEMOIR_CEREBRAS_API_KEY. The block below handles both.
 KEYS=(
   "GROQ_API_KEY|transcription via Groq Whisper"
-  "CEREBRAS_API_KEY|Memoir via Cerebras"
   "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
 )
 if [ "$DRY_RUN" = 1 ]; then
@@ -203,6 +203,13 @@ else
   if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
     die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
   fi
+  if env_set MEMOIR_CEREBRAS_API_KEY && env_set MEMOIR_CLAUDE_API_KEY; then
+    die "ai-service.env sets both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY, so it is unclear which provider answers /api/memoir/* and the service would refuse to start. Keep one and set the other to empty (KEY=) or comment it out, then re-run."
+  fi
+  # The old name is not read any more, and the service refuses to start with it.
+  if env_set CEREBRAS_API_KEY; then
+    die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
+  fi
   for entry in "${KEYS[@]}"; do
     key="${entry%%|*}"
     purpose="${entry#*|}"
@@ -220,6 +227,15 @@ else
     # Neither: ask for OpenRouter first, and an empty answer there means Claude.
     ask_key OPENROUTER_API_KEY "word explanations via OpenRouter. Leave it empty to use a Claude key instead" 1 ||
       ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
+  fi
+  if env_set MEMOIR_CLAUDE_API_KEY; then
+    say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/* runs on the Claude Platform"
+  elif env_set MEMOIR_CEREBRAS_API_KEY; then
+    say "[d] ai-service.env: MEMOIR_CEREBRAS_API_KEY is set — /api/memoir/* runs on Cerebras"
+  else
+    # Neither: ask for Claude first (the default), and an empty answer means Cerebras.
+    ask_key MEMOIR_CLAUDE_API_KEY "Memoir via the Claude Platform. Leave it empty to use a Cerebras key instead" 1 ||
+      ask_key MEMOIR_CEREBRAS_API_KEY "Memoir via Cerebras"
   fi
 fi
 

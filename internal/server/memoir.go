@@ -18,9 +18,10 @@ import (
 // Unlike /api/explain these are non-streaming JSON: the model must finish
 // before any alternative is usable (one truncated variant list loses every
 // alternative, not one), so the handler collects the stream and responds once.
-// The model is Server.memoirLLM (by default Qwen 3.8 27B on Cerebras, medium
-// reasoning), separate from the one /api/explain uses. There is no per-request
-// model choice.
+// The model is Server.memoirLLM (Claude Opus 5.5 at medium effort by default,
+// or Qwen 3.8 27B on Cerebras when MEMOIR_CEREBRAS_API_KEY is set instead),
+// separate from the one /api/explain uses. There is no per-request model
+// choice.
 
 // utf16Len counts s in UTF-16 code units — JavaScript's String.length, which
 // is what Cairn measures its Memoir caps in. len(s) counts UTF-8 bytes, which
@@ -67,7 +68,7 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.memoirLLM == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CEREBRAS_API_KEY is not set."})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."})
 		return
 	}
 
@@ -140,7 +141,7 @@ func (s *Server) handleMemoirParaphrase(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.memoirLLM == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "CEREBRAS_API_KEY is not set."})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."})
 		return
 	}
 

@@ -34,13 +34,14 @@ import (
 type Server struct {
 	cfg config.Config
 	mw  *mw.Client
-	// explainLLM is /api/explain's model (OpenRouter or Claude, whichever key
-	// config.Load found; it refuses to run with both), memoirLLM is Memoir's
-	// (Cerebras). Each is nil when its API key is missing; the handler then
+	// explainLLM is /api/explain's model (OpenRouter or Claude), memoirLLM is
+	// Memoir's (Cerebras or Claude). Whichever key config.Load found picks the
+	// provider, and it refuses to run with both keys of one route. Each is nil
+	// when its API key is missing; the handler then
 	// reports that instead of the whole server refusing to start, matching how
 	// every other handler degrades on a missing secret.
 	explainLLM llm.Streamer
-	memoirLLM  *llm.Client
+	memoirLLM  llm.Streamer
 
 	httpShort  *http.Client // Groq transcription (bounded)
 	httpStream *http.Client // model calls. No timeout: a stream can run for minutes; ctx-cancelled
@@ -78,6 +79,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 			Model:     cfg.ExplainModel,
 			MaxTokens: maxAnswerTokens,
 			Effort:    cfg.ExplainEffort,
+			Route:     "explain",
 		}, s.httpStream)
 	case config.ProviderOpenRouter:
 		s.explainLLM = llm.New(llm.Config{
@@ -92,7 +94,17 @@ func New(cfg config.Config, st *store.Store) *Server {
 			},
 		}, s.httpStream)
 	}
-	if cfg.CerebrasAPIKey != "" {
+	switch cfg.MemoirProvider {
+	case config.ProviderClaude:
+		s.memoirLLM = llm.NewClaude(llm.ClaudeConfig{
+			APIKey:    cfg.MemoirClaudeAPIKey,
+			BaseURL:   claudeURL,
+			Model:     cfg.MemoirModel,
+			MaxTokens: maxAnswerTokens,
+			Effort:    cfg.MemoirEffort,
+			Route:     "memoir",
+		}, s.httpStream)
+	case config.ProviderCerebras:
 		params := map[string]any{"max_completion_tokens": maxAnswerTokens}
 		if cfg.MemoirReasoningEffort == "none" {
 			params["disable_reasoning"] = true
@@ -102,7 +114,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 		s.memoirLLM = llm.New(llm.Config{
 			Provider: "Cerebras",
 			URL:      cerebrasURL,
-			APIKey:   cfg.CerebrasAPIKey,
+			APIKey:   cfg.MemoirCerebrasAPIKey,
 			Model:    cfg.MemoirModel,
 			Params:   params,
 		}, s.httpStream)

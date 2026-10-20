@@ -14,9 +14,9 @@
 // variants.
 //
 // The model is Server.memoirLLM, separate from the one /api/explain uses
-// (MEMOIR_MODEL, default Qwen 3.8 27B on Cerebras). This package is pure
-// text — it never touches the network, so the prompt contract stays
-// unit-testable without billing a turn.
+// (MEMOIR_MODEL, default Claude Opus 5.5; Qwen 3.8 27B on Cerebras if that key
+// is set instead). This package is pure text — it never touches the network, so
+// the prompt contract stays unit-testable without billing a turn.
 package memoir
 
 import (
