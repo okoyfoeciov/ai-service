@@ -232,7 +232,7 @@ else
   elif env_set MAI_TRANSCRIBE_API_KEY; then
     say "[d] ai-service.env: MAI_TRANSCRIBE_API_KEY is set — /api/transcribe runs on Azure MAI-Transcribe-2"
     # Azure decodes WAV/MP3/OGG/FLAC but not the WebM that comart records, so
-    # the server converts those clips with ffmpeg before uploading them.
+    # the server re-encodes every clip to WAV with ffmpeg before uploading it.
     if ! command -v ffmpeg >/dev/null 2>&1; then
       die "ffmpeg is required to convert comart's WebM recordings for Azure MAI-Transcribe-2, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
     fi

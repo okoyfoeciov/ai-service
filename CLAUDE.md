@@ -17,7 +17,7 @@ variable starts with `MEMOIR_`, and the same refusal applies to both keys.
 `MAI-Transcribe-2`); `config.Load` refuses to start with more than one of the
 three set. The Azure route needs `ffmpeg` on `PATH`, because comart records
 WebM and Azure only decodes WAV/MP3/OGG/FLAC: `internal/server/audio.go`
-converts unsupported containers to mono 16 kHz OGG/Opus first. `/api/transcribe-verbatim` (daily-dictation's import pipeline) is a
+re-encodes every clip to mono 16 kHz WAV first. `/api/transcribe-verbatim` (daily-dictation's import pipeline) is a
 separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
 
 ## This is a BACKEND. The front ends live elsewhere.

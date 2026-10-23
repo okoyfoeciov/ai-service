@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +28,18 @@ var (
 	parakeetPollInterval = 100 * time.Millisecond
 	parakeetPollTimeout  = 2 * time.Minute
 )
+
+// Azure's fast transcription endpoint is elastic: it answers 429 while it
+// autoscales and 5xx for transient failures, and Microsoft's guidance is to
+// retry those. Three attempts (the initial one plus two) with 1 s and 2 s
+// backoff match /api/explain's policy. A Retry-After longer than 5 s is not
+// worth blocking an interactive recording on.
+const (
+	azureMaxAttempts       = 3
+	azureTranscribeTimeout = 3 * time.Minute
+)
+
+var azureRetryBase = time.Second // a variable so tests need not sleep
 
 // extByType maps a recording's MIME type to a file extension the STT backends
 // recognise.
@@ -53,6 +67,77 @@ func (s *Server) shortClient() *http.Client {
 		return s.httpShort
 	}
 	return http.DefaultClient
+}
+
+// azureClient is the bounded client for Azure transcription. The MAI handler
+// adds its own 3-minute context, so httpAzure's 10-minute timeout is only a
+// backstop.
+func (s *Server) azureClient() *http.Client {
+	if s.httpAzure != nil {
+		return s.httpAzure
+	}
+	return s.shortClient()
+}
+
+// azureRetryable reports the statuses Microsoft's fast transcription guidance
+// says to retry: 429 while the service autoscales, and transient 5xx.
+func azureRetryable(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+func azureBackoff(attempt int) time.Duration {
+	if azureRetryBase <= 0 {
+		return 0
+	}
+	return time.Duration(1<<(attempt-1)) * azureRetryBase
+}
+
+// azureRetryWait is the delay before the next attempt: 1 s, then 2 s, or the
+// provider's Retry-After when it gives one. A Retry-After over 5 s is not worth
+// blocking an interactive recording on, so ok is false and the request fails.
+func azureRetryWait(res *http.Response, attempt int) (d time.Duration, ok bool) {
+	d = azureBackoff(attempt)
+	if ra := strings.TrimSpace(res.Header.Get("Retry-After")); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+			d = time.Duration(secs) * time.Second
+			if d > 5*time.Second {
+				return 0, false
+			}
+		}
+	}
+	return d, true
+}
+
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// logTail bounds an upstream error body before it reaches the log.
+func logTail(b []byte) string {
+	const max = 600
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
 }
 
 // handleTranscribe sends one clip from comart's mic recorder (Exscriptor) to
@@ -315,17 +400,23 @@ func (s *Server) transcribeParakeet(w http.ResponseWriter, r *http.Request, audi
 // Separate from /api/transcribe-verbatim, which uses AZURE_SPEECH_KEY and
 // returns word-level timestamps for daily-dictation.
 func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []byte, contentType string) {
+	ctx, cancel := context.WithTimeout(r.Context(), azureTranscribeTimeout)
+	defer cancel()
+
 	// comart records audio/webm;codecs=opus, which Azure rejects with
-	// invalid_audio. Convert unsupported containers before upload.
-	audio, contentType, err := prepareForAzure(r.Context(), audio, contentType)
+	// invalid_audio. Decode every clip and send WAV (see audio.go).
+	inputBytes, inputType := len(audio), contentType
+	converted, err := prepareForAzure(ctx, audio)
 	if err != nil {
+		log.Printf("transcribe[MAI]: conversion failed (%d bytes, %q): %v", inputBytes, inputType, err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error":  "could not convert the recording for Azure",
 			"detail": err.Error(),
 		})
 		return
 	}
-	ext := pickExt(contentType)
+	audio, contentType = converted, "audio/wav"
+	ext := "wav"
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -340,6 +431,7 @@ func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []b
 	_, _ = part.Write(audio)
 	_ = form.WriteField("definition", `{"locales":["en"],"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"},"diarization":{"enabled":false}}`)
 	_ = form.Close()
+	bodyBytes := body.Bytes()
 
 	endpoint := s.cfg.AzureSpeechEndpoint
 	if endpoint == "" {
@@ -347,27 +439,61 @@ func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []b
 	}
 	u := strings.TrimSuffix(endpoint, "/") +
 		"/speechtotext/transcriptions:transcribe?api-version=" + azureAPIVersion
-	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, u, &body)
-	req.Header.Set("Ocp-Apim-Subscription-Key", s.cfg.MAITranscribeAPIKey)
-	req.Header.Set("Content-Type", form.FormDataContentType())
 
-	res, err := s.shortClient().Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Azure", "detail": err.Error()})
+	var (
+		status     int
+		retryAfter string
+		raw        []byte
+		lastErr    error
+	)
+	for attempt := 1; attempt <= azureMaxAttempts; attempt++ {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+		if reqErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+			return
+		}
+		req.Header.Set("Ocp-Apim-Subscription-Key", s.cfg.MAITranscribeAPIKey)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+
+		res, doErr := s.azureClient().Do(req)
+		if doErr != nil {
+			status, raw, lastErr = 0, nil, doErr
+			log.Printf("transcribe[MAI]: input %d bytes %q, WAV %d bytes; attempt %d/%d: %v",
+				inputBytes, inputType, len(audio), attempt, azureMaxAttempts, doErr)
+			if attempt == azureMaxAttempts || ctx.Err() != nil || !sleepContext(ctx, azureBackoff(attempt)) {
+				break
+			}
+			continue
+		}
+		raw, _ = io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		status, retryAfter, lastErr = res.StatusCode, res.Header.Get("Retry-After"), nil
+		if status >= 200 && status < 300 {
+			break
+		}
+		log.Printf("transcribe[MAI]: input %d bytes %q, WAV %d bytes; attempt %d/%d: azure %d: %s",
+			inputBytes, inputType, len(audio), attempt, azureMaxAttempts, status, logTail(raw))
+		if attempt == azureMaxAttempts || !azureRetryable(status) {
+			break
+		}
+		delay, ok := azureRetryWait(res, attempt)
+		if !ok || !sleepContext(ctx, delay) {
+			break
+		}
+	}
+	if lastErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Azure", "detail": lastErr.Error()})
 		return
 	}
-	defer res.Body.Close()
-
-	raw, _ := io.ReadAll(res.Body)
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		var retryAfter any
-		if ra := res.Header.Get("Retry-After"); ra != "" {
-			retryAfter = ra
+	if status < 200 || status >= 300 {
+		var ra any
+		if retryAfter != "" {
+			ra = retryAfter
 		}
 		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":       fmt.Sprintf("azure returned %d", res.StatusCode),
-			"azureStatus": res.StatusCode,
-			"retryAfter":  retryAfter,
+			"error":       fmt.Sprintf("azure returned %d", status),
+			"azureStatus": status,
+			"retryAfter":  ra,
 			"detail":      string(raw),
 		})
 		return

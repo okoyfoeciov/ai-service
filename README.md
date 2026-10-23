@@ -183,9 +183,11 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 **Azure transcribe formats.** Azure's Fast Transcription endpoint decodes WAV,
 MP3, OGG/Opus and FLAC, but not the `audio/webm;codecs=opus` that comart's
 `MediaRecorder` produces (nor the MP4/AAC fallback). With
-`MAI_TRANSCRIBE_API_KEY`, `/api/transcribe` therefore converts those clips to
-mono 16 kHz OGG/Opus with `ffmpeg` before uploading them; clips Azure already
-decodes are sent untouched. `install.sh` checks that `ffmpeg` is on `PATH`
+`MAI_TRANSCRIBE_API_KEY`, `/api/transcribe` therefore decodes every clip with
+`ffmpeg` and re-encodes it to mono 16 kHz WAV before uploading. Converting
+every clip, rather than trusting its MIME type, also covers containers that are
+mislabelled and Azure's OGG parser rejecting some MediaRecorder conversions.
+`install.sh` checks that `ffmpeg` is on `PATH`
 (Debian/Ubuntu: `sudo apt install ffmpeg`; macOS: `brew install ffmpeg`).
 `/api/transcribe-verbatim` is unaffected: daily-dictation uploads segment files
 Azure accepts as they are.
@@ -298,7 +300,7 @@ Request limits:
 | `/api/memoir/*` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/*` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | local Parakeet (`~/parakeet-ov`), if `PARAKEET_URL` is set | `parakeet-tdt-0.6b-v2` | — |
-| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (WebM/MP4 converted to OGG/Opus by `ffmpeg`) | — |
+| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |
 

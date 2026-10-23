@@ -673,6 +673,14 @@ func TestTranscribeParakeetProvider(t *testing.T) {
 }
 
 func TestTranscribeMAIProvider(t *testing.T) {
+	oldConvert := convertForAzure
+	converted := false
+	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) {
+		converted = true
+		return audio, nil
+	}
+	t.Cleanup(func() { convertForAzure = oldConvert })
+
 	var gotKey, gotDef, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotKey = r.Header.Get("Ocp-Apim-Subscription-Key")
@@ -702,6 +710,9 @@ func TestTranscribeMAIProvider(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "Hello world." {
 		t.Fatalf("got %+v, err %v", out, err)
 	}
+	if !converted {
+		t.Error("WAV input was not passed through the converter")
+	}
 	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version=2025-10-15" || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
 		t.Errorf("got key=%q path=%q def=%q", gotKey, gotPath, gotDef)
 	}
@@ -714,7 +725,7 @@ func TestTranscribeMAIConvertsWebM(t *testing.T) {
 	var convertedInput string
 	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) {
 		convertedInput = string(audio)
-		return []byte("converted-ogg"), nil
+		return []byte("converted-wav"), nil
 	}
 
 	var gotType, gotName, gotAudio string
@@ -749,7 +760,7 @@ func TestTranscribeMAIConvertsWebM(t *testing.T) {
 	if convertedInput != strings.Repeat("z", 1500) {
 		t.Errorf("converter saw %d input bytes, want 1500", len(convertedInput))
 	}
-	if gotType != "audio/ogg" || gotName != "audio.ogg" || gotAudio != "converted-ogg" {
+	if gotType != "audio/wav" || gotName != "audio.wav" || gotAudio != "converted-wav" {
 		t.Errorf("azure got type=%q name=%q audio=%q", gotType, gotName, gotAudio)
 	}
 }
@@ -777,16 +788,78 @@ func TestTranscribeMAIConversionFailure(t *testing.T) {
 	}
 }
 
-func TestAzureNativeType(t *testing.T) {
-	for _, ct := range []string{"audio/wav", "audio/wav; codecs=1", "audio/mpeg", "audio/ogg;codecs=opus", "audio/flac", "audio/x-wav", "application/octet-stream; audio/mpeg"} {
-		want := ct != "application/octet-stream; audio/mpeg"
-		if got := azureNativeType(ct); got != want {
-			t.Errorf("azureNativeType(%q) = %v, want %v", ct, got, want)
+func TestTranscribeMAIRetriesTransient(t *testing.T) {
+	oldBase := azureRetryBase
+	azureRetryBase = 0
+	t.Cleanup(func() { azureRetryBase = oldBase })
+	oldConvert := convertForAzure
+	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForAzure = oldConvert })
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			http.Error(w, `{"error":{"code":"transient"}}`, http.StatusServiceUnavailable)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"phrases":[{"text":"retried.","offsetMilliseconds":0}]}`))
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider:  config.ProviderMAITranscribe,
+			MAITranscribeAPIKey: "mai-key",
+			AzureSpeechEndpoint: srv.URL,
+		},
+		httpShort: srv.Client(),
 	}
-	for _, ct := range []string{"audio/webm", "audio/webm;codecs=opus", "audio/mp4", "video/webm", ""} {
-		if azureNativeType(ct) {
-			t.Errorf("azureNativeType(%q) = true, want false", ct)
-		}
+	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("azure calls = %d, want 2 (one retry)", got)
+	}
+}
+
+func TestTranscribeMAIDoesNotRetryBadRequest(t *testing.T) {
+	oldConvert := convertForAzure
+	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForAzure = oldConvert })
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.Error(w, `{"error":{"code":"invalid_audio"}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider:  config.ProviderMAITranscribe,
+			MAITranscribeAPIKey: "mai-key",
+			AzureSpeechEndpoint: srv.URL,
+		},
+		httpShort: srv.Client(),
+	}
+	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", rec.Code)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("azure calls = %d, want 1 (4xx must not be retried)", got)
+	}
+	var body struct {
+		Error       string `json:"error"`
+		AzureStatus int    `json:"azureStatus"`
+		Detail      string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	if body.AzureStatus != 400 || !strings.Contains(body.Detail, "invalid_audio") {
+		t.Errorf("got %+v, want azureStatus 400 and the invalid_audio detail", body)
 	}
 }

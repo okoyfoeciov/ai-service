@@ -4,66 +4,38 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"mime"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-// Azure Fast Transcription (MAI-Transcribe-2) decodes WAV, MP3, OGG/Opus and
-// FLAC, but not the WebM/Opus that Chromium's MediaRecorder gives comart, nor
-// the MP4/AAC that is Safari's fallback. Those clips are re-encoded before they
-// are uploaded; everything Azure already reads is passed through untouched.
+// Azure Fast Transcription (MAI-Transcribe-2) accepts WAV, MP3, OGG/Opus and
+// FLAC, but not the WebM that Chromium's MediaRecorder gives comart: Azure
+// answers 400 invalid_audio. Its MIME cannot be trusted either — a container
+// can be labelled audio/ogg while the bytes are not — and its OGG parser
+// rejects some MediaRecorder conversions as "file is malformed". So every MAI
+// clip is decoded and re-encoded to mono 16 kHz WAV, the simplest format Azure
+// parses reliably.
 //
 // The conversion shells out to ffmpeg, which has to be on PATH. install.sh
 // checks for it when MAI_TRANSCRIBE_API_KEY is the /api/transcribe provider.
 const (
 	azureConversionTimeout = 60 * time.Second
-	maxConvertedBytes      = 32 << 20 // an OGG/Opus cap; a 60 s clip is ~240 KB
+	maxConvertedBytes      = 32 << 20 // 16 kHz mono PCM: ~1.9 MB for a 60 s clip
 )
-
-// azureNativeTypes are the media types Azure decodes as they are. Parameters
-// such as ";codecs=opus" are ignored when matching.
-var azureNativeTypes = map[string]bool{
-	"audio/flac":   true,
-	"audio/mp3":    true,
-	"audio/mpeg":   true,
-	"audio/ogg":    true,
-	"audio/wav":    true,
-	"audio/wave":   true,
-	"audio/x-flac": true,
-	"audio/x-wav":  true,
-}
 
 // convertForAzure is a variable so tests can stand in for ffmpeg.
 var convertForAzure = convertWithFFmpeg
 
-// prepareForAzure returns audio in a form Azure Fast Transcription accepts,
-// plus the matching media type. Unsupported containers are converted to mono
-// 16 kHz OGG/Opus, a format the MAI endpoint decodes.
-func prepareForAzure(ctx context.Context, audio []byte, contentType string) ([]byte, string, error) {
-	if azureNativeType(contentType) {
-		return audio, contentType, nil
-	}
-	out, err := convertForAzure(ctx, audio)
-	if err != nil {
-		return nil, "", err
-	}
-	return out, "audio/ogg", nil
+// prepareForAzure returns the clip as mono 16 kHz WAV. It always converts:
+// the input's declared type is only a hint, and Azure's parser is least
+// forgiving about containers it did not produce.
+func prepareForAzure(ctx context.Context, audio []byte) ([]byte, error) {
+	return convertForAzure(ctx, audio)
 }
 
-func azureNativeType(contentType string) bool {
-	if mt, _, err := mime.ParseMediaType(contentType); err == nil {
-		return azureNativeTypes[mt]
-	}
-	// A malformed header should not force a transcode on a type we know.
-	mt := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
-	return azureNativeTypes[mt]
-}
-
-// convertWithFFmpeg decodes the clip from stdin and writes mono 16 kHz
-// OGG/Opus to stdout. The output is capped so a very long or hostile input
-// cannot exhaust memory.
+// convertWithFFmpeg decodes the clip from stdin and writes WAV to stdout. The
+// output is capped so a very long or hostile input cannot exhaust memory.
 func convertWithFFmpeg(ctx context.Context, audio []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, azureConversionTimeout)
 	defer cancel()
@@ -72,8 +44,8 @@ func convertWithFFmpeg(ctx context.Context, audio []byte) ([]byte, error) {
 		"-hide_banner", "-loglevel", "error",
 		"-i", "pipe:0",
 		"-vn", "-ac", "1", "-ar", "16000",
-		"-c:a", "libopus", "-b:a", "32k",
-		"-f", "ogg", "pipe:1",
+		"-c:a", "pcm_s16le",
+		"-f", "wav", "pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(audio)
 	out := &limitedBuffer{max: maxConvertedBytes}
