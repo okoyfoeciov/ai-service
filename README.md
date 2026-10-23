@@ -65,8 +65,10 @@ macOS and Linux are supported.
    explain key it asks for OpenRouter first; an empty answer there moves on to
    Claude. For the Memoir key it asks for Claude first; an empty answer there
    moves on to Cerebras. It stops if more than one variable of any route is
-   already set, or if the retired `CEREBRAS_API_KEY` is still there. It never
-   prints a key. The keys are required here: if you cancel, enter nothing, or
+   already set, or if the retired `CEREBRAS_API_KEY` is still there. If
+   `MAI_TRANSCRIBE_API_KEY` is the transcribe provider, it also checks that
+   `ffmpeg` is on `PATH` (the server converts comart's WebM recordings with it).
+   It never prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
    backslash, `$` or backtick.
@@ -163,7 +165,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `PARAKEET_URL` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
 | `PARAKEET_URL` | (empty) | Local Parakeet service URL for `/api/transcribe` (`~/parakeet-ov`, for example `http://127.0.0.1:8790`). Set this, `GROQ_API_KEY` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
-| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY` **or** `PARAKEET_URL`, never more than one. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. |
+| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY` **or** `PARAKEET_URL`, never more than one. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
@@ -177,6 +179,16 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `MEMOIR_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Cerebras ignores it. |
 | `MEMOIR_REASONING_EFFORT` | `medium` | Cerebras only: `low`, `medium`, `high`, or `none` to turn reasoning off. Claude ignores it. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
+
+**Azure transcribe formats.** Azure's Fast Transcription endpoint decodes WAV,
+MP3, OGG/Opus and FLAC, but not the `audio/webm;codecs=opus` that comart's
+`MediaRecorder` produces (nor the MP4/AAC fallback). With
+`MAI_TRANSCRIBE_API_KEY`, `/api/transcribe` therefore converts those clips to
+mono 16 kHz OGG/Opus with `ffmpeg` before uploading them; clips Azure already
+decodes are sent untouched. `install.sh` checks that `ffmpeg` is on `PATH`
+(Debian/Ubuntu: `sudo apt install ffmpeg`; macOS: `brew install ffmpeg`).
+`/api/transcribe-verbatim` is unaffected: daily-dictation uploads segment files
+Azure accepts as they are.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit may only write `data/` and
@@ -286,7 +298,7 @@ Request limits:
 | `/api/memoir/*` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/*` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | local Parakeet (`~/parakeet-ov`), if `PARAKEET_URL` is set | `parakeet-tdt-0.6b-v2` | — |
-| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` | — |
+| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (WebM/MP4 converted to OGG/Opus by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |
 

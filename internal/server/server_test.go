@@ -692,7 +692,7 @@ func TestTranscribeMAIProvider(t *testing.T) {
 		},
 		httpShort: srv.Client(),
 	}
-	rec := postAudio(t, s, "audio/webm", strings.Repeat("z", 1500))
+	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
@@ -704,5 +704,89 @@ func TestTranscribeMAIProvider(t *testing.T) {
 	}
 	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version=2025-10-15" || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
 		t.Errorf("got key=%q path=%q def=%q", gotKey, gotPath, gotDef)
+	}
+}
+
+func TestTranscribeMAIConvertsWebM(t *testing.T) {
+	oldConvert := convertForAzure
+	t.Cleanup(func() { convertForAzure = oldConvert })
+
+	var convertedInput string
+	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) {
+		convertedInput = string(audio)
+		return []byte("converted-ogg"), nil
+	}
+
+	var gotType, gotName, gotAudio string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		file, hdr, err := r.FormFile("audio")
+		if err != nil {
+			t.Errorf("FormFile: %v", err)
+			return
+		}
+		defer file.Close()
+		raw, _ := io.ReadAll(file)
+		gotAudio = string(raw)
+		gotType = hdr.Header.Get("Content-Type")
+		gotName = hdr.Filename
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"combinedPhrases":[{"text":"converted."}]}`))
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider:  config.ProviderMAITranscribe,
+			MAITranscribeAPIKey: "mai-key",
+			AzureSpeechEndpoint: srv.URL,
+		},
+		httpShort: srv.Client(),
+	}
+	rec := postAudio(t, s, "audio/webm;codecs=opus", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if convertedInput != strings.Repeat("z", 1500) {
+		t.Errorf("converter saw %d input bytes, want 1500", len(convertedInput))
+	}
+	if gotType != "audio/ogg" || gotName != "audio.ogg" || gotAudio != "converted-ogg" {
+		t.Errorf("azure got type=%q name=%q audio=%q", gotType, gotName, gotAudio)
+	}
+}
+
+func TestTranscribeMAIConversionFailure(t *testing.T) {
+	oldConvert := convertForAzure
+	t.Cleanup(func() { convertForAzure = oldConvert })
+	convertForAzure = func(context.Context, []byte) ([]byte, error) {
+		return nil, errors.New("ffmpeg exploded")
+	}
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider:  config.ProviderMAITranscribe,
+			MAITranscribeAPIKey: "mai-key",
+			AzureSpeechEndpoint: "http://127.0.0.1:1",
+		},
+	}
+	rec := postAudio(t, s, "audio/webm", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", rec.Code)
+	}
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "could not convert") {
+		t.Errorf("error %q does not mention conversion", errMsg)
+	}
+}
+
+func TestAzureNativeType(t *testing.T) {
+	for _, ct := range []string{"audio/wav", "audio/wav; codecs=1", "audio/mpeg", "audio/ogg;codecs=opus", "audio/flac", "audio/x-wav", "application/octet-stream; audio/mpeg"} {
+		want := ct != "application/octet-stream; audio/mpeg"
+		if got := azureNativeType(ct); got != want {
+			t.Errorf("azureNativeType(%q) = %v, want %v", ct, got, want)
+		}
+	}
+	for _, ct := range []string{"audio/webm", "audio/webm;codecs=opus", "audio/mp4", "video/webm", ""} {
+		if azureNativeType(ct) {
+			t.Errorf("azureNativeType(%q) = true, want false", ct)
+		}
 	}
 }

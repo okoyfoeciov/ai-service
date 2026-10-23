@@ -34,6 +34,7 @@ var extByType = [][2]string{
 	{"m4a", "m4a"},
 	{"mpeg", "mp3"},
 	{"ogg", "ogg"},
+	{"flac", "flac"},
 	{"wav", "wav"},
 	{"webm", "webm"},
 }
@@ -95,7 +96,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	case config.ProviderParakeet:
 		s.transcribeParakeet(w, r, audio, ext, contentType)
 	case config.ProviderMAITranscribe:
-		s.transcribeMAI(w, r, audio, ext, contentType)
+		s.transcribeMAI(w, r, audio, contentType)
 	}
 }
 
@@ -313,7 +314,19 @@ func (s *Server) transcribeParakeet(w http.ResponseWriter, r *http.Request, audi
 // (MAI-Transcribe-2) using MAI_TRANSCRIBE_API_KEY and returns {"text": ...}.
 // Separate from /api/transcribe-verbatim, which uses AZURE_SPEECH_KEY and
 // returns word-level timestamps for daily-dictation.
-func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []byte, ext, contentType string) {
+func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []byte, contentType string) {
+	// comart records audio/webm;codecs=opus, which Azure rejects with
+	// invalid_audio. Convert unsupported containers before upload.
+	audio, contentType, err := prepareForAzure(r.Context(), audio, contentType)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":  "could not convert the recording for Azure",
+			"detail": err.Error(),
+		})
+		return
+	}
+	ext := pickExt(contentType)
+
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	part, err := form.CreatePart(textproto.MIMEHeader{
