@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,14 +10,25 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
+	"sort"
 	"strings"
+	"time"
+
+	"ai-service/internal/config"
 )
 
-const groqURL = "https://api.groq.com/openai/v1/audio/transcriptions"
+var groqURL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
-const groqMaxBytes = 25 * 1024 * 1024 // Groq Whisper per-file ceiling
+const groqMaxBytes = 25 * 1024 * 1024 // per-clip ceiling for /api/transcribe
 
-// extByType maps a recording's MIME type to a file extension Groq recognises.
+var (
+	parakeetPollInterval = 100 * time.Millisecond
+	parakeetPollTimeout  = 2 * time.Minute
+)
+
+// extByType maps a recording's MIME type to a file extension the STT backends
+// recognise.
 var extByType = [][2]string{
 	{"mp4", "mp4"},
 	{"m4a", "m4a"},
@@ -35,16 +47,26 @@ func pickExt(contentType string) string {
 	return "webm"
 }
 
+func (s *Server) shortClient() *http.Client {
+	if s.httpShort != nil {
+		return s.httpShort
+	}
+	return http.DefaultClient
+}
+
 // handleTranscribe sends one clip from comart's mic recorder (Exscriptor) to
-// Groq Whisper and answers {"text": ...}.
+// the configured /api/transcribe provider (Groq Whisper, local Parakeet or
+// Azure MAI-Transcribe-2) and answers {"text": ...}.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "an audio type", func(mt string) bool {
 		return strings.HasPrefix(mt, "audio/") || strings.HasPrefix(mt, "video/")
 	}) {
 		return
 	}
-	if s.cfg.GroqAPIKey == "" {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "server not configured: GROQ_API_KEY missing"})
+	if s.cfg.TranscribeProvider == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "server not configured: none of GROQ_API_KEY, PARAKEET_URL, MAI_TRANSCRIBE_API_KEY is set",
+		})
 		return
 	}
 	contentType := r.Header.Get("Content-Type")
@@ -67,6 +89,22 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	ext := pickExt(contentType)
 
+	switch s.cfg.TranscribeProvider {
+	case config.ProviderGroq:
+		s.transcribeGroq(w, r, audio, ext, contentType)
+	case config.ProviderParakeet:
+		s.transcribeParakeet(w, r, audio, ext, contentType)
+	case config.ProviderMAITranscribe:
+		s.transcribeMAI(w, r, audio, ext, contentType)
+	}
+}
+
+func (s *Server) transcribeGroq(w http.ResponseWriter, r *http.Request, audio []byte, ext, contentType string) {
+	model := s.cfg.GroqModel
+	if model == "" {
+		model = "whisper-large-v3-turbo"
+	}
+
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	part, _ := form.CreatePart(textproto.MIMEHeader{
@@ -74,7 +112,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		"Content-Type":        {contentType},
 	})
 	_, _ = part.Write(audio)
-	_ = form.WriteField("model", s.cfg.GroqModel)
+	_ = form.WriteField("model", model)
 	_ = form.WriteField("response_format", "json")
 	_ = form.WriteField("temperature", "0")
 	_ = form.Close()
@@ -86,7 +124,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Content-Type", form.FormDataContentType())
 
-	res, err := s.httpShort.Do(req)
+	res, err := s.shortClient().Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Groq", "detail": err.Error()})
 		return
@@ -113,6 +151,240 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 	}
 	raw, _ := io.ReadAll(res.Body)
-	_ = json.Unmarshal(raw, &data)
+	if err := json.Unmarshal(raw, &data); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "groq returned unparseable JSON", "detail": string(raw)})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(data.Text)})
+}
+
+// transcribeParakeet submits the clip to the local Parakeet service
+// (~/parakeet-ov/service.py: POST /v1/jobs -> 202 {"job_id": ...}, then polls
+// GET /v1/jobs/{job_id} until "done" or "error") and joins its lines into a
+// single transcript string.
+func (s *Server) transcribeParakeet(w http.ResponseWriter, r *http.Request, audio []byte, ext, contentType string) {
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreatePart(textproto.MIMEHeader{
+		"Content-Disposition": {fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, ext)},
+		"Content-Type":        {contentType},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+		return
+	}
+	_, _ = part.Write(audio)
+	_ = form.Close()
+
+	baseURL := strings.TrimSuffix(s.cfg.ParakeetURL, "/")
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL+"/v1/jobs", &body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+		return
+	}
+	req.Header.Set("Content-Type", form.FormDataContentType())
+
+	hc := s.shortClient()
+	res, err := hc.Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Parakeet", "detail": err.Error()})
+		return
+	}
+	raw, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		var retryAfter any
+		if ra := res.Header.Get("Retry-After"); ra != "" {
+			retryAfter = ra
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":          fmt.Sprintf("parakeet returned %d", res.StatusCode),
+			"parakeetStatus": res.StatusCode,
+			"retryAfter":     retryAfter,
+			"detail":         string(raw),
+		})
+		return
+	}
+
+	var submitted struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(raw, &submitted); err != nil || submitted.JobID == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "parakeet returned no job_id", "detail": string(raw)})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), parakeetPollTimeout)
+	defer cancel()
+
+	jobURL := baseURL + "/v1/jobs/" + url.PathEscape(submitted.JobID)
+	for {
+		timer := time.NewTimer(parakeetPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if r.Context().Err() != nil {
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "parakeet timed out"})
+			return
+		case <-timer.C:
+		}
+
+		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
+		pollRes, err := hc.Do(pollReq)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Parakeet", "detail": err.Error()})
+			return
+		}
+		pollRaw, _ := io.ReadAll(pollRes.Body)
+		pollRes.Body.Close()
+
+		if pollRes.StatusCode < 200 || pollRes.StatusCode >= 300 {
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error":          fmt.Sprintf("parakeet returned %d", pollRes.StatusCode),
+				"parakeetStatus": pollRes.StatusCode,
+				"detail":         string(pollRaw),
+			})
+			return
+		}
+
+		var job struct {
+			Status string  `json:"status"`
+			Error  *string `json:"error"`
+			Result *struct {
+				Lines []struct {
+					Text string `json:"text"`
+				} `json:"lines"`
+				Words []struct {
+					Text string `json:"text"`
+				} `json:"words"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(pollRaw, &job); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "parakeet returned unparseable JSON", "detail": string(pollRaw)})
+			return
+		}
+
+		switch job.Status {
+		case "queued", "processing":
+			continue
+		case "error":
+			detail := ""
+			if job.Error != nil {
+				detail = *job.Error
+			}
+			msg := "parakeet job failed"
+			if detail != "" {
+				msg = "parakeet: " + detail
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": msg, "detail": detail})
+			return
+		case "done":
+			var parts []string
+			if job.Result != nil {
+				for _, l := range job.Result.Lines {
+					if t := strings.TrimSpace(l.Text); t != "" {
+						parts = append(parts, t)
+					}
+				}
+				if len(parts) == 0 {
+					for _, wd := range job.Result.Words {
+						if t := strings.TrimSpace(wd.Text); t != "" {
+							parts = append(parts, t)
+						}
+					}
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"text": strings.Join(parts, " ")})
+			return
+		default:
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("parakeet returned unexpected status %q", job.Status)})
+			return
+		}
+	}
+}
+
+// transcribeMAI sends the clip to Azure Speech Fast Transcription
+// (MAI-Transcribe-2) using MAI_TRANSCRIBE_API_KEY and returns {"text": ...}.
+// Separate from /api/transcribe-verbatim, which uses AZURE_SPEECH_KEY and
+// returns word-level timestamps for daily-dictation.
+func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []byte, ext, contentType string) {
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreatePart(textproto.MIMEHeader{
+		"Content-Disposition": {fmt.Sprintf(`form-data; name="audio"; filename="audio.%s"`, ext)},
+		"Content-Type":        {contentType},
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+		return
+	}
+	_, _ = part.Write(audio)
+	_ = form.WriteField("definition", `{"locales":["en"],"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"},"diarization":{"enabled":false}}`)
+	_ = form.Close()
+
+	endpoint := s.cfg.AzureSpeechEndpoint
+	if endpoint == "" {
+		endpoint = "https://eastus.api.cognitive.microsoft.com"
+	}
+	u := strings.TrimSuffix(endpoint, "/") +
+		"/speechtotext/transcriptions:transcribe?api-version=" + azureAPIVersion
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, u, &body)
+	req.Header.Set("Ocp-Apim-Subscription-Key", s.cfg.MAITranscribeAPIKey)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+
+	res, err := s.shortClient().Do(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Azure", "detail": err.Error()})
+		return
+	}
+	defer res.Body.Close()
+
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		var retryAfter any
+		if ra := res.Header.Get("Retry-After"); ra != "" {
+			retryAfter = ra
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error":       fmt.Sprintf("azure returned %d", res.StatusCode),
+			"azureStatus": res.StatusCode,
+			"retryAfter":  retryAfter,
+			"detail":      string(raw),
+		})
+		return
+	}
+
+	var az struct {
+		CombinedPhrases []struct {
+			Text string `json:"text"`
+		} `json:"combinedPhrases"`
+		Phrases []azurePhrase `json:"phrases"`
+	}
+	if err := json.Unmarshal(raw, &az); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "azure returned unparseable JSON", "detail": string(raw)})
+		return
+	}
+
+	phrases := append([]azurePhrase(nil), az.Phrases...)
+	sort.Slice(phrases, func(i, j int) bool { return phrases[i].OffsetMs < phrases[j].OffsetMs })
+	var parts []string
+	for _, p := range phrases {
+		if t := strings.TrimSpace(p.Text); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	if len(parts) == 0 {
+		for _, cp := range az.CombinedPhrases {
+			if t := strings.TrimSpace(cp.Text); t != "" {
+				parts = append(parts, t)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"text": strings.Join(parts, " ")})
 }

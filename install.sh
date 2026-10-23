@@ -178,11 +178,12 @@ ask_key() {
 }
 
 # KEYS: every API key the service always needs, with what it is used for.
-# /api/explain's key is not here: it takes exactly one of OPENROUTER_API_KEY and
-# CLAUDE_API_KEY, and Memoir's exactly one of MEMOIR_CLAUDE_API_KEY and
-# MEMOIR_CEREBRAS_API_KEY. The block below handles both.
+# /api/transcribe's variable is not here (exactly one of GROQ_API_KEY,
+# PARAKEET_URL and MAI_TRANSCRIBE_API_KEY), nor is /api/explain's (exactly one
+# of OPENROUTER_API_KEY and CLAUDE_API_KEY) or Memoir's (exactly one of
+# MEMOIR_CLAUDE_API_KEY and MEMOIR_CEREBRAS_API_KEY). The block below handles
+# all three routes.
 KEYS=(
-  "GROQ_API_KEY|transcription via Groq Whisper"
   "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
 )
 if [ "$DRY_RUN" = 1 ]; then
@@ -198,8 +199,15 @@ else
     say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
-  # The service refuses to start when both explain keys are set (the model
-  # routing would be unclear). Stop here instead of restarting it into that.
+  # The service refuses to start when more than one provider for a route is set
+  # (the routing would be unclear). Stop here instead of restarting it into that.
+  transcribe_set=0
+  if env_set GROQ_API_KEY; then transcribe_set=$((transcribe_set + 1)); fi
+  if env_set PARAKEET_URL; then transcribe_set=$((transcribe_set + 1)); fi
+  if env_set MAI_TRANSCRIBE_API_KEY; then transcribe_set=$((transcribe_set + 1)); fi
+  if [ "$transcribe_set" -gt 1 ]; then
+    die "ai-service.env sets more than one of GROQ_API_KEY, PARAKEET_URL and MAI_TRANSCRIBE_API_KEY, so it is unclear which provider answers /api/transcribe and the service would refuse to start. Keep one and set the others to empty (KEY=) or comment them out, then re-run."
+  fi
   if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
     die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
   fi
@@ -219,6 +227,18 @@ else
     fi
     ask_key "$key" "$purpose"
   done
+  if env_set PARAKEET_URL; then
+    say "[d] ai-service.env: PARAKEET_URL is set — /api/transcribe runs on local Parakeet"
+  elif env_set MAI_TRANSCRIBE_API_KEY; then
+    say "[d] ai-service.env: MAI_TRANSCRIBE_API_KEY is set — /api/transcribe runs on Azure MAI-Transcribe-2"
+  elif env_set GROQ_API_KEY; then
+    say "[d] ai-service.env: GROQ_API_KEY is set — /api/transcribe runs on Groq"
+  else
+    # None: ask for local Parakeet first, then MAI-Transcribe-2, then Groq.
+    ask_key PARAKEET_URL "transcription via local Parakeet (e.g. http://127.0.0.1:8790). Leave it empty to use Azure MAI-Transcribe-2 or Groq instead" 1 ||
+      ask_key MAI_TRANSCRIBE_API_KEY "transcription via Azure MAI-Transcribe-2. Leave it empty to use a Groq key instead" 1 ||
+      ask_key GROQ_API_KEY "transcription via Groq Whisper"
+  fi
   if env_set OPENROUTER_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_API_KEY is set — /api/explain runs on OpenRouter"
   elif env_set CLAUDE_API_KEY; then

@@ -515,3 +515,194 @@ func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 		})
 	}
 }
+
+func postAudio(t *testing.T, s *Server, contentType string, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
+	s := &Server{}
+	rec := postAudio(t, s, "audio/webm", strings.Repeat("a", 1500))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500", rec.Code)
+	}
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "PARAKEET_URL") || !strings.Contains(errMsg, "MAI_TRANSCRIBE_API_KEY") {
+		t.Fatalf("error %q does not name all three variables", errMsg)
+	}
+
+	s = &Server{cfg: config.Config{TranscribeProvider: config.ProviderParakeet, ParakeetURL: "http://127.0.0.1:8790"}}
+	rec = postAudio(t, s, "audio/webm", strings.Repeat("a", 500))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("short clip: status %d, want 422", rec.Code)
+	}
+}
+
+func TestTranscribeGroqProvider(t *testing.T) {
+	var gotAuth, gotModel, gotFile string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = r.ParseMultipartForm(4 << 20)
+		gotModel = r.FormValue("model")
+		if f, hdr, err := r.FormFile("file"); err == nil {
+			defer f.Close()
+			b, _ := io.ReadAll(f)
+			gotFile = hdr.Filename + ":" + string(b[:4])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"  hello from groq  "}`))
+	}))
+	defer srv.Close()
+
+	oldURL := groqURL
+	groqURL = srv.URL
+	defer func() { groqURL = oldURL }()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider: config.ProviderGroq,
+			GroqAPIKey:         "g-secret",
+			GroqModel:          "whisper-large-v3-turbo",
+		},
+		httpShort: srv.Client(),
+	}
+	rec := postAudio(t, s, "audio/mp4", strings.Repeat("abcd", 400))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "hello from groq" {
+		t.Fatalf("got %+v, err %v", out, err)
+	}
+	if gotAuth != "Bearer g-secret" || gotModel != "whisper-large-v3-turbo" || gotFile != "audio.mp4:abcd" {
+		t.Errorf("upstream got auth=%q model=%q file=%q", gotAuth, gotModel, gotFile)
+	}
+}
+
+func TestTranscribeParakeetProvider(t *testing.T) {
+	oldInterval := parakeetPollInterval
+	parakeetPollInterval = 5 * time.Millisecond
+	defer func() { parakeetPollInterval = oldInterval }()
+
+	t.Run("polls until done and joins lines", func(t *testing.T) {
+		var polls atomic.Int32
+		var gotFile string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+				_ = r.ParseMultipartForm(4 << 20)
+				if f, hdr, err := r.FormFile("file"); err == nil {
+					defer f.Close()
+					b, _ := io.ReadAll(f)
+					gotFile = hdr.Filename + ":" + fmt.Sprint(len(b))
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job_id":"job123","sha256":"abc"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job123":
+				switch polls.Add(1) {
+				case 1:
+					_, _ = w.Write([]byte(`{"job_id":"job123","status":"queued","result":null,"error":null}`))
+				case 2:
+					_, _ = w.Write([]byte(`{"job_id":"job123","status":"processing","result":null,"error":null}`))
+				default:
+					_, _ = w.Write([]byte(`{"job_id":"job123","status":"done","result":{"lines":[{"text":"First sentence.","start":0.1},{"text":"Second sentence.","start":1.5}],"words":[]},"error":null}`))
+				}
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		s := &Server{
+			cfg: config.Config{
+				TranscribeProvider: config.ProviderParakeet,
+				ParakeetURL:        srv.URL,
+			},
+			httpShort: srv.Client(),
+		}
+		rec := postAudio(t, s, "audio/webm;codecs=opus", strings.Repeat("x", 1500))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "First sentence. Second sentence." {
+			t.Fatalf("got %+v, err %v", out, err)
+		}
+		if gotFile != "audio.webm:1500" {
+			t.Errorf("got file %q, want audio.webm:1500", gotFile)
+		}
+		if polls.Load() < 3 {
+			t.Errorf("polls = %d, want >= 3", polls.Load())
+		}
+	})
+
+	t.Run("job error becomes 502", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job_id":"jerr"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"job_id":"jerr","status":"error","result":null,"error":"audio decode failed"}`))
+		}))
+		defer srv.Close()
+
+		s := &Server{
+			cfg:       config.Config{TranscribeProvider: config.ProviderParakeet, ParakeetURL: srv.URL},
+			httpShort: srv.Client(),
+		}
+		rec := postAudio(t, s, "audio/webm", strings.Repeat("x", 1500))
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status %d, want 502", rec.Code)
+		}
+		if got := decodeError(t, rec); !strings.Contains(got, "audio decode failed") {
+			t.Errorf("error %q", got)
+		}
+	})
+}
+
+func TestTranscribeMAIProvider(t *testing.T) {
+	var gotKey, gotDef, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("Ocp-Apim-Subscription-Key")
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		_ = r.ParseMultipartForm(4 << 20)
+		gotDef = r.FormValue("definition")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"phrases":[{"text":"world.","offsetMilliseconds":800},{"text":"Hello","offsetMilliseconds":100}]}`))
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider:  config.ProviderMAITranscribe,
+			MAITranscribeAPIKey: "mai-key",
+			AzureSpeechEndpoint: srv.URL,
+		},
+		httpShort: srv.Client(),
+	}
+	rec := postAudio(t, s, "audio/webm", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "Hello world." {
+		t.Fatalf("got %+v, err %v", out, err)
+	}
+	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version=2025-10-15" || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
+		t.Errorf("got key=%q path=%q def=%q", gotKey, gotPath, gotDef)
+	}
+}

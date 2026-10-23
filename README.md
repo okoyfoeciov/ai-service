@@ -25,7 +25,7 @@ calls it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"remaining":null,"low":false}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*`). Sends it to Groq Whisper and returns `{"text": …}`. |
+| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*`). Sends it to the configured STT provider (Groq Whisper, local Parakeet at `~/parakeet-ov`, or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn | Proofreads an entry (`{"content": …}`, max 12000 characters). Plain JSON. |
 | `POST /api/memoir/paraphrase` | Cairn | Other ways to say a selected span (`{"text": …}`, max 600 characters). Plain JSON. |
@@ -54,15 +54,18 @@ macOS and Linux are supported.
    `brew install go`).
 2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
-   For each empty API key (`GROQ_API_KEY`, `AZURE_SPEECH_KEY`, one key for
+   For each empty API key (`AZURE_SPEECH_KEY`, one variable for `/api/transcribe`:
+   `PARAKEET_URL`, `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`, one key for
    `/api/explain`: `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`, and one for
    `/api/memoir/*`: `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`) it asks
    in a hidden prompt (a macOS dialog; on Linux a
    zenity dialog, or a hidden terminal prompt without a display). For the
+   transcribe provider it asks for `PARAKEET_URL` first, then
+   `MAI_TRANSCRIBE_API_KEY`, then `GROQ_API_KEY`. For the
    explain key it asks for OpenRouter first; an empty answer there moves on to
    Claude. For the Memoir key it asks for Claude first; an empty answer there
-   moves on to Cerebras. It stops if both keys of either pair are already set,
-   or if the retired `CEREBRAS_API_KEY` is still there. It never
+   moves on to Cerebras. It stops if more than one variable of any route is
+   already set, or if the retired `CEREBRAS_API_KEY` is still there. It never
    prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -157,8 +160,10 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. |
+| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `PARAKEET_URL` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
+| `PARAKEET_URL` | (empty) | Local Parakeet service URL for `/api/transcribe` (`~/parakeet-ov`, for example `http://127.0.0.1:8790`). Set this, `GROQ_API_KEY` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
+| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY` **or** `PARAKEET_URL`, never more than one. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
@@ -167,7 +172,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/*`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
 | `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
 | `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
-| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim`. |
+| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim` and `MAI_TRANSCRIBE_API_KEY`. |
 | `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/*`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `MEMOIR_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Cerebras ignores it. |
 | `MEMOIR_REASONING_EFFORT` | `medium` | Cerebras only: `low`, `medium`, `high`, or `none` to turn reasoning off. Claude ignores it. |
@@ -190,9 +195,11 @@ event and `/api/memoir/*` answer 503, each naming the missing key, until it is
 set.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
-manager keeps retrying every 10 s) when the explain or the Memoir route would
-be unclear:
+manager keeps retrying every 10 s) when the transcribe, explain or Memoir route
+would be unclear:
 
+- more than one of `GROQ_API_KEY`, `PARAKEET_URL` and `MAI_TRANSCRIBE_API_KEY`
+  is set, or `PARAKEET_URL` is not a valid `http(s)` URL;
 - both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
   as unset, so leave the unused key as an empty `KEY=` line (that also beats
   a copy of the variable in your login environment, because `run.sh` sources the
@@ -208,8 +215,9 @@ be unclear:
 - the retired `CEREBRAS_API_KEY` is still set. It is `MEMOIR_CEREBRAS_API_KEY`
   now; the old name would otherwise sit in the file doing nothing.
 
-Why: with two possible routes it is easy to believe one model answers while
+Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the route it chose, for example
+`transcribe route: local Parakeet (http://127.0.0.1:8790)`,
 `explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
 same for `memoir route: …`, and every Claude request whose stream starts logs
 the model it asked for next to the model the API says answered (`llm[Claude/explain]`
@@ -277,6 +285,10 @@ Request limits:
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
 | `/api/memoir/*` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/*` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
+| `/api/transcribe` | local Parakeet (`~/parakeet-ov`), if `PARAKEET_URL` is set | `parakeet-tdt-0.6b-v2` | — |
+| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` | — |
+| `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
+| `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
 (`internal/llm`'s `Client`) serves both. The only difference is the request fields for

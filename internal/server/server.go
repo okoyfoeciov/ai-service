@@ -43,9 +43,9 @@ type Server struct {
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort  *http.Client // Groq transcription (bounded)
+	httpShort  *http.Client // /api/transcribe: Groq, local Parakeet or Azure MAI-Transcribe-2 (bounded)
 	httpStream *http.Client // model calls. No timeout: a stream can run for minutes; ctx-cancelled
-	httpAzure  *http.Client // Azure verbatim transcription (bounded, generous: files up to ~2 h)
+	httpAzure  *http.Client // /api/transcribe-verbatim: Azure verbatim transcription (bounded, generous: files up to ~2 h)
 
 	// inflight counts running handlers, so Drain can wait for handlers that
 	// http.Server.Close cut off.

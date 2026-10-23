@@ -94,6 +94,7 @@ func main() {
 		app.Drain(dctx)
 	}()
 
+	log.Printf("transcribe route: %s", cfg.TranscribeRoute())
 	log.Printf("explain route: %s", cfg.ExplainRoute())
 	log.Printf("memoir route: %s", cfg.MemoirRoute())
 	log.Printf("ai-service listening on http://%s  (cache: %s)", cfg.ListenAddr, dbPath)

@@ -11,7 +11,12 @@ start with both keys set. `/api/memoir/*` runs the same way: on Claude
 (`claude-opus-5-5`, effort `medium`) when `MEMOIR_CLAUDE_API_KEY` is set, or on
 Cerebras (`qwen-3.8-27b`) when `MEMOIR_CEREBRAS_API_KEY` is. Every Memoir
 variable starts with `MEMOIR_`, and the same refusal applies to both keys.
-`/api/transcribe-verbatim` on Azure Speech (`MAI-Transcribe-2`).
+`/api/transcribe` (comart's Exscriptor mic recorder) runs on Groq
+(`GROQ_API_KEY`), local Parakeet (`PARAKEET_URL`, `~/parakeet-ov` on
+`127.0.0.1:8790`), or Azure Speech (`MAI_TRANSCRIBE_API_KEY`,
+`MAI-Transcribe-2`); `config.Load` refuses to start with more than one of the
+three set. `/api/transcribe-verbatim` (daily-dictation's import pipeline) is a
+separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
 
 ## This is a BACKEND. The front ends live elsewhere.
 
