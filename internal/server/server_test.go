@@ -89,7 +89,7 @@ func TestLoopbackGuard(t *testing.T) {
 // handler that would spend an account.
 func TestLoopbackGuardCoversPosts(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"/api/transcribe", "/api/explain", "/api/memoir/check", "/api/memoir/paraphrase"} {
+	for _, path := range []string{"/api/transcribe", "/api/explain", "/api/memoir/check"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Origin", "https://evil.example")
@@ -140,10 +140,6 @@ func TestMemoirCapsCountUTF16(t *testing.T) {
 		wantStatus              int
 		wantError               string
 	}{
-		{"paraphrase 600 curly quotes", "/api/memoir/paraphrase", "text", strings.Repeat("’", 600), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
-		{"paraphrase 601 curly quotes", "/api/memoir/paraphrase", "text", strings.Repeat("’", 601), http.StatusBadRequest, "selection too long (max 600 chars)"},
-		{"paraphrase 300 emoji", "/api/memoir/paraphrase", "text", strings.Repeat("😀", 300), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
-		{"paraphrase 301 emoji", "/api/memoir/paraphrase", "text", strings.Repeat("😀", 301), http.StatusBadRequest, "selection too long (max 600 chars)"},
 		{"check 12000 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
 		{"check 12001 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
 	}
@@ -261,52 +257,6 @@ func testLLM(transport http.RoundTripper) *llm.Client {
 		&http.Client{Transport: transport})
 }
 
-func TestMemoirParaphraseUnusableReply(t *testing.T) {
-	cases := []struct {
-		name, reply  string
-		wantStatus   int
-		wantError    string
-		wantVariants int
-	}{
-		{"unparseable", "Sorry, I can't help with that.", http.StatusBadGateway, "The model returned nothing usable. Try again.", 0},
-		{"deliberately empty", `{"variants":[]}`, http.StatusOK, "", 0},
-		{"one variant", `{"variants":[{"label":"Plain","text":"I went home early."}]}`, http.StatusOK, "", 1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &Server{memoirLLM: testLLM(fakeModel{reply: tc.reply})}
-			rec := postJSON(t, s, "/api/memoir/paraphrase", map[string]string{"text": "I left for home early."})
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			var body struct {
-				Error    *string          `json:"error"`
-				Warning  *string          `json:"warning"`
-				Variants []map[string]any `json:"variants"`
-				Raw      string           `json:"raw"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatal(err)
-			}
-			if body.Raw != tc.reply {
-				t.Errorf("raw %q, want %q", body.Raw, tc.reply)
-			}
-			if tc.wantError != "" {
-				if body.Error == nil || *body.Error != tc.wantError {
-					t.Fatalf("error %v, want %q", body.Error, tc.wantError)
-				}
-				return
-			}
-			if body.Error != nil || body.Warning != nil {
-				t.Errorf("unexpected error %v / warning %v", body.Error, body.Warning)
-			}
-			if body.Variants == nil || len(body.Variants) != tc.wantVariants {
-				t.Errorf("variants %v, want %d", body.Variants, tc.wantVariants)
-			}
-		})
-	}
-}
-
 // explainServer builds a Server whose model client fails fast without the
 // network and whose MW client answers from cache.
 func explainServer(t *testing.T, cache mw.Cache) *Server {
@@ -402,7 +352,6 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 		{"/api/explain", "text/plain;charset=UTF-8"},
 		{"/api/explain", ""},
 		{"/api/memoir/check", "application/x-www-form-urlencoded"},
-		{"/api/memoir/paraphrase", "multipart/form-data; boundary=x"},
 		{"/api/transcribe", "text/plain"},
 		{"/api/transcribe", ""},
 	} {

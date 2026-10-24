@@ -162,8 +162,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleCredits(w, r)
 	case p == "/api/memoir/check" && r.Method == http.MethodPost:
 		s.handleMemoirCheck(w, r)
-	case p == "/api/memoir/paraphrase" && r.Method == http.MethodPost:
-		s.handleMemoirParaphrase(w, r)
 	case p == "/" && r.Method == http.MethodGet:
 		writeRoot(w)
 	default:

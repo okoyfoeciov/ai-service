@@ -10,22 +10,20 @@ import (
 	"ai-service/internal/memoir"
 )
 
-// Memoir handlers for Cairn's Memoir tab: proofread-an-entry (check) and
-// other-ways-to-say-it (paraphrase). The limits and response shapes are what
-// Cairn's src/memoir.ts expects; keep them stable. Unparsed model text is
-// never handed back as a correction.
+// Memoir handlers for Cairn's Memoir tab: proofread an entry (check). The
+// limits and response shapes are what Cairn's src/memoir.ts expects; keep them
+// stable. Unparsed model text is never handed back as a correction.
 //
-// Unlike /api/explain these are non-streaming JSON: the model must finish
-// before any alternative is usable (one truncated variant list loses every
-// alternative, not one), so the handler collects the stream and responds once.
+// Unlike /api/explain this is non-streaming JSON: the client renders the
+// finished result, so the handler collects the stream and responds once.
 // The model is Server.memoirLLM (Claude Opus 5.5 at medium effort by default,
 // or Qwen 3.8 27B on Cerebras when MEMOIR_CEREBRAS_API_KEY is set instead),
 // separate from the one /api/explain uses. There is no per-request model
 // choice.
 
 // utf16Len counts s in UTF-16 code units — JavaScript's String.length, which
-// is what Cairn measures its Memoir caps in. len(s) counts UTF-8 bytes, which
-// turns a 600-character selection of curly quotes into 1800. A rune with no
+// is what Cairn measures its Memoir cap in. len(s) counts UTF-8 bytes, which
+// turns a 12000-character entry of curly quotes into 36000. A rune with no
 // UTF-16 form counts as 1 (invalid UTF-8 already decodes to U+FFFD).
 func utf16Len(s string) int {
 	n := 0
@@ -117,58 +115,4 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = warning
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// handleMemoirParaphrase — POST /api/memoir/paraphrase {"text": "..."}.
-func (s *Server) handleMemoirParaphrase(w http.ResponseWriter, r *http.Request) {
-	if !requireType(w, r, "application/json", isJSON) {
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
-	var body struct {
-		Text string `json:"text"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		jsonError(w, "Invalid JSON.", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(body.Text) == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"source": "", "variants": []memoir.Variant{}, "raw": ""})
-		return
-	}
-	if utf16Len(body.Text) > memoir.ParaphraseMaxChars {
-		jsonError(w, "selection too long (max 600 chars)", http.StatusBadRequest)
-		return
-	}
-	if s.memoirLLM == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."})
-		return
-	}
-
-	rawText, res := s.memoirComplete(r, memoir.BuildParaphrasePrompt(body.Text))
-	if !res.OK {
-		msg := res.Message
-		if msg == "" {
-			msg = "Provider error (" + res.Code + ")."
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": msg, "raw": rawText})
-		return
-	}
-	parsed, ok := memoir.TryParseParaphraseResult(rawText)
-	if !ok {
-		// An unparseable reply is a failure, not "no alternatives": a 200 with an
-		// empty list tells the learner their sentence is already the plainest
-		// phrasing (Cairn does not read `warning`), while a non-OK status shows
-		// as "Could not rephrase right now." A deliberate {"variants":[]} parses
-		// fine and still answers 200 with an empty list below.
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error": "The model returned nothing usable. Try again.", "raw": rawText,
-		})
-		return
-	}
-	variants := memoir.NormalizeVariants(parsed, body.Text)
-	if variants == nil {
-		variants = []memoir.Variant{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"source": body.Text, "variants": variants, "raw": rawText})
 }

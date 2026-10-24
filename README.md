@@ -5,8 +5,8 @@ speaking JSON and SSE. It has two clients:
 
 - the **comart Chrome extension** (`~/comart`): word explanations,
   pronunciations and transcription;
-- **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading and
-  paraphrasing of journal entries.
+- **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading of
+  journal entries.
 
 **There is no UI here.** Both clients carry their own pages. `GET /` answers
 one line of plain text and nothing else. Do not add a template, a static
@@ -28,10 +28,9 @@ calls it.
 | `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*`). Sends it to the configured STT provider (Groq Whisper, local Parakeet at `~/parakeet-ov`, or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn | Proofreads an entry (`{"content": …}`, max 12000 characters). Plain JSON. |
-| `POST /api/memoir/paraphrase` | Cairn | Other ways to say a selected span (`{"text": …}`, max 600 characters). Plain JSON. |
 
-The Memoir routes do not stream: one truncated list would lose every
-alternative, so the server collects the whole answer and replies once.
+The Memoir route does not stream: the client renders the finished result, so
+the server collects the whole answer and replies once.
 
 ## Install, update, uninstall
 
@@ -380,13 +379,13 @@ internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
-internal/memoir     Memoir prompts (check.txt, paraphrase.txt) and result parsing
+internal/memoir     Memoir prompt (check.txt) and result parsing
 internal/llm        streaming model clients: chat completions (OpenRouter, Cerebras) and Claude
 install.sh, uninstall.sh, run.sh
 ```
 
 The prompt `.txt` files are product text. `TestPromptParity` pins the Memoir
-prompts byte for byte, so a change there must be deliberate.
+prompt byte for byte, so a change there must be deliberate.
 
 ## Build and test
 

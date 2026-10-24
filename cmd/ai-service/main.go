@@ -1,6 +1,6 @@
 // Command ai-service is the localhost LLM backend for the comart Chrome
 // extension (word explanations, pronunciations, mic transcription) and Cairn's
-// Memoir tab (proofreading and paraphrase). It binds to loopback and nothing
+// Memoir tab (proofreading). It binds to loopback and nothing
 // fronts it, so loopback is the trust boundary. run.sh starts it, under the
 // launchd agent (macOS) or systemd user unit (Linux) that install.sh writes.
 package main

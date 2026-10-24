@@ -42,9 +42,9 @@ separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
   copy of a client would have to be kept in step with the real one by hand.
 - **The client API stays as it is.** The comart extension was built against it
   with no server change: no CORS, no auth, no new route. Keep that. Memoir's
-  two routes (`/api/memoir/check`, `/api/memoir/paraphrase`) and
-  daily-dictation's one (`/api/transcribe-verbatim`) are the deliberate
-  additions. Change a route only together with the client that calls it.
+  one route (`/api/memoir/check`) and daily-dictation's one
+  (`/api/transcribe-verbatim`) are the deliberate additions. Change a route
+  only together with the client that calls it.
 
 ## Hosting and security
 
@@ -66,7 +66,7 @@ separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
   `none`): without it Qwen breaks the JSON contract and edits text it must
   leave alone.
 - `internal/prompt/*.txt` and `internal/memoir/*.txt` are product prompts.
-  `TestPromptParity` pins the Memoir ones by hash. Do not edit them in passing.
+  `TestPromptParity` pins the Memoir prompt by hash. Do not edit it in passing.
 
 ## Version control and secrets
 
