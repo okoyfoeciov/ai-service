@@ -29,11 +29,11 @@ case "$(uname -s)" in
     if systemctl --user disable --now "$UNIT" >/dev/null 2>&1; then
       echo "stopped and disabled $UNIT"
     else
-      echo "$UNIT was not installed"
+      echo "$UNIT was not running (or systemd could not be reached)"
     fi
     if [ -f "$UNIT_FILE" ]; then
       rm -f "$UNIT_FILE"
-      systemctl --user daemon-reload
+      systemctl --user daemon-reload || true
       echo "removed $UNIT_FILE"
     fi
     ;;

@@ -1,50 +1,36 @@
 # ai-service — project notes
 
 One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves three clients: the
-comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`), and
+comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`) and
 daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
-security model and models. `/api/explain` runs on OpenRouter
-(`google/gemini-3.8-flash`) or, when `CLAUDE_API_KEY` is set instead, on the
-Claude Platform (`claude-opus-5-5`, effort `medium`); `config.Load` refuses to
-start with both keys set. `/api/memoir/*` runs the same way: on Claude
-(`claude-opus-5-5`, effort `medium`) when `MEMOIR_CLAUDE_API_KEY` is set, or on
-Cerebras (`qwen-3.8-27b`) when `MEMOIR_CEREBRAS_API_KEY` is. Every Memoir
-variable starts with `MEMOIR_`, and the same refusal applies to both keys.
-`/api/transcribe` (comart's Exscriptor mic recorder) runs on Groq
-(`GROQ_API_KEY`), local Parakeet (`PARAKEET_URL`, `~/parakeet-ov` on
-`127.0.0.1:8790`), or Azure Speech (`MAI_TRANSCRIBE_API_KEY`,
-`MAI-Transcribe-2`); `config.Load` refuses to start with more than one of the
-three set. The Azure route needs `ffmpeg` on `PATH`, because comart records
-WebM and Azure only decodes WAV/MP3/OGG/FLAC: `internal/server/audio.go`
-re-encodes every clip to mono 16 kHz WAV first. `/api/transcribe-verbatim` (daily-dictation's import pipeline) is a
-separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
+security model and models.
+
+In short, `config.Load` refuses to start when a route has more than one
+possible provider: `/api/transcribe` has three (Groq, local Parakeet, Azure
+MAI-Transcribe-2); `/api/explain` and `/api/memoir/check` have two each. Every
+Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
+`/api/explain`'s). The Azure MAI path needs `ffmpeg` on `PATH`:
+`internal/server/audio.go` re-encodes every clip to mono 16 kHz WAV first.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
 - **There is no UI to fix here.** A complaint about how something looks, where
   a button sits or what a panel says belongs to a client: the comart extension
-  (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first) or Cairn's Memoir
-  tab (`~/cairn`, client code in `src/memoir.ts`).
-- **comart's docs are out of date about this backend.** They still call it
-  `back-end/` (`~/comart/back-end`). That folder is gone: it became this
-  directory on 2026-09-17, so their `back-end/CLAUDE.md` means this file.
-  Their `com.comart.backend`, `back-end/logs/comart.log`,
-  `deploy/r2_backup.py` and "macOS only" are old too (`deploy/` is gone).
-  The current names are
-  `com.ai-service.backend` (macOS) or `ai-service.service` (Linux) and
-  `logs/ai-service.log`.
+  (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's Memoir tab
+  (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
+  (`~/daily-dictation`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one
   line. Do not grow it into a status page.
 - **Do not add a template, a static directory or an `embed` back.** A served
   copy of a client would have to be kept in step with the real one by hand.
-- **The client API stays as it is.** The comart extension was built against it
-  with no server change: no CORS, no auth, no new route. Keep that. Memoir's
-  one route (`/api/memoir/check`) and daily-dictation's one
-  (`/api/transcribe-verbatim`) are the deliberate additions. Change a route
-  only together with the client that calls it.
+- **Keep the comart client API stable.** comart uses its five routes with no
+  CORS, no auth and no route of its own added since. Memoir's
+  `/api/memoir/check` and daily-dictation's `/api/transcribe-verbatim` are the
+  deliberate additions. Change a route only together with the client that
+  calls it.
 
 ## Hosting and security
 
@@ -65,8 +51,9 @@ separate route on Azure Speech (`MAI-Transcribe-2`, `AZURE_SPEECH_KEY`).
 - On Cerebras, keep Memoir's reasoning on (`MEMOIR_REASONING_EFFORT` not
   `none`): without it Qwen breaks the JSON contract and edits text it must
   leave alone.
-- `internal/prompt/*.txt` and `internal/memoir/*.txt` are product prompts.
-  `TestPromptParity` pins the Memoir prompt by hash. Do not edit it in passing.
+- `internal/prompt/part1.txt`, `part2.txt` and `internal/memoir/check.txt` are
+  product prompts. `TestPromptParity` pins `check.txt` by hash. Do not edit it
+  in passing.
 
 ## Version control and secrets
 

@@ -1,21 +1,25 @@
 # ai-service
 
 A small localhost **LLM backend**: one static Go binary on `127.0.0.1:8770`,
-speaking JSON and SSE. It has two clients:
+speaking JSON and SSE. It has three clients:
 
 - the **comart Chrome extension** (`~/comart`): word explanations,
-  pronunciations and transcription;
+  pronunciations, mic transcription and the mic card's writing check;
 - **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading of
-  journal entries.
+  journal entries;
+- **daily-dictation** (`~/daily-dictation`): verbatim transcripts through
+  `POST /api/transcribe-verbatim`.
 
-**There is no UI here.** Both clients carry their own pages. `GET /` answers
-one line of plain text and nothing else. Do not add a template, a static
-directory or an `embed` back: a served copy of a client would have to be kept
-in step with the real one by hand.
+**There is no UI here.** All three clients carry their own pages. `GET /`
+answers one line of plain text and nothing else. Do not add a template, a
+static directory or an `embed` back: a served copy of a client would have to be
+kept in step with the real one by hand.
 
-The API is deliberately stable. The clients were built against it as it is: no
-CORS, no auth, no extra routes. Change it only together with the client that
-calls it.
+The comart API is deliberately stable: the extension was built against it as it
+is, with no CORS, no auth and no route of its own added since. Memoir's
+`/api/memoir/check` and daily-dictation's `/api/transcribe-verbatim` are the
+deliberate additions. Change a route only together with the client that calls
+it.
 
 ## Routes
 
@@ -24,10 +28,10 @@ calls it.
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
-| `GET /api/credits` | comart | Always `{"remaining":null,"low":false}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*`). Sends it to the configured STT provider (Groq Whisper, local Parakeet at `~/parakeet-ov`, or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
+| `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
+| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the configured STT provider (Groq Whisper, local Parakeet at `~/parakeet-ov`, or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
-| `POST /api/memoir/check` | Cairn | Proofreads an entry (`{"content": …}`, max 12000 characters). Plain JSON. |
+| `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
 The Memoir route does not stream: the client renders the finished result, so
 the server collects the whole answer and replies once.
@@ -47,19 +51,19 @@ macOS and Linux are supported.
 ./uninstall.sh           # stop the service and remove its definition
 ```
 
-`install.sh` is idempotent. Every run does all of this:
+`install.sh` is idempotent. Every real run does all of this (`--dry-run` skips
+the build, the env file and the restart):
 
 1. Checks the OS and that `go` is on `PATH` (on macOS, for example
    `brew install go`).
 2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
-   For each empty API key (`AZURE_SPEECH_KEY`, one variable for `/api/transcribe`:
-   `PARAKEET_URL`, `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`, one key for
-   `/api/explain`: `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`, and one for
-   `/api/memoir/*`: `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`) it asks
-   in a hidden prompt (a macOS dialog; on Linux a
-   zenity dialog, or a hidden terminal prompt without a display). For the
-   transcribe provider it asks for `PARAKEET_URL` first, then
+   For each missing credential it asks in a hidden prompt: `AZURE_SPEECH_KEY`;
+   exactly one of `PARAKEET_URL`, `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`;
+   one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
+   `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
+   dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
+   display. For the transcribe provider it asks for `PARAKEET_URL` first, then
    `MAI_TRANSCRIBE_API_KEY`, then `GROQ_API_KEY`. For the
    explain key it asks for OpenRouter first; an empty answer there moves on to
    Claude. For the Memoir key it asks for Claude first; an empty answer there
@@ -73,8 +77,9 @@ macOS and Linux are supported.
    backslash, `$` or backtick.
 4. Writes the service definition, lints it (`plutil -lint` or
    `systemd-analyze --user verify`) and (re)starts the service.
-5. Polls `http://127.0.0.1:8770/` for about 15 s, and checks that the process
-   on port 8770 is the service's own. A server started by hand cannot pass.
+5. Polls `http://127.0.0.1:8770/` for about 15 s, and, when `lsof` or `ss` is
+   available, checks that the process on port 8770 is the service's own. A
+   server started by hand cannot pass.
 
 The first run needs the network (Go modules).
 
@@ -169,31 +174,29 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `EXPLAIN_REASONING_TOKENS` | `1024` | OpenRouter only: thinking budget (`reasoning.max_tokens`). Claude ignores it. |
-| `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no token budget, so this is the thinking control. OpenRouter ignores it. |
-| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/*`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
-| `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/*`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
+| `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no separate thinking-token budget, so this is the thinking control (`max_tokens` still caps the answer). OpenRouter ignores it. |
+| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
+| `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/check`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
 | `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
-| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim` and `MAI_TRANSCRIBE_API_KEY`. |
-| `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/*`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
+| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim` and the MAI `/api/transcribe` route. |
+| `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/check`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `MEMOIR_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Cerebras ignores it. |
 | `MEMOIR_REASONING_EFFORT` | `medium` | Cerebras only: `low`, `medium`, `high`, or `none` to turn reasoning off. Claude ignores it. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
 **Azure transcribe formats.** Azure's Fast Transcription endpoint decodes WAV,
 MP3, OGG/Opus and FLAC, but not the `audio/webm;codecs=opus` that comart's
-`MediaRecorder` produces (nor the MP4/AAC fallback). With
-`MAI_TRANSCRIBE_API_KEY`, `/api/transcribe` therefore decodes every clip with
-`ffmpeg` and re-encodes it to mono 16 kHz WAV before uploading. Converting
-every clip, rather than trusting its MIME type, also covers containers that are
-mislabelled and Azure's OGG parser rejecting some MediaRecorder conversions.
-`install.sh` checks that `ffmpeg` is on `PATH`
+`MediaRecorder` produces. With `MAI_TRANSCRIBE_API_KEY`, `/api/transcribe`
+therefore converts every clip to mono 16 kHz WAV with `ffmpeg` rather than
+trusting its MIME type. `install.sh` checks for `ffmpeg`
 (Debian/Ubuntu: `sudo apt install ffmpeg`; macOS: `brew install ffmpeg`).
-`/api/transcribe-verbatim` is unaffected: daily-dictation uploads segment files
-Azure accepts as they are.
+`/api/transcribe-verbatim` is unaffected: daily-dictation's clips are already in
+a format Azure accepts.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
-folder can move without an edit. On Linux the unit may only write `data/` and
-`logs/` (`ProtectHome=read-only`), so do not point it outside `data/`.
+folder can move without an edit. On Linux the unit is sandboxed with
+`ProtectSystem=strict` and `ProtectHome=read-only`, with only `data/` and
+`logs/` writable, so do not point it outside `data/`.
 
 `run.sh` sources the file with bash (`set -a`). Keep to plain `KEY=value` lines
 and put single quotes around any value with spaces, `$` or parentheses (inside
@@ -202,10 +205,9 @@ server at start; the service manager retries every 10 s and the error is in
 `logs/ai-service.log`.
 
 After an edit, restart the service. A missing API key is only a warning at
-start: `/api/transcribe` then answers 500, `/api/transcribe-verbatim` answers
-500, `/api/explain` sends an `error`
-event and `/api/memoir/*` answer 503, each naming the missing key, until it is
-set.
+start: `/api/transcribe` and `/api/transcribe-verbatim` answer 500,
+`/api/explain` sends an `error` event and `/api/memoir/check` answers 503, each
+naming the missing key, until it is set.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
 manager keeps retrying every 10 s) when the transcribe, explain or Memoir route
@@ -261,7 +263,7 @@ The comart extension (`chrome-extension://` pages) and Cairn (Electron,
 The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
-- `application/json` on `/api/explain` and `/api/memoir/*`;
+- `application/json` on `/api/explain` and `/api/memoir/check`;
 - `audio/*` (or `video/*`) on `/api/transcribe`;
 - `multipart/form-data` on `/api/transcribe-verbatim`.
 
@@ -272,23 +274,25 @@ guard. The Content-Type rule closes that gap.
 Request limits:
 
 - `/api/explain`: 5 MiB JSON body (413 `Request too large.`).
-- `/api/memoir/*`: 5 MiB JSON body (a larger one fails as 400
+- `/api/memoir/check`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
-- `/api/transcribe`: 25 MiB audio (413 `recording too long`), Groq's own limit.
-- `/api/transcribe-verbatim`: 300 MiB audio (413 `audio too long`), Azure Fast Transcription's limit.
+- `/api/transcribe`: 25 MiB audio (413 `recording too long`). 25 MiB is
+  Groq's limit, applied to every transcribe provider.
+- `/api/transcribe-verbatim`: 300 MiB audio (413 `audio too long`), Azure Fast
+  Transcription's limit.
 
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter or Claude, Cerebras and Groq quota. There is no rate
-  limit.
+  route and spend the OpenRouter/Claude, Cerebras, Groq and Azure Speech quota.
+  There is no rate limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
   read the answer. The GET routes bill nothing; `/api/pron` can at most cause
   Merriam-Webster lookups.
 - The API keys are in a plain file on disk, `ai-service.env`. It is not
   encrypted: any program that runs as you (or as root) can read and use them.
-  The older zips in `backups/` hold secrets too; keep that folder private.
+  Older zips in `backups/`, if any, hold secrets too; keep that folder private.
 
 ## Models
 
@@ -296,8 +300,8 @@ Request limits:
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
-| `/api/memoir/*` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
-| `/api/memoir/*` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
+| `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
+| `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | local Parakeet (`~/parakeet-ov`), if `PARAKEET_URL` is set | `parakeet-tdt-0.6b-v2` | — |
 | `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
@@ -314,9 +318,11 @@ whichever of the two routes (explain, Memoir) has a Claude key
 (`internal/llm/claude.go`), through the Messages API. The request carries the
 model, `max_tokens`, adaptive thinking (`thinking: {type: "adaptive"}`,
 requested explicitly because omitting it means no thinking on some older
-models), `output_config.effort` and the prompt, and nothing else. Thinking text
-is dropped, never streamed, and effort is the only depth control: Opus 5.5
-rejects a token budget. No refusal fallback is enabled: it would answer from another model
+models), `output_config.effort`, the prompt and the SDK's stream flag, and
+nothing else. Thinking text is dropped, never streamed. Effort is the only
+thinking-depth control: Opus 5.5
+rejects a separate thinking-token budget, while `max_tokens` still caps the
+answer. No refusal fallback is enabled: it would answer from another model
 after a refusal, which is the silent re-routing the one-key rule exists to
 prevent. A refusal reaches the client as an `error` event on explain, and as a
 502 on Memoir. Retries,
@@ -331,10 +337,11 @@ How a call works:
   or the provider's `Retry-After` if longer; one over 5 s fails at once).
   Other HTTP errors fail at once, with the provider's message.
 - An answer is judged when the stream ends. An error inside the stream, a
-  connection that breaks before `[DONE]` (Claude: before a stop reason), a stop at the token limit and an
-  empty answer are all errors, even if some text already went out. A break
-  after the final `finish_reason` is not: the answer is already whole. So neither
-  the panel nor Memoir's parser takes a partial answer for a whole one.
+  connection that breaks before `[DONE]` (Claude: before a stop reason), a stop
+  at the token limit and an empty answer are all errors, even if some text
+  already went out. A break after the final `finish_reason` is not: the answer
+  is already whole. So neither the panel nor Memoir's parser takes a partial
+  answer for a whole one.
 
 **Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged;
 Memoir moved to Claude Opus 5.5 on 2026-10-20 and Qwen stays as the Cerebras
@@ -345,9 +352,9 @@ at every reasoning level: Qwen got pronunciations wrong. **Never run Memoir on
 Cerebras with reasoning off:** Qwen then breaks the JSON contract, edits other people's
 quoted words and leaves unlisted edits in `corrected`.
 
-Cerebras allows 150k tokens a minute on this account. An explain prompt is
-about 10k tokens and a Memoir prompt 2–4k, so only a burst of parallel
-requests reaches it; the retry covers a short one.
+As of 2026-10, Cerebras allows 150k tokens a minute on this account. An explain
+prompt is about 10k tokens and a Memoir prompt 2–4k, so only a burst of
+parallel requests reaches it; the retry covers a short one.
 
 ## Merriam-Webster
 
@@ -366,7 +373,8 @@ enough. If the pinned tls-client has no newer profile (v1.15.1 stops at
 `go get github.com/bogdanfinn/tls-client@latest && go mod tidy`. Then re-run
 `./install.sh` to rebuild and restart.
 
-Results are cached for 30 days in `data/cache.db` (SQLite, key `mw:<word>`).
+Results are cached for 30 days in `data/cache.db` (SQLite, key prefix `mw:`;
+the rest of the key is a lowercased, escaped headword).
 `/api/explain` answers cached words at once, sends the misses to MW at most 4
 at a time, and waits at most 10 s in total before it explains without the rest.
 
@@ -385,7 +393,8 @@ install.sh, uninstall.sh, run.sh
 ```
 
 The prompt `.txt` files are product text. `TestPromptParity` pins the Memoir
-prompt byte for byte, so a change there must be deliberate.
+prompt byte for byte, so a change to `internal/memoir/check.txt` must be
+deliberate.
 
 ## Build and test
 
@@ -395,8 +404,10 @@ go vet ./...
 go test ./...
 ```
 
-The result is one static binary with no cgo. It needs only the SQLite file it
-creates on first run. After a build, restart the service to run the new binary
+The result is one static binary with no cgo. At runtime it needs the SQLite
+file it creates on first run; credentials come from `ai-service.env`, and the
+Azure MAI path needs `ffmpeg` on `PATH`. After a build, restart the service to
+run the new binary
 (`systemctl --user restart ai-service`, or
 `launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run
 `./install.sh`.
@@ -410,5 +421,4 @@ The code is in git (GitHub repository `okoyfoeciov/ai-service`). Git is the undo
 network captures. **Never commit a secret**, and never force-add an ignored
 file.
 
-Old `backups/` zips may hold secrets, so keep `backups/` private. Deleting
-them is the owner's call.
+Old `backups/` zips, if any, may hold secrets; see `Security model` above.

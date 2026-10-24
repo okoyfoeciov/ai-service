@@ -1,16 +1,6 @@
-// Package server is the HTTP layer: stdlib net/http routing and handlers for
-// ai-service, the localhost LLM backend for the comart Chrome extension,
-// Cairn's Memoir tab and daily-dictation. The server binds 127.0.0.1 and nothing fronts it, so
-// loopback on this machine is the trust boundary and there is no auth.
-// loopbackOnly and requireType keep out web pages from other sites open in
-// this machine's browser.
-//
-// IT SERVES NO UI. Every route here is JSON or SSE; `GET /` is one line of
-// plain text (writeRoot) and there is nothing else that a browser would render.
-// The comart front end is the Chrome extension at ~/comart, and Cairn's Memoir tab
-// calls the /api/memoir/* routes. Do not add a template, a static directory or an
-// embed back here — the clients live elsewhere, and a second copy would have to be
-// kept in step with them by hand.
+// Package server is the HTTP layer: stdlib net/http routing and handlers.
+// It serves no UI, only JSON and SSE. The clients live in ~/comart, ~/cairn and
+// ~/daily-dictation; README.md has the routes and the security model.
 package server
 
 import (
@@ -37,15 +27,13 @@ type Server struct {
 	// explainLLM is /api/explain's model (OpenRouter or Claude), memoirLLM is
 	// Memoir's (Cerebras or Claude). Whichever key config.Load found picks the
 	// provider, and it refuses to run with both keys of one route. Each is nil
-	// when its API key is missing; the handler then
-	// reports that instead of the whole server refusing to start, matching how
-	// every other handler degrades on a missing secret.
+	// when its API key is missing; the handler then reports that instead of the
+	// whole server refusing to start.
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort  *http.Client // /api/transcribe: Groq, local Parakeet or Azure MAI-Transcribe-2 (bounded)
-	httpStream *http.Client // model calls. No timeout: a stream can run for minutes; ctx-cancelled
-	httpAzure  *http.Client // Azure transcription: /api/transcribe (MAI) and /api/transcribe-verbatim (bounded, generous)
+	httpShort *http.Client // /api/transcribe: Groq or local Parakeet (2 min)
+	httpAzure *http.Client // Azure Speech: MAI-Transcribe-2 and verbatim (10 min)
 
 	// inflight counts running handlers, so Drain can wait for handlers that
 	// http.Server.Close cut off.
@@ -65,24 +53,36 @@ const (
 
 func New(cfg config.Config, st *store.Store) *Server {
 	s := &Server{
-		cfg:        cfg,
-		mw:         mw.New(st),
-		httpShort:  &http.Client{Timeout: 120 * time.Second},
-		httpStream: &http.Client{}, // no timeout; see the field comment
-		httpAzure:  &http.Client{Timeout: 10 * time.Minute},
+		cfg:       cfg,
+		mw:        mw.New(st),
+		httpShort: &http.Client{Timeout: 120 * time.Second},
+		httpAzure: &http.Client{Timeout: 10 * time.Minute},
 	}
+	// Model calls have no overall timeout: a stream can run for minutes and
+	// the request context cancels it.
+	hc := &http.Client{}
+	s.explainLLM = newExplainLLM(cfg, hc)
+	s.memoirLLM = newMemoirLLM(cfg, hc)
+	return s
+}
+
+func newClaude(key, model, effort, route string, hc *http.Client) llm.Streamer {
+	return llm.NewClaude(llm.ClaudeConfig{
+		APIKey:    key,
+		BaseURL:   claudeURL,
+		Model:     model,
+		MaxTokens: maxAnswerTokens,
+		Effort:    effort,
+		Route:     route,
+	}, hc)
+}
+
+func newExplainLLM(cfg config.Config, hc *http.Client) llm.Streamer {
 	switch cfg.ExplainProvider {
 	case config.ProviderClaude:
-		s.explainLLM = llm.NewClaude(llm.ClaudeConfig{
-			APIKey:    cfg.ClaudeAPIKey,
-			BaseURL:   claudeURL,
-			Model:     cfg.ExplainModel,
-			MaxTokens: maxAnswerTokens,
-			Effort:    cfg.ExplainEffort,
-			Route:     "explain",
-		}, s.httpStream)
+		return newClaude(cfg.ClaudeAPIKey, cfg.ExplainModel, cfg.ExplainEffort, "explain", hc)
 	case config.ProviderOpenRouter:
-		s.explainLLM = llm.New(llm.Config{
+		return llm.New(llm.Config{
 			Provider: "OpenRouter",
 			URL:      openRouterURL,
 			APIKey:   cfg.OpenRouterAPIKey,
@@ -92,18 +92,15 @@ func New(cfg config.Config, st *store.Store) *Server {
 				// exclude: the thinking still happens but is not streamed back.
 				"reasoning": map[string]any{"max_tokens": cfg.ExplainReasoningTokens, "exclude": true},
 			},
-		}, s.httpStream)
+		}, hc)
 	}
+	return nil
+}
+
+func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {
 	switch cfg.MemoirProvider {
 	case config.ProviderClaude:
-		s.memoirLLM = llm.NewClaude(llm.ClaudeConfig{
-			APIKey:    cfg.MemoirClaudeAPIKey,
-			BaseURL:   claudeURL,
-			Model:     cfg.MemoirModel,
-			MaxTokens: maxAnswerTokens,
-			Effort:    cfg.MemoirEffort,
-			Route:     "memoir",
-		}, s.httpStream)
+		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, cfg.MemoirEffort, "memoir", hc)
 	case config.ProviderCerebras:
 		params := map[string]any{"max_completion_tokens": maxAnswerTokens}
 		if cfg.MemoirReasoningEffort == "none" {
@@ -111,15 +108,15 @@ func New(cfg config.Config, st *store.Store) *Server {
 		} else {
 			params["reasoning_effort"] = cfg.MemoirReasoningEffort
 		}
-		s.memoirLLM = llm.New(llm.Config{
+		return llm.New(llm.Config{
 			Provider: "Cerebras",
 			URL:      cerebrasURL,
 			APIKey:   cfg.MemoirCerebrasAPIKey,
 			Model:    cfg.MemoirModel,
 			Params:   params,
-		}, s.httpStream)
+		}, hc)
 	}
-	return s
+	return nil
 }
 
 // Drain waits, within ctx, for the handlers still running. main calls this
@@ -171,13 +168,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // loopbackOnly is the guard ServeHTTP runs before every route. Binding
-// 127.0.0.1 keeps other machines out, but not web pages open in this machine's
-// browser: a DNS-rebinding page (Host: evil.example:8770) could read every
-// response, and any site can fire blind cross-site POSTs that bill the OpenRouter or
-// Claude, Cerebras and Groq accounts. So the Host must name loopback, and so must an http(s)
-// Origin. An absent or "null" Origin, or a non-web one (chrome-extension:// for
-// comart, file:// for Cairn's Electron renderer), passes: loopback stays the
-// trust boundary, and those are the clients.
+// 127.0.0.1 keeps other machines out, but not pages open in this machine's
+// browser: DNS rebinding could read responses, and any site can fire blind
+// cross-site POSTs that bill the OpenRouter/Claude, Cerebras, Groq or Azure
+// accounts. The Host and any http(s) Origin must name loopback; an absent or
+// "null" Origin, or a non-web one (chrome-extension:// for comart, file:// for
+// Cairn's Electron renderer), passes: loopback stays the trust boundary.
 func loopbackOnly(r *http.Request) bool {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -203,12 +199,11 @@ func loopbackOnly(r *http.Request) bool {
 }
 
 // requireType answers 415 and returns false unless the request's media type
-// passes ok. A web page can send a cross-site POST without a CORS preflight
-// only as text/plain, form-urlencoded or multipart/form-data, and an Origin of
-// "null" (a sandboxed iframe) gets past loopbackOnly, so demanding the type
-// the clients really send closes blind POSTs to the billed routes. comart
-// sends application/json and the recorder's audio/* type; Cairn sends
-// application/json.
+// passes ok. A browser can send a cross-site POST without a preflight only as
+// text/plain, form-urlencoded or multipart, and a sandboxed iframe's "null"
+// Origin gets past loopbackOnly, so demanding the clients' real types closes
+// blind POSTs to the billed routes: JSON from comart and Cairn, audio/* (or
+// video/*) from comart's recorder, and multipart from daily-dictation.
 func requireType(w http.ResponseWriter, r *http.Request, want string, ok func(mediaType string) bool) bool {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ok(mt) {
@@ -228,19 +223,10 @@ func isLoopbackName(host string) bool {
 	return false
 }
 
-// writeRoot answers the bare host with one line of plain text.
-//
-// THIS IS NOT A PAGE, AND IT IS NOT THE START OF ONE. ai-service serves no HTML,
-// no CSS, no fonts and no favicon.
-//
-// The route exists for two small reasons. "Is it up?" should not need a path
-// anybody has to remember: install.sh polls http://127.0.0.1:8770/ as its
-// health check, and comart's README uses the same bare URL. And a bare 404
-// at the root of a host that is plainly answering reads as a broken deploy
-// rather than as an API with nothing at its front door.
-//
-// Keep it one line of text/plain. There is no CSP here because there is nothing
-// to constrain: nosniff is what stops a browser deciding this is markup.
+// writeRoot answers the bare host with one line of text/plain. install.sh and
+// the clients use it as a health check, and a bare 404 there reads as a broken
+// deploy. It is deliberately not a page: no HTML, CSS, fonts or favicon. nosniff
+// is what stops a browser deciding this line is markup.
 func writeRoot(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "text/plain; charset=utf-8")
@@ -251,7 +237,7 @@ func writeRoot(w http.ResponseWriter) {
 		"Chrome extension, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 
-// maxJSONBody caps the JSON request bodies of /api/explain and /api/memoir/*.
+// maxJSONBody caps the JSON request bodies of /api/explain and /api/memoir/check.
 const maxJSONBody = 5 * 1024 * 1024
 
 // writeJSON serialises v as JSON with Cache-Control: no-store.
@@ -268,6 +254,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func jsonError(w http.ResponseWriter, message string, status int) {
 	writeJSON(w, status, map[string]any{"error": message})
+}
+
+// jsonErrorDetail is jsonError with a provider or transport detail attached.
+func jsonErrorDetail(w http.ResponseWriter, message string, status int, detail string) {
+	writeJSON(w, status, map[string]any{"error": message, "detail": detail})
 }
 
 func jsonHeaders(w http.ResponseWriter) {

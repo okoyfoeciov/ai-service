@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Providers that can serve /api/transcribe, /api/explain and /api/memoir/*.
+// Providers that can serve /api/transcribe, /api/explain and /api/memoir/check.
 // For each route exactly one is active, picked by which environment variable is
 // set (Load refuses to run when more than one is).
 const (
@@ -30,8 +30,8 @@ type Config struct {
 	// Whisper, on the local Parakeet service (~/parakeet-ov), or on Azure
 	// Speech (MAI-Transcribe-2), whichever one of GROQ_API_KEY, PARAKEET_URL
 	// or MAI_TRANSCRIBE_API_KEY is set. Setting more than one is a startup
-	// error: with three routes available it would be too easy to believe one
-	// service answers while another does.
+	// error: with three providers for one route it would be too easy to believe
+	// one service answers while another does.
 	GroqAPIKey          string
 	GroqModel           string
 	ParakeetURL         string // e.g. http://127.0.0.1:8790
@@ -51,8 +51,8 @@ type Config struct {
 
 	// Word explanations (/api/explain) run on OpenRouter or on the Claude
 	// Platform (api.anthropic.com), whichever key is set. Setting both is a
-	// startup error: with two routes available it would be too easy to believe
-	// one model answers while the other does.
+	// startup error: with two providers for one route it would be too easy to
+	// believe one model answers while the other does.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
 	// ExplainProvider is ProviderOpenRouter or ProviderClaude, or "" when
@@ -67,12 +67,12 @@ type Config struct {
 	// Claude ignores it: its depth is ExplainEffort.
 	ExplainReasoningTokens int
 	// ExplainEffort is Claude's output_config.effort (low, medium, high, xhigh
-	// or max). It sets how much a Claude model thinks, the only such control:
-	// current models reject a token budget. Defaults to medium. OpenRouter
-	// ignores it.
+	// or max). It is the only thinking-depth control: current models reject a
+	// separate thinking-token budget, while max_tokens still caps the answer.
+	// Defaults to medium. OpenRouter ignores it.
 	ExplainEffort string
 
-	// Memoir (/api/memoir/*) runs on Cerebras or on the Claude Platform,
+	// Memoir (/api/memoir/check) runs on Cerebras or on the Claude Platform,
 	// whichever key is set, by the same rule as /api/explain: both set is a
 	// startup error. Every Memoir variable starts with MEMOIR_, because the
 	// plain CLAUDE_API_KEY already belongs to /api/explain.
@@ -104,6 +104,10 @@ const (
 	defaultCerebrasModel   = "qwen-3.8-27b"
 	defaultClaudeModel     = "claude-opus-5-5"
 	defaultClaudeEffort    = "medium"
+
+	// DefaultAzureSpeechEndpoint is the Azure region both transcription routes
+	// use when AZURE_SPEECH_ENDPOINT is unset.
+	DefaultAzureSpeechEndpoint = "https://eastus.api.cognitive.microsoft.com"
 )
 
 // Load reads config from the environment. It also returns the missing API
@@ -112,8 +116,8 @@ const (
 //
 // The error is for a configuration that must not run at all: more than one
 // variable of one route set, an invalid PARAKEET_URL, a Claude key with a model
-// id that is not Claude's, or the retired CEREBRAS_API_KEY still present. The
-// caller exits on it.
+// id that is not Claude's or an effort not in low/medium/high/xhigh/max, or the
+// retired CEREBRAS_API_KEY still present. The caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:          env("LISTEN_ADDR", "127.0.0.1:8770"),
@@ -123,7 +127,7 @@ func Load() (Config, []string, error) {
 		MAITranscribeAPIKey: os.Getenv("MAI_TRANSCRIBE_API_KEY"),
 
 		AzureSpeechKey:      os.Getenv("AZURE_SPEECH_KEY"),
-		AzureSpeechEndpoint: env("AZURE_SPEECH_ENDPOINT", "https://eastus.api.cognitive.microsoft.com"),
+		AzureSpeechEndpoint: env("AZURE_SPEECH_ENDPOINT", DefaultAzureSpeechEndpoint),
 
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
 		ClaudeAPIKey:           os.Getenv("CLAUDE_API_KEY"),
@@ -211,34 +215,37 @@ func (c *Config) resolveExplain() error {
 			"provider answers /api/explain. Keep one, and set the other to empty (KEY=) in ai-service.env")
 	case c.ClaudeAPIKey != "":
 		c.ExplainProvider = ProviderClaude
-		if c.ExplainModel == "" {
-			c.ExplainModel = defaultClaudeModel
-		}
-		if !strings.HasPrefix(c.ExplainModel, "claude-") {
-			return fmt.Errorf("CLAUDE_API_KEY is set but EXPLAIN_MODEL=%q is not a Claude model id "+
-				"(they start with \"claude-\", for example %s). An OpenRouter id such as "+
-				"google/gemini-3.8-flash only works with OPENROUTER_API_KEY. Delete the EXPLAIN_MODEL "+
-				"line to use the default", c.ExplainModel, defaultClaudeModel)
-		}
-		if c.ExplainEffort == "" {
-			c.ExplainEffort = defaultClaudeEffort
-		}
-		switch c.ExplainEffort {
-		case "low", "medium", "high", "xhigh", "max":
-		default:
-			return fmt.Errorf("EXPLAIN_EFFORT=%q is not one of low, medium, high, xhigh, max", c.ExplainEffort)
-		}
+		return settleClaude(&c.ExplainModel, &c.ExplainEffort, "CLAUDE_API_KEY",
+			"EXPLAIN_MODEL", "EXPLAIN_EFFORT",
+			"An OpenRouter id such as google/gemini-3.8-flash only works with OPENROUTER_API_KEY")
 	case c.OpenRouterAPIKey != "":
 		c.ExplainProvider = ProviderOpenRouter
 		if c.ExplainModel == "" {
 			c.ExplainModel = defaultOpenRouterModel
 		}
+	}
+	return nil
+}
+
+// settleClaude applies the defaults and checks shared by the two Claude routes.
+// keyVar, modelVar and effortVar name the environment variables in errors;
+// otherProvider explains which alternate key the model id belongs to.
+func settleClaude(model, effort *string, keyVar, modelVar, effortVar, otherProvider string) error {
+	if *model == "" {
+		*model = defaultClaudeModel
+	}
+	if !strings.HasPrefix(*model, "claude-") {
+		return fmt.Errorf("%s is set but %s=%q is not a Claude model id "+
+			"(they start with \"claude-\", for example %s). %s. Delete the %s "+
+			"line to use the default", keyVar, modelVar, *model, defaultClaudeModel, otherProvider, modelVar)
+	}
+	if *effort == "" {
+		*effort = defaultClaudeEffort
+	}
+	switch *effort {
+	case "low", "medium", "high", "xhigh", "max":
 	default:
-		// No key: the handler reports it. Show the model the OpenRouter default
-		// would use, so the startup line is not blank.
-		if c.ExplainModel == "" {
-			c.ExplainModel = defaultOpenRouterModel
-		}
+		return fmt.Errorf("%s=%q is not one of low, medium, high, xhigh, max", effortVar, *effort)
 	}
 	return nil
 }
@@ -249,36 +256,16 @@ func (c *Config) resolveMemoir() error {
 	switch {
 	case c.MemoirCerebrasAPIKey != "" && c.MemoirClaudeAPIKey != "":
 		return fmt.Errorf("both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY are set, so it is unclear which " +
-			"provider answers /api/memoir/*. Keep one, and set the other to empty (KEY=) or comment it out in ai-service.env")
+			"provider answers /api/memoir/check. Keep one, and set the other to empty (KEY=) or comment it out in ai-service.env")
 	case c.MemoirClaudeAPIKey != "":
 		c.MemoirProvider = ProviderClaude
-		if c.MemoirModel == "" {
-			c.MemoirModel = defaultClaudeModel
-		}
-		if !strings.HasPrefix(c.MemoirModel, "claude-") {
-			return fmt.Errorf("MEMOIR_CLAUDE_API_KEY is set but MEMOIR_MODEL=%q is not a Claude model id "+
-				"(they start with \"claude-\", for example %s). A Cerebras id such as "+
-				"qwen-3.8-27b only works with MEMOIR_CEREBRAS_API_KEY. Delete the MEMOIR_MODEL "+
-				"line to use the default", c.MemoirModel, defaultClaudeModel)
-		}
-		if c.MemoirEffort == "" {
-			c.MemoirEffort = defaultClaudeEffort
-		}
-		switch c.MemoirEffort {
-		case "low", "medium", "high", "xhigh", "max":
-		default:
-			return fmt.Errorf("MEMOIR_EFFORT=%q is not one of low, medium, high, xhigh, max", c.MemoirEffort)
-		}
+		return settleClaude(&c.MemoirModel, &c.MemoirEffort, "MEMOIR_CLAUDE_API_KEY",
+			"MEMOIR_MODEL", "MEMOIR_EFFORT",
+			"A Cerebras id such as qwen-3.8-27b only works with MEMOIR_CEREBRAS_API_KEY")
 	case c.MemoirCerebrasAPIKey != "":
 		c.MemoirProvider = ProviderCerebras
 		if c.MemoirModel == "" {
 			c.MemoirModel = defaultCerebrasModel
-		}
-	default:
-		// No key: the handlers report it. Show the Claude default, the one a
-		// key added later selects, so the startup line is not blank.
-		if c.MemoirModel == "" {
-			c.MemoirModel = defaultClaudeModel
 		}
 	}
 	return nil
@@ -308,7 +295,7 @@ func (c Config) ExplainRoute() string {
 	return "none (neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set)"
 }
 
-// MemoirRoute is one line saying where /api/memoir/* goes, for the startup log.
+// MemoirRoute is one line saying where /api/memoir/check goes, for the startup log.
 func (c Config) MemoirRoute() string {
 	switch c.MemoirProvider {
 	case ProviderClaude:

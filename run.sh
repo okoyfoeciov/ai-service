@@ -5,8 +5,8 @@
 # hand, stop the service first: both want port 8770.
 #
 # ai-service is the localhost LLM backend (127.0.0.1:8770) for the comart
-# Chrome extension and Cairn's Memoir tab. Nothing fronts it, so loopback is the
-# trust boundary.
+# Chrome extension, Cairn's Memoir tab and daily-dictation. Nothing fronts it,
+# so loopback is the trust boundary.
 #
 # This script loads ai-service.env with bash, so that file must stay plain
 # `KEY=value` lines. Put single quotes around a value with spaces, `$` or

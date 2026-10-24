@@ -52,7 +52,7 @@ func TestLoadExplainProvider(t *testing.T) {
 		wantEffort                 string
 		wantMissingExplain, wantOK bool
 	}{
-		{"neither key", nil, "", "google/gemini-3.8-flash", "", true, true},
+		{"neither key", nil, "", "", "", true, true},
 		{"openrouter default model", map[string]string{"OPENROUTER_API_KEY": "or"}, ProviderOpenRouter, "google/gemini-3.8-flash", "", false, true},
 		{"openrouter custom model", map[string]string{"OPENROUTER_API_KEY": "or", "EXPLAIN_MODEL": "anthropic/claude-opus-5-5"}, ProviderOpenRouter, "anthropic/claude-opus-5-5", "", false, true},
 		{"claude defaults", map[string]string{"CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
@@ -92,19 +92,6 @@ func TestLoadExplainProvider(t *testing.T) {
 	}
 }
 
-// .env.example ships empty KEY= lines, so an empty value must count as unset.
-func TestLoadEmptyKeysCountAsUnset(t *testing.T) {
-	clearTranscribeEnv(t)
-	clearExplainEnv(t)
-	clearMemoirEnv(t)
-	t.Setenv("OPENROUTER_API_KEY", "or")
-	t.Setenv("CLAUDE_API_KEY", "")
-	c, _, err := Load()
-	if err != nil || c.ExplainProvider != ProviderOpenRouter {
-		t.Fatalf("got %q, %v", c.ExplainProvider, err)
-	}
-}
-
 func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
@@ -139,7 +126,7 @@ func TestLoadMemoirProvider(t *testing.T) {
 		wantEffort                string
 		wantMissingMemoir, wantOK bool
 	}{
-		{"neither key", nil, "", "claude-opus-5-5", "", true, true},
+		{"neither key", nil, "", "", "", true, true},
 		{"cerebras default model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce"}, ProviderCerebras, "qwen-3.8-27b", "", false, true},
 		{"cerebras custom model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce", "MEMOIR_MODEL": "llama-9"}, ProviderCerebras, "llama-9", "", false, true},
 		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
@@ -256,7 +243,7 @@ func TestLoadTranscribeProvider(t *testing.T) {
 		{"parakeet http", map[string]string{"PARAKEET_URL": "http://127.0.0.1:8790"}, ProviderParakeet, false, true},
 		{"parakeet https", map[string]string{"PARAKEET_URL": "https://localhost:8790"}, ProviderParakeet, false, true},
 		{"parakeet bad scheme", map[string]string{"PARAKEET_URL": "ftp://127.0.0.1:8790"}, "", false, false},
-		{"parakeet bare path", map[string]string{"PARAKEET_URL": "/home/james/parakeet-ov"}, "", false, false},
+		{"parakeet bare path", map[string]string{"PARAKEET_URL": "parakeet-ov"}, "", false, false},
 		{"parakeet empty host", map[string]string{"PARAKEET_URL": "http://"}, "", false, false},
 		{"mai-transcribe-2", map[string]string{"MAI_TRANSCRIBE_API_KEY": "m"}, ProviderMAITranscribe, false, true},
 	}

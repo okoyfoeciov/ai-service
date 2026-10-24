@@ -44,6 +44,15 @@ type Result struct {
 	Message string
 }
 
+// UserMessage is Message, or a generic provider error naming Code when the
+// provider gave no message fit for a user.
+func (r Result) UserMessage() string {
+	if r.Message != "" {
+		return r.Message
+	}
+	return "Provider error (" + r.Code + ")."
+}
+
 // Streamer is what a handler needs from a model client: Client and Claude both
 // satisfy it.
 type Streamer interface {

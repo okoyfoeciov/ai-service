@@ -1,8 +1,9 @@
 // Command ai-service is the localhost LLM backend for the comart Chrome
-// extension (word explanations, pronunciations, mic transcription) and Cairn's
-// Memoir tab (proofreading). It binds to loopback and nothing
-// fronts it, so loopback is the trust boundary. run.sh starts it, under the
-// launchd agent (macOS) or systemd user unit (Linux) that install.sh writes.
+// extension (word explanations, pronunciations, mic transcription), Cairn's
+// Memoir tab (proofreading) and daily-dictation (verbatim transcription). It
+// binds to loopback and nothing fronts it, so loopback is the trust boundary.
+// run.sh starts it under the launchd agent (macOS) or systemd user unit
+// (Linux) that install.sh writes.
 package main
 
 import (
@@ -65,7 +66,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second, // slowloris guard on headers only
 		// No WriteTimeout: it would cut off a long SSE stream or a slow Memoir
 		// answer. No ReadTimeout either: each handler caps its own body size
-		// (5 MiB JSON, 25 MiB audio) instead.
+		// (5 MiB JSON, 25 MiB /api/transcribe, 300 MiB verbatim) instead.
 	}
 
 	// Graceful shutdown: drain in-flight requests, then close the store, which

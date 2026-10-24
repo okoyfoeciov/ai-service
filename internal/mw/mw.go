@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,8 +31,8 @@ const (
 	// UA must match the impersonated TLS profile (Chrome 146) — Cloudflare
 	// cross-checks the User-Agent against the TLS/HTTP2 fingerprint.
 	UA          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-	cacheTTLMs  = int64(30 * 24 * 3600 * 1000)
 	cacheTTLSec = int64(30 * 24 * 3600)
+	cacheTTLMs  = cacheTTLSec * 1000
 )
 
 // --- types --------------------------------------------------------------------
@@ -41,12 +42,8 @@ const (
 // Pron are stored in cached rows. Do not rename them.
 
 type Pron struct {
-	IPA  string `json:"ipa"`
-	Lang string `json:"lang"`
-	Dir  string `json:"dir"`
-	File string `json:"file"`
-	MP3  string `json:"mp3"`
-	WAV  string `json:"wav"`
+	IPA string `json:"ipa"`
+	MP3 string `json:"mp3"`
 }
 
 type Entry struct {
@@ -141,13 +138,10 @@ type Client struct {
 
 func New(cache Cache) *Client {
 	// www.merriam-webster.com sits behind Cloudflare's bot challenge, which 403s
-	// a plain Go net/http client (and even headless browsers). A TLS/HTTP2
-	// fingerprint impersonating current Chrome is served the real page. The
-	// profile must be recent — older Chrome fingerprints get flagged. If lookups
-	// start returning mw_unavailable, bump the profile together with UA and
-	// browserHeaders. A cookie jar lets Cloudflare's clearance cookie
-	// (cf_clearance) persist across lookups, so once the client is "warmed" the
-	// challenge rate drops.
+	// a plain Go client (and headless browsers). Impersonate current Chrome; the
+	// profile, UA and browserHeaders must stay in step (see README "Merriam-
+	// Webster" before bumping them). A cookie jar keeps cf_clearance between
+	// lookups, which reduces repeat challenges.
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
 		tls_client.WithTimeoutSeconds(20),
 		tls_client.WithClientProfile(profiles.Chrome_146),
@@ -220,9 +214,9 @@ func clean(node string) string {
 	return strings.TrimSpace(decoded)
 }
 
-func audioURL(lang, dir, file, format string) string {
+func audioURL(lang, dir, file string) string {
 	l := strings.ReplaceAll(lang, "_", "/")
-	return "https://media.merriam-webster.com/audio/prons/" + l + "/" + format + "/" + dir + "/" + file + "." + format
+	return "https://media.merriam-webster.com/audio/prons/" + l + "/mp3/" + dir + "/" + file + ".mp3"
 }
 
 // encodeURIComponent escapes a word for an MW page URL the same way as
@@ -267,19 +261,17 @@ func parseProns(block string) []Pron {
 		}
 		seen[key] = true
 		out = append(out, Pron{
-			IPA:  ipa,
-			Lang: attrs["lang"],
-			Dir:  attrs["dir"],
-			File: attrs["file"],
-			MP3:  audioURL(attrs["lang"], attrs["dir"], attrs["file"], "mp3"),
-			WAV:  audioURL(attrs["lang"], attrs["dir"], attrs["file"], "wav"),
+			IPA: ipa,
+			MP3: audioURL(attrs["lang"], attrs["dir"], attrs["file"]),
 		})
 	}
 	return out
 }
 
+func normalizeWord(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
 func parseUros(htmlText, fallbackWord string) []Entry {
-	wanted := strings.TrimSpace(strings.ToLower(fallbackWord))
+	wanted := normalizeWord(fallbackWord)
 	if wanted == "" {
 		return nil
 	}
@@ -294,9 +286,11 @@ func parseUros(htmlText, fallbackWord string) []Entry {
 			continue
 		}
 		start := loc[0]
-		end := min(start+5000, len(htmlText))
+		end := len(htmlText)
 		if i+1 < len(locs) {
 			end = locs[i+1][0]
+		} else {
+			end = min(start+5000, end)
 		}
 		block := htmlText[start:end]
 		prons := parseProns(block)
@@ -335,8 +329,8 @@ func parseEntries(htmlText, fallbackWord string) []Entry {
 		block := htmlText[start:end]
 
 		var header string
-		if cap := entryHeaderEnd.FindStringIndex(block); cap != nil {
-			header = block[:cap[0]]
+		if headerEnd := entryHeaderEnd.FindStringIndex(block); headerEnd != nil {
+			header = block[:headerEnd[0]]
 		} else {
 			header = block[:min(6000, len(block))]
 		}
@@ -367,7 +361,7 @@ func parseEntries(htmlText, fallbackWord string) []Entry {
 
 	// If the looked-up word is a run-on derivative (its own hword never appears
 	// among the parsed entries), substitute the uro entries instead.
-	wanted := strings.TrimSpace(strings.ToLower(fallbackWord))
+	wanted := normalizeWord(fallbackWord)
 	if wanted != "" {
 		found := false
 		for _, e := range entries {
@@ -489,13 +483,13 @@ func (c *Client) FetchEntries(word string) ([]Entry, error) {
 
 // fetchEntries fetches and parses a word's pron-bearing entries. When a page is
 // a bare spelling/variant cross-reference with no pronunciation of its own (e.g.
-// "flyer" → "less common spelling of flier"), it follows that reference once to
-// the canonical headword so the variant spelling still resolves to a real
-// pronunciation. depth caps the follow chain so a cross-reference cycle can't
-// loop. The followed target's entries are cached under the original word too, so
-// the redirect is paid at most once per word.
+// "flyer" → "less common spelling of flier"), it follows that chain up to two
+// links to the canonical headword so the variant spelling still resolves to a
+// real pronunciation. depth caps the follow chain so a cross-reference cycle
+// cannot loop. The followed target's entries are cached under the original word
+// too, so the redirect is paid at most once per word.
 func (c *Client) fetchEntries(word string, depth int) ([]Entry, error) {
-	w := strings.ToLower(strings.TrimSpace(word))
+	w := normalizeWord(word)
 	if w == "" {
 		return nil, nil
 	}
@@ -504,14 +498,9 @@ func (c *Client) fetchEntries(word string, depth int) ([]Entry, error) {
 	}
 	html, err := c.fetchPage(w)
 	if err != nil {
-		// MW returns a genuine HTTP 404 for a word it simply has no page for
-		// (e.g. "ostracization", which is not in the dictionary at all). That is
-		// a definitive "no such word", NOT an outage: record it as an empty
-		// result (cached so we don't re-hit MW for 30 days) and report it the
-		// same as a served-but-pron-less page. The extension then shows the
-		// model's own respelling, marked as AI-made, instead of the red
-		// "pron unavailable" badge.
-		// Every other failure (Cloudflare 403 block, 5xx, network) stays an
+		// MW returns a genuine HTTP 404 for a word it has no page for. That is a
+		// definitive "no such word", not an outage, so cache it as an empty
+		// result. Every other failure (Cloudflare 403, 5xx, network) stays an
 		// UnavailableError, so a transient outage is never cached as "no pron".
 		var ue *UnavailableError
 		if errors.As(err, &ue) && ue.Status == 404 {
@@ -557,37 +546,46 @@ func (c *Client) fetchPage(w string) (string, error) {
 	const attempts = 4
 	lastStatus := 0
 	for i := 0; i < attempts; i++ {
-		req, err := fhttp.NewRequest(fhttp.MethodGet, pageURL(w), nil)
-		if err != nil {
-			return "", &UnavailableError{Status: 0}
+		body, status, ok, retry := c.fetchPageOnce(w)
+		lastStatus = status
+		if ok {
+			return body, nil
 		}
-		req.Header = browserHeaders()
-		res, err := c.http.Do(req)
-		if err != nil {
-			lastStatus = 0
-		} else if res.StatusCode >= 200 && res.StatusCode < 300 {
-			body, rerr := io.ReadAll(res.Body)
-			res.Body.Close()
-			if rerr != nil {
-				lastStatus = 0
-			} else {
-				return string(body), nil
-			}
-		} else {
-			lastStatus = res.StatusCode
-			io.Copy(io.Discard, res.Body)
-			res.Body.Close()
-			// 403 (challenge) / 429 / 503 are transient — retry. Any other
-			// non-OK is terminal "unavailable".
-			if lastStatus != 403 && lastStatus != 429 && lastStatus != 503 {
-				return "", &UnavailableError{Status: lastStatus}
-			}
+		if !retry {
+			return "", &UnavailableError{Status: status}
 		}
 		if i < attempts-1 {
 			time.Sleep(time.Duration(300*(i+1)) * time.Millisecond)
 		}
 	}
 	return "", &UnavailableError{Status: lastStatus}
+}
+
+// fetchPageOnce makes one request. ok reports a readable 2xx body; retry says
+// whether the failure was transient (403 challenge, 429, 503, network or a
+// read error).
+func (c *Client) fetchPageOnce(w string) (body string, status int, ok, retry bool) {
+	req, err := fhttp.NewRequest(fhttp.MethodGet, pageURL(w), nil)
+	if err != nil {
+		return "", 0, false, false
+	}
+	req.Header = browserHeaders()
+	res, err := c.http.Do(req)
+	if err != nil {
+		return "", 0, false, true
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 200 && res.StatusCode < 300 {
+		raw, err := io.ReadAll(res.Body)
+		if err != nil {
+			return "", 0, false, true
+		}
+		return string(raw), res.StatusCode, true, false
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	retry = res.StatusCode == 403 || res.StatusCode == 429 || res.StatusCode == 503
+	return "", res.StatusCode, false, retry
 }
 
 var posSyn = map[string]string{
@@ -658,7 +656,7 @@ func distinctVariants(entries []Entry) []Variant {
 	}
 	fold := func(e Entry, p Pron) {
 		ex := byIPA[p.IPA]
-		if e.Pos != "" && !contains(ex.PosList, e.Pos) {
+		if e.Pos != "" && !slices.Contains(ex.PosList, e.Pos) {
 			ex.PosList = append(ex.PosList, e.Pos)
 		}
 	}
@@ -702,7 +700,7 @@ func (c *Client) BundleVariants(word string) (*Bundle, error) {
 // network. hit is false on a cache miss; a hit can still carry a nil bundle
 // (MW has no pronunciation for the word).
 func (c *Client) CachedBundle(word string) (b *Bundle, hit bool) {
-	entries, hit := c.readCache(strings.ToLower(strings.TrimSpace(word)))
+	entries, hit := c.readCache(normalizeWord(word))
 	if !hit {
 		return nil, false
 	}
@@ -739,13 +737,4 @@ func (c *Client) Lookup(word, posHint string) (*LookupResult, error) {
 		MP3:       p.MP3,
 		Variants:  distinctVariants(entries),
 	}, nil
-}
-
-func contains(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

@@ -100,11 +100,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		send("chunk", map[string]any{"text": t})
 	})
 	if !result.OK && ctx.Err() == nil {
-		msg := result.Message
-		if msg == "" {
-			msg = fmt.Sprintf("Provider error (%s).", result.Code)
-		}
-		send("error", map[string]any{"message": msg})
+		send("error", map[string]any{"message": result.UserMessage()})
 	}
 }
 

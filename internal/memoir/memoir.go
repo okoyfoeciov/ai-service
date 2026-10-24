@@ -1,18 +1,16 @@
-// Package memoir holds the LLM contract for Cairn's Memoir tab: proofread an
-// entry (check), served as /api/memoir/check.
+// Package memoir holds the LLM contract for the Memoir check, served as
+// /api/memoir/check.
 //
-// check.txt follows the owner's language-check rule in ~/.claude/CLAUDE.md
-// instead: every mistake, correct-but-unnatural phrasing included, no cap on
-// the count in the prompt and no register exemption; keep check.txt in step
-// with that rule. TestPromptParity pins the prompt byte for byte. The parsing
-// below follows the Node server's rules: strip fences, salvage the {...} span,
-// never hand unparsed model text back as a correction, drop echo, duplicate and
-// truncated issues.
+// check.txt follows the owner's language-check rule in ~/.claude/CLAUDE.md:
+// every mistake, correct-but-unnatural phrasing included, no cap on the count
+// in the prompt and no register exemption; keep check.txt in step with that
+// rule. TestPromptParity pins the rendered prompt byte for byte. The parser is
+// deliberately lenient: it strips a code fence, salvages the {...} span, and
+// never hands unparsed model text back as a correction.
 //
-// The model is Server.memoirLLM, separate from the one /api/explain uses
-// (MEMOIR_MODEL, default Claude Opus 5.5; Qwen 3.8 27B on Cerebras if that key
-// is set instead). This package is pure text — it never touches the network, so
-// the prompt contract stays unit-testable without billing a turn.
+// The model is Server.memoirLLM, separate from /api/explain's. This package is
+// pure text — it never touches the network, so the prompt contract stays
+// unit-testable without billing a turn.
 package memoir
 
 import (
@@ -26,9 +24,9 @@ import (
 //go:embed check.txt
 var checkTmpl string
 
-// The size cap matches Cairn's MEMOIR_CHECK_MAX. It is in UTF-16 code units —
-// what JavaScript's String.length counts — and the server handler enforces it
-// that way, not in bytes.
+// The size cap matches the clients' MEMOIR_CHECK_MAX. It is in UTF-16 code
+// units — what JavaScript's String.length counts — and the server handler
+// enforces it that way, not in bytes.
 //
 // CheckMaxIssues only stops a runaway reply; the prompt asks for every
 // mistake. Keep it above what real writing produces: a 12000-character entry
@@ -58,16 +56,16 @@ func newTag(content string) string {
 	}
 }
 
-// buildWithTag renders tmpl with an explicit tag (tests use it for parity;
+// buildWithTag renders checkTmpl with an explicit tag (the parity test uses it;
 // production passes newTag).
-func buildWithTag(tmpl, content, tag string) string {
-	s := strings.ReplaceAll(tmpl, "__TAG__", tag)
+func buildWithTag(content, tag string) string {
+	s := strings.ReplaceAll(checkTmpl, "__TAG__", tag)
 	return strings.ReplaceAll(s, "__CONTENT__", content)
 }
 
 // BuildCheckPrompt renders the proofreading prompt for a whole journal entry.
 func BuildCheckPrompt(content string) string {
-	return buildWithTag(checkTmpl, content, newTag(content))
+	return buildWithTag(content, newTag(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +78,12 @@ type CheckIssue struct {
 	Original   string `json:"original"`
 	Suggestion string `json:"suggestion"`
 	Reason     string `json:"reason"`
+}
+
+// CheckResult is a parsed model reply: the corrected entry and its issues.
+type CheckResult struct {
+	Corrected string
+	Issues    []CheckIssue
 }
 
 var fenceRe = regexp.MustCompile("(?s)```(?:json)?\\s*(.*?)```")
@@ -101,10 +105,7 @@ func stripFences(text string) string {
 // returns nil when there is nothing usable. On nil the caller serves the
 // author's own text as `corrected`, never the raw model text: clients show
 // `corrected` as the checked entry.
-func TryParseCheckResult(raw string) *struct {
-	Corrected string
-	Issues    []CheckIssue
-} {
+func TryParseCheckResult(raw string) *CheckResult {
 	text := stripFences(raw)
 	if out := parseCheck(text); out != nil {
 		return out
@@ -118,10 +119,7 @@ func TryParseCheckResult(raw string) *struct {
 	return nil
 }
 
-func parseCheck(s string) *struct {
-	Corrected string
-	Issues    []CheckIssue
-} {
+func parseCheck(s string) *CheckResult {
 	var j struct {
 		Corrected string       `json:"corrected"`
 		Issues    []CheckIssue `json:"issues"`
@@ -138,10 +136,7 @@ func parseCheck(s string) *struct {
 	if j.Issues == nil {
 		j.Issues = []CheckIssue{}
 	}
-	return &struct {
-		Corrected string
-		Issues    []CheckIssue
-	}{Corrected: j.Corrected, Issues: j.Issues}
+	return &CheckResult{Corrected: j.Corrected, Issues: j.Issues}
 }
 
 // jsonHasString reports whether the top-level object carries a string value
@@ -164,9 +159,9 @@ func jsonHasString(s, key string) bool {
 var placeholderRe = regexp.MustCompile(`^<[^>]*>$`)
 
 // SanityFloor reports whether the model's corrected text is plausible next to
-// the author's own. One check catches a placeholder ("<same as input>"), a
-// reply cut off by max_completion_tokens and a short unrelated blob: the text must not be
-// a placeholder and must be at least 60% of the entry's length.
+// the author's own. It catches a placeholder ("<same as input>"), a reply cut
+// off at the token limit and a short unrelated blob: the text must not be a
+// placeholder and must be at least 60% of the entry's length.
 func SanityFloor(corrected, content string) bool {
 	t := strings.TrimSpace(corrected)
 	if placeholderRe.MatchString(t) {

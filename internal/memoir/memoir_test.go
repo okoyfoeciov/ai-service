@@ -26,15 +26,17 @@ func sha(s string) string {
 // TestPromptParity pins the prompt byte for byte against the baseline above.
 // Lengths are in runes; the SHA-256 is over bytes.
 func TestPromptParity(t *testing.T) {
-	got := buildWithTag(checkTmpl, parityCheckIn, parityTag)
+	got := buildWithTag(parityCheckIn, parityTag)
 	if utf8.RuneCountInString(got) != checkLen || sha(got) != checkSHA {
 		t.Fatalf("check prompt drift: runes=%d sha=%s (want %d %s)",
 			utf8.RuneCountInString(got), sha(got), checkLen, checkSHA)
 	}
 }
 
-// TestTagAvoidsContent: a tag that occurs in the content must never be used.
-func TestTagAvoidsContent(t *testing.T) {
+// TestTagShape: every request gets a seven-character K-prefixed marker that
+// does not occur in the content. Collision avoidance is best-effort here; the
+// loop in newTag is what guarantees it.
+func TestTagShape(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		content := "entry K4FZZZX entry"
 		tag := newTag(content)

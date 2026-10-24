@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf16"
@@ -10,15 +11,13 @@ import (
 	"ai-service/internal/memoir"
 )
 
-// Memoir handlers for Cairn's Memoir tab: proofread an entry (check). The
-// limits and response shapes are what Cairn's src/memoir.ts expects; keep them
-// stable. Unparsed model text is never handed back as a correction.
+// Memoir handlers for Cairn's Memoir tab and comart's mic card: proofread an
+// entry (check). The limits and response shapes are the clients' contract;
+// keep them stable. Unparsed model text is never handed back as a correction.
 //
-// Unlike /api/explain this is non-streaming JSON: the client renders the
-// finished result, so the handler collects the stream and responds once.
-// The model is Server.memoirLLM (Claude Opus 5.5 at medium effort by default,
-// or Qwen 3.8 27B on Cerebras when MEMOIR_CEREBRAS_API_KEY is set instead),
-// separate from the one /api/explain uses. There is no per-request model
+// Unlike /api/explain this is non-streaming: the client renders the finished
+// result, so the handler collects the stream and responds once. The model is
+// Server.memoirLLM, separate from /api/explain's; there is no per-request model
 // choice.
 
 // utf16Len counts s in UTF-16 code units — JavaScript's String.length, which
@@ -62,21 +61,17 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if utf16Len(body.Content) > memoir.CheckMaxChars {
-		jsonError(w, "entry too long (max 12000 chars)", http.StatusBadRequest)
+		jsonError(w, fmt.Sprintf("entry too long (max %d chars)", memoir.CheckMaxChars), http.StatusBadRequest)
 		return
 	}
 	if s.memoirLLM == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."})
+		jsonError(w, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set.", http.StatusServiceUnavailable)
 		return
 	}
 
 	rawText, res := s.memoirComplete(r, memoir.BuildCheckPrompt(body.Content))
 	if !res.OK {
-		msg := res.Message
-		if msg == "" {
-			msg = "Provider error (" + res.Code + ")."
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": msg, "raw": rawText})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": res.UserMessage(), "raw": rawText})
 		return
 	}
 	parsed := memoir.TryParseCheckResult(rawText)

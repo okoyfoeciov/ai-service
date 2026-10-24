@@ -1,57 +1,18 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"sort"
 	"strings"
 )
 
-const azureAPIVersion = "2025-10-15"
-
-// azureMaxBytes is the Fast Transcription per-file ceiling (300 MB / ~2 h).
-const azureMaxBytes = 300 * 1024 * 1024
-
-// azureLine and azureWord are daily-dictation's transcript shape (seconds):
-// lines carry the segment text, words carry per-word timings for the
-// dictation loop's phrase looping.
-type azureLine struct {
-	Text  string  `json:"text"`
-	Start float64 `json:"start"`
-}
-
-type azureWord struct {
-	Text  string  `json:"text"`
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-}
-
-type azurePhraseWord struct {
-	Text       string  `json:"text"`
-	OffsetMs   float64 `json:"offsetMilliseconds"`
-	DurationMs float64 `json:"durationMilliseconds"`
-}
-
-type azurePhrase struct {
-	Text     string            `json:"text"`
-	OffsetMs float64           `json:"offsetMilliseconds"`
-	Words    []azurePhraseWord `json:"words"`
-}
-
-type azureResponse struct {
-	Phrases []azurePhrase `json:"phrases"`
-}
-
 // handleTranscribeVerbatim takes one audio file from daily-dictation's import
-// pipeline (multipart field "audio") and answers the repo's transcript shape
+// pipeline (multipart field "audio") and answers its transcript shape
 // {"lines": [...], "words": [...]} via Azure MAI-Transcribe-2 (verbatim with
-// word timestamps). Diarization stays off: it shortens the supported length
-// and dictation scores single-track verbatim references.
+// word timestamps).
 func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "multipart/form-data", func(mt string) bool {
 		return mt == "multipart/form-data"
@@ -59,7 +20,7 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if s.cfg.AzureSpeechKey == "" {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "server not configured: AZURE_SPEECH_KEY missing"})
+		jsonError(w, "server not configured: AZURE_SPEECH_KEY missing", http.StatusInternalServerError)
 		return
 	}
 
@@ -67,21 +28,21 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "audio too long (over 300 MB)"})
+			jsonError(w, "audio too long (over 300 MB)", http.StatusRequestEntityTooLarge)
 			return
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "could not read multipart body"})
+		jsonError(w, "could not read multipart body", http.StatusBadRequest)
 		return
 	}
 	f, hdr, err := r.FormFile("audio")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "multipart field \"audio\" is required"})
+		jsonError(w, `multipart field "audio" is required`, http.StatusBadRequest)
 		return
 	}
 	defer f.Close()
 	audio, err := io.ReadAll(f)
 	if err != nil || len(audio) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "could not read audio"})
+		jsonError(w, "could not read audio", http.StatusBadRequest)
 		return
 	}
 	filename := hdr.Filename
@@ -89,26 +50,20 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 		filename = "audio.mp3"
 	}
 
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
-	part, err := form.CreateFormFile("audio", filename)
+	upload, err := newAzureUpload(s.cfg.AzureSpeechEndpoint, "audio", filename, "", audio, verbatimDefinition)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal"})
+		jsonError(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	_, _ = part.Write(audio)
-	_ = form.WriteField("definition", `{"locales":["en"],"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2","modelOptions":{"timestamps":"word","transcribeStyle":"verbatim"}},"diarization":{"enabled":false}}`)
-	_ = form.Close()
-
-	url := strings.TrimSuffix(s.cfg.AzureSpeechEndpoint, "/") +
-		"/speechtotext/transcriptions:transcribe?api-version=" + azureAPIVersion
-	req, _ := http.NewRequestWithContext(r.Context(), "POST", url, &body)
-	req.Header.Set("Ocp-Apim-Subscription-Key", s.cfg.AzureSpeechKey)
-	req.Header.Set("Content-Type", form.FormDataContentType())
-
-	res, err := s.httpAzure.Do(req)
+	req, err := upload.request(r.Context(), s.cfg.AzureSpeechKey)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not reach Azure", "detail": err.Error()})
+		jsonError(w, "internal", http.StatusInternalServerError)
+		return
+	}
+
+	res, err := s.azureClient().Do(req)
+	if err != nil {
+		jsonErrorDetail(w, "could not reach Azure", http.StatusBadGateway, err.Error())
 		return
 	}
 	defer res.Body.Close()
@@ -126,15 +81,13 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 
 	var az azureResponse
 	if err := json.Unmarshal(raw, &az); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "azure returned unparseable JSON"})
+		jsonError(w, "azure returned unparseable JSON", http.StatusBadGateway)
 		return
 	}
 
-	phrases := append([]azurePhrase(nil), az.Phrases...)
-	sort.Slice(phrases, func(i, j int) bool { return phrases[i].OffsetMs < phrases[j].OffsetMs })
-	lines := make([]azureLine, 0, len(phrases))
+	lines := make([]azureLine, 0, len(az.Phrases))
 	words := make([]azureWord, 0, 256)
-	for _, p := range phrases {
+	for _, p := range az.sortedPhrases() {
 		if t := strings.TrimSpace(p.Text); t != "" {
 			lines = append(lines, azureLine{Text: t, Start: p.OffsetMs / 1000})
 		}
@@ -146,7 +99,7 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if len(lines) == 0 || len(words) == 0 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "azure returned no transcript"})
+		jsonError(w, "azure returned no transcript", http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "words": words})

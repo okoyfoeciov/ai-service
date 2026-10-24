@@ -2,8 +2,8 @@
 # install.sh — build ai-service and keep it running on this machine.
 #
 # ai-service is the localhost LLM backend (127.0.0.1:8770) for the comart
-# Chrome extension and Cairn's Memoir tab. Nothing fronts the server, so
-# loopback is the trust boundary.
+# Chrome extension, Cairn's Memoir tab and daily-dictation. Nothing fronts the
+# server, so loopback is the trust boundary.
 #
 # Supported hosts, and the service each one gets:
 #   macOS  launchd LaunchAgent  ~/Library/LaunchAgents/com.ai-service.backend.plist
@@ -12,7 +12,7 @@
 # and appends its output to logs/ai-service.log.
 #
 # Idempotent. Re-run it after changing the code or after moving this folder
-# (the service definition carries absolute paths). Every run rebuilds, checks
+# (the service definition carries absolute paths). A real run rebuilds, checks
 # the API keys, rewrites the service definition and restarts the service.
 #
 #   ./install.sh            do it
@@ -32,7 +32,7 @@ DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -177,15 +177,11 @@ ask_key() {
   echo "saved $key"
 }
 
-# KEYS: every API key the service always needs, with what it is used for.
-# /api/transcribe's variable is not here (exactly one of GROQ_API_KEY,
-# PARAKEET_URL and MAI_TRANSCRIBE_API_KEY), nor is /api/explain's (exactly one
-# of OPENROUTER_API_KEY and CLAUDE_API_KEY) or Memoir's (exactly one of
-# MEMOIR_CLAUDE_API_KEY and MEMOIR_CEREBRAS_API_KEY). The block below handles
-# all three routes.
-KEYS=(
-  "AZURE_SPEECH_KEY|verbatim transcription via Azure MAI-Transcribe-2"
-)
+# AZURE_SPEECH_KEY is the only standalone key. The three routes have either-or
+# keys: /api/transcribe (one of GROQ_API_KEY, PARAKEET_URL or
+# MAI_TRANSCRIBE_API_KEY), /api/explain (OPENROUTER_API_KEY or CLAUDE_API_KEY)
+# and Memoir (MEMOIR_CLAUDE_API_KEY or MEMOIR_CEREBRAS_API_KEY). The blocks
+# below handle all three routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
@@ -212,21 +208,17 @@ else
     die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
   fi
   if env_set MEMOIR_CEREBRAS_API_KEY && env_set MEMOIR_CLAUDE_API_KEY; then
-    die "ai-service.env sets both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY, so it is unclear which provider answers /api/memoir/* and the service would refuse to start. Keep one and set the other to empty (KEY=) or comment it out, then re-run."
+    die "ai-service.env sets both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY, so it is unclear which provider answers /api/memoir/check and the service would refuse to start. Keep one and set the other to empty (KEY=) or comment it out, then re-run."
   fi
   # The old name is not read any more, and the service refuses to start with it.
   if env_set CEREBRAS_API_KEY; then
     die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
   fi
-  for entry in "${KEYS[@]}"; do
-    key="${entry%%|*}"
-    purpose="${entry#*|}"
-    if env_set "$key"; then
-      say "[d] ai-service.env: $key is set"
-      continue
-    fi
-    ask_key "$key" "$purpose"
-  done
+  if env_set AZURE_SPEECH_KEY; then
+    say "[d] ai-service.env: AZURE_SPEECH_KEY is set"
+  else
+    ask_key AZURE_SPEECH_KEY "verbatim transcription via Azure MAI-Transcribe-2"
+  fi
   if env_set PARAKEET_URL; then
     say "[d] ai-service.env: PARAKEET_URL is set — /api/transcribe runs on local Parakeet"
   elif env_set MAI_TRANSCRIBE_API_KEY; then
@@ -255,9 +247,9 @@ else
       ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
   fi
   if env_set MEMOIR_CLAUDE_API_KEY; then
-    say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/* runs on the Claude Platform"
+    say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/check runs on the Claude Platform"
   elif env_set MEMOIR_CEREBRAS_API_KEY; then
-    say "[d] ai-service.env: MEMOIR_CEREBRAS_API_KEY is set — /api/memoir/* runs on Cerebras"
+    say "[d] ai-service.env: MEMOIR_CEREBRAS_API_KEY is set — /api/memoir/check runs on Cerebras"
   else
     # Neither: ask for Claude first (the default), and an empty answer means Cerebras.
     ask_key MEMOIR_CLAUDE_API_KEY "Memoir via the Claude Platform. Leave it empty to use a Cerebras key instead" 1 ||
@@ -302,7 +294,7 @@ write_plist() {
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>HOME</key>
 		<string>$(xml "$HOME")</string>
 	</dict>
@@ -324,7 +316,7 @@ write_unit() {
 # Written by $HERE/install.sh — edit that script, not this file; re-running it
 # overwrites this unit. Remove with $HERE/uninstall.sh.
 [Unit]
-Description=ai-service — localhost LLM backend for the comart extension and Cairn's Memoir tab
+Description=ai-service — localhost LLM backend for comart, Cairn's Memoir tab and daily-dictation
 Documentation=file://$HERE/README.md
 # No After=network-online.target: that is a system target, which a user unit
 # cannot order against. The server binds loopback, which needs no network.
@@ -366,7 +358,6 @@ else
   write_unit >"$SVC_FILE"
   chmod 644 "$SVC_FILE"
   if command -v systemd-analyze >/dev/null 2>&1; then
-    # Before the first build bin/ may not exist yet; verify only warns about it.
     systemd-analyze --user verify "$SVC_FILE" || die "$SVC_FILE failed systemd-analyze verify; nothing was started"
     say "[e] $SVC_FILE: systemd-analyze verify OK"
   else

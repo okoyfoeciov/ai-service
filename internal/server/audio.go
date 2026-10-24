@@ -9,16 +9,13 @@ import (
 	"time"
 )
 
-// Azure Fast Transcription (MAI-Transcribe-2) accepts WAV, MP3, OGG/Opus and
-// FLAC, but not the WebM that Chromium's MediaRecorder gives comart: Azure
-// answers 400 invalid_audio. Its MIME cannot be trusted either — a container
-// can be labelled audio/ogg while the bytes are not — and its OGG parser
-// rejects some MediaRecorder conversions as "file is malformed". So every MAI
-// clip is decoded and re-encoded to mono 16 kHz WAV, the simplest format Azure
-// parses reliably.
+// Azure Fast Transcription (MAI-Transcribe-2) does not accept the WebM that
+// comart's MediaRecorder produces, and its MIME type cannot be trusted. So
+// every MAI clip is decoded and re-encoded to mono 16 kHz WAV, the format Azure
+// parses most reliably.
 //
-// The conversion shells out to ffmpeg, which has to be on PATH. install.sh
-// checks for it when MAI_TRANSCRIBE_API_KEY is the /api/transcribe provider.
+// The conversion shells out to ffmpeg, which must be on PATH. install.sh checks
+// for it when MAI_TRANSCRIBE_API_KEY is the /api/transcribe provider.
 const (
 	azureConversionTimeout = 60 * time.Second
 	maxConvertedBytes      = 32 << 20 // 16 kHz mono PCM: ~1.9 MB for a 60 s clip
@@ -26,13 +23,6 @@ const (
 
 // convertForAzure is a variable so tests can stand in for ffmpeg.
 var convertForAzure = convertWithFFmpeg
-
-// prepareForAzure returns the clip as mono 16 kHz WAV. It always converts:
-// the input's declared type is only a hint, and Azure's parser is least
-// forgiving about containers it did not produce.
-func prepareForAzure(ctx context.Context, audio []byte) ([]byte, error) {
-	return convertForAzure(ctx, audio)
-}
 
 // convertWithFFmpeg decodes the clip from stdin and writes WAV to stdout. The
 // output is capped so a very long or hostile input cannot exhaust memory.

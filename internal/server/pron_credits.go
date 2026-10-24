@@ -16,13 +16,13 @@ func (s *Server) handlePron(w http.ResponseWriter, r *http.Request) {
 		// MW refused the request (challenge / 5xx / network) — an upstream
 		// outage, distinct from a word with no pronunciation.
 		log.Printf("/api/pron: %v", err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "mw_unavailable"})
+		jsonError(w, "mw_unavailable", http.StatusBadGateway)
 		return
 	}
 	if result == nil {
 		// No pronunciation for this word: MW's page has none, MW has no page
 		// for it (404), or the word is empty.
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
+		jsonError(w, "not_found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -31,6 +31,6 @@ func (s *Server) handlePron(w http.ResponseWriter, r *http.Request) {
 // handleCredits always answers "not low": the server does not track a
 // balance. comart still pings this route after each explain and ignores the
 // answer; the route stays so that ping does not fail.
-func (s *Server) handleCredits(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCredits(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"remaining": nil, "low": false})
 }

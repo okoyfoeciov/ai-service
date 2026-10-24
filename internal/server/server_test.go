@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,7 +91,7 @@ func TestLoopbackGuard(t *testing.T) {
 // handler that would spend an account.
 func TestLoopbackGuardCoversPosts(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"/api/transcribe", "/api/explain", "/api/memoir/check"} {
+	for _, path := range []string{"/api/transcribe", "/api/transcribe-verbatim", "/api/explain", "/api/memoir/check"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Origin", "https://evil.example")
@@ -131,21 +133,21 @@ func postJSON(t *testing.T, s *Server, path string, v any) *httptest.ResponseRec
 	return rec
 }
 
-// The caps count what Cairn counts (JS String.length), not UTF-8 bytes. With a
-// nil memoirLLM, a request that passes the length check stops at 503.
-func TestMemoirCapsCountUTF16(t *testing.T) {
+// The cap counts what the clients count (JS String.length), not UTF-8 bytes.
+// With a nil memoirLLM, a request that passes the length check stops at 503.
+func TestMemoirCheckCapCountsUTF16(t *testing.T) {
 	s := &Server{}
 	cases := []struct {
-		name, path, field, text string
-		wantStatus              int
-		wantError               string
+		name, text string
+		wantStatus int
+		wantError  string
 	}{
-		{"check 12000 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
-		{"check 12001 curly quotes", "/api/memoir/check", "content", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
+		{"12000 curly quotes", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
+		{"12001 curly quotes", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := postJSON(t, s, tc.path, map[string]string{tc.field: tc.text})
+			rec := postJSON(t, s, "/api/memoir/check", map[string]string{"content": tc.text})
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
 			}
@@ -354,6 +356,8 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 		{"/api/memoir/check", "application/x-www-form-urlencoded"},
 		{"/api/transcribe", "text/plain"},
 		{"/api/transcribe", ""},
+		{"/api/transcribe-verbatim", "application/json"},
+		{"/api/transcribe-verbatim", ""},
 	} {
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
@@ -621,6 +625,76 @@ func TestTranscribeParakeetProvider(t *testing.T) {
 	})
 }
 
+func TestTranscribeVerbatimProvider(t *testing.T) {
+	var gotKey, gotPath, gotDef, gotFile string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("Ocp-Apim-Subscription-Key")
+		gotPath = r.URL.Path + "?" + r.URL.RawQuery
+		if err := r.ParseMultipartForm(4 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+			return
+		}
+		gotDef = r.FormValue("definition")
+		if f, hdr, err := r.FormFile("audio"); err == nil {
+			defer f.Close()
+			b, _ := io.ReadAll(f)
+			gotFile = hdr.Filename + ":" + string(b)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"phrases":[` +
+			`{"text":"world.","offsetMilliseconds":800,"words":[{"text":"world.","offsetMilliseconds":800,"durationMilliseconds":200}]},` +
+			`{"text":"Hello","offsetMilliseconds":100,"words":[{"text":"Hello","offsetMilliseconds":100,"durationMilliseconds":300}]}]}`))
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			AzureSpeechKey:      "azure-key",
+			AzureSpeechEndpoint: srv.URL,
+		},
+		httpAzure: srv.Client(),
+	}
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("audio", "clip.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("audio-bytes"))
+	_ = form.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe-verbatim", &body)
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotKey != "azure-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version="+azureAPIVersion {
+		t.Errorf("got key=%q path=%q", gotKey, gotPath)
+	}
+	if !strings.Contains(gotDef, `"transcribeStyle":"verbatim"`) || gotFile != "clip.mp3:audio-bytes" {
+		t.Errorf("got def=%q file=%q", gotDef, gotFile)
+	}
+
+	var out struct {
+		Lines []azureLine `json:"lines"`
+		Words []azureWord `json:"words"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Lines) != 2 || out.Lines[0].Text != "Hello" || out.Lines[0].Start != 0.1 || out.Lines[1].Text != "world." {
+		t.Errorf("lines %+v", out.Lines)
+	}
+	if len(out.Words) != 2 || out.Words[0].Text != "Hello" || out.Words[0].End != 0.4 {
+		t.Errorf("words %+v", out.Words)
+	}
+}
+
 func TestTranscribeMAIProvider(t *testing.T) {
 	oldConvert := convertForAzure
 	converted := false
@@ -647,7 +721,7 @@ func TestTranscribeMAIProvider(t *testing.T) {
 			MAITranscribeAPIKey: "mai-key",
 			AzureSpeechEndpoint: srv.URL,
 		},
-		httpShort: srv.Client(),
+		httpAzure: srv.Client(),
 	}
 	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusOK {
@@ -662,7 +736,7 @@ func TestTranscribeMAIProvider(t *testing.T) {
 	if !converted {
 		t.Error("WAV input was not passed through the converter")
 	}
-	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version=2025-10-15" || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
+	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version="+azureAPIVersion || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
 		t.Errorf("got key=%q path=%q def=%q", gotKey, gotPath, gotDef)
 	}
 }
