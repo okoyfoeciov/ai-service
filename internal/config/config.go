@@ -26,12 +26,17 @@ type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
 	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on Groq
-	// Whisper and/or Azure Speech (MAI-Transcribe-2). Both may be enabled at
+	// Whisper and/or OpenRouter's MAI-Transcribe-2. Both may be enabled at
 	// once; the tray picker then chooses which one answers. At least one key is
 	// required, and having none is a startup error.
-	GroqAPIKey          string
-	GroqModel           string
-	MAITranscribeAPIKey string
+	GroqAPIKey string
+	GroqModel  string
+	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2. It
+	// serves both /api/transcribe's MAI option and /api/transcribe-verbatim.
+	// It is deliberately not OPENROUTER_API_KEY: that one belongs to
+	// /api/explain, whose one-key rule would otherwise collide, and the two
+	// routes may use different keys.
+	OpenRouterTranscribeAPIKey string
 	// TranscribeProviders lists every configured provider in a fixed order
 	// (Groq first). It has one or two entries after Load succeeds.
 	TranscribeProviders []string
@@ -39,14 +44,6 @@ type Config struct {
 	// entry of TranscribeProviders, unless main restores a selection saved by
 	// the tray picker.
 	TranscribeProvider string
-
-	// Verbatim import transcription (/api/transcribe-verbatim) runs on
-	// Azure Speech (MAI-Transcribe-2) via the Fast Transcription API.
-	// Separate from /api/transcribe: AZURE_SPEECH_KEY is only for
-	// /api/transcribe-verbatim, while AZURE_SPEECH_ENDPOINT serves any Azure
-	// Speech call.
-	AzureSpeechKey      string
-	AzureSpeechEndpoint string // e.g. https://eastus.api.cognitive.microsoft.com
 
 	// Word explanations (/api/explain) run on OpenRouter or on the Claude
 	// Platform (api.anthropic.com), whichever key is set. Setting both is a
@@ -102,10 +99,6 @@ const (
 	defaultCerebrasModel   = "qwen-3.8-27b"
 	defaultClaudeModel     = "claude-opus-5-5"
 	defaultClaudeEffort    = "medium"
-
-	// DefaultAzureSpeechEndpoint is the Azure region both transcription routes
-	// use when AZURE_SPEECH_ENDPOINT is unset.
-	DefaultAzureSpeechEndpoint = "https://eastus.api.cognitive.microsoft.com"
 )
 
 // Load reads config from the environment. It also returns the missing API
@@ -114,18 +107,17 @@ const (
 //
 // The error is for a configuration that must not run at all: more than one
 // variable of the explain or Memoir route set, neither transcription key set,
-// the retired PARAKEET_URL still present, a Claude key with a model id that is
-// not Claude's or an effort not in low/medium/high/xhigh/max, or the retired
-// CEREBRAS_API_KEY still present. The caller exits on it.
+// a retired transcription variable still present (PARAKEET_URL,
+// MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_ENDPOINT), a Claude
+// key with a model id that is not Claude's or an effort not in
+// low/medium/high/xhigh/max, or the retired CEREBRAS_API_KEY still present. The
+// caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
-		ListenAddr:          env("LISTEN_ADDR", "127.0.0.1:8770"),
-		GroqAPIKey:          os.Getenv("GROQ_API_KEY"),
-		GroqModel:           env("GROQ_MODEL", "whisper-large-v3-turbo"),
-		MAITranscribeAPIKey: os.Getenv("MAI_TRANSCRIBE_API_KEY"),
-
-		AzureSpeechKey:      os.Getenv("AZURE_SPEECH_KEY"),
-		AzureSpeechEndpoint: env("AZURE_SPEECH_ENDPOINT", DefaultAzureSpeechEndpoint),
+		ListenAddr:                 env("LISTEN_ADDR", "127.0.0.1:8770"),
+		GroqAPIKey:                 os.Getenv("GROQ_API_KEY"),
+		GroqModel:                  env("GROQ_MODEL", "whisper-large-v3-turbo"),
+		OpenRouterTranscribeAPIKey: os.Getenv("OPENROUTER_TRANSCRIBE_API_KEY"),
 
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
 		ClaudeAPIKey:           os.Getenv("CLAUDE_API_KEY"),
@@ -145,10 +137,29 @@ func Load() (Config, []string, error) {
 	}
 	// Parakeet was removed. Ignoring a leftover URL silently would leave a
 	// setting in the file that does nothing while /api/transcribe uses Groq or
-	// Azure.
+	// OpenRouter.
 	if os.Getenv("PARAKEET_URL") != "" {
 		return c, nil, fmt.Errorf("PARAKEET_URL is no longer supported (the local Parakeet integration was removed). " +
-			"Delete the line from ai-service.env; /api/transcribe uses GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY")
+			"Delete the line from ai-service.env; /api/transcribe uses GROQ_API_KEY or OPENROUTER_TRANSCRIBE_API_KEY")
+	}
+	// The Azure Speech path was replaced by OpenRouter. The old variables must
+	// not stay behind doing nothing: every transcription call now uses the
+	// OpenRouter key, including verbatim.
+	var retired []string
+	for _, k := range []string{"MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
+		if os.Getenv(k) != "" {
+			retired = append(retired, k)
+		}
+	}
+	if len(retired) > 0 {
+		verb := "is"
+		if len(retired) > 1 {
+			verb = "are"
+		}
+		return c, nil, fmt.Errorf("%s %s no longer used: MAI-Transcribe-2 now runs through "+
+			"OpenRouter, and both /api/transcribe and /api/transcribe-verbatim read "+
+			"OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired line(s) from ai-service.env",
+			strings.Join(retired, ", "), verb)
 	}
 	if err := c.resolveExplain(); err != nil {
 		return c, nil, err
@@ -167,7 +178,7 @@ func Load() (Config, []string, error) {
 	for _, k := range []struct{ name, val string }{
 		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
 		{"MEMOIR_CEREBRAS_API_KEY or MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
-		{"AZURE_SPEECH_KEY", c.AzureSpeechKey},
+		{"OPENROUTER_TRANSCRIBE_API_KEY", c.OpenRouterTranscribeAPIKey},
 	} {
 		if k.val == "" {
 			missing = append(missing, k.name)
@@ -183,11 +194,11 @@ func (c *Config) resolveTranscribe() error {
 	if c.GroqAPIKey != "" {
 		c.TranscribeProviders = append(c.TranscribeProviders, ProviderGroq)
 	}
-	if c.MAITranscribeAPIKey != "" {
+	if c.OpenRouterTranscribeAPIKey != "" {
 		c.TranscribeProviders = append(c.TranscribeProviders, ProviderMAITranscribe)
 	}
 	if len(c.TranscribeProviders) == 0 {
-		return fmt.Errorf("neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set, so /api/transcribe has no " +
+		return fmt.Errorf("neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set, so /api/transcribe has no " +
 			"provider. Set at least one in ai-service.env")
 	}
 	c.TranscribeProvider = c.TranscribeProviders[0]
@@ -267,12 +278,12 @@ func (c Config) TranscribeRoute() string {
 		case ProviderGroq:
 			parts = append(parts, fmt.Sprintf("Groq, model %s", c.GroqModel))
 		case ProviderMAITranscribe:
-			parts = append(parts, fmt.Sprintf("Azure Speech, model MAI-Transcribe-2 (%s)", c.AzureSpeechEndpoint))
+			parts = append(parts, "OpenRouter, model microsoft/mai-transcribe-2")
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set)"
+		return "none (neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
@@ -286,7 +297,7 @@ func transcribeProviderName(provider string) string {
 	case ProviderGroq:
 		return "Groq"
 	case ProviderMAITranscribe:
-		return "Azure MAI-Transcribe-2"
+		return "OpenRouter MAI-Transcribe-2"
 	}
 	return provider
 }

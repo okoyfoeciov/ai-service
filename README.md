@@ -29,12 +29,16 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to Groq Whisper or Azure MAI-Transcribe-2 (whichever the tray picker has selected) and returns `{"text": …}`. |
-| `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
+| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to Groq Whisper or OpenRouter's MAI-Transcribe-2 (whichever the tray picker has selected) and returns `{"text": …}`. |
+| `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
 The Memoir route does not stream: the client renders the finished result, so
 the server collects the whole answer and replies once.
+
+On a transcription error the response carries `openRouterStatus`; the verbatim
+route also keeps the historical `azureStatus` field with the same value because
+daily-dictation already classifies permanent vs retryable failures from it.
 
 ## Install, update, uninstall
 
@@ -60,20 +64,22 @@ the build, the env file and the restart):
    the menu-bar picker can use Cocoa, which needs the Xcode command-line
    tools).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
-   For each missing credential it asks in a hidden prompt: `AZURE_SPEECH_KEY`;
-   at least one of `MAI_TRANSCRIBE_API_KEY` and `GROQ_API_KEY`;
+   For each missing credential it asks in a hidden prompt:
+   at least one of `OPENROUTER_TRANSCRIBE_API_KEY` and `GROQ_API_KEY`;
    one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
-   display. For the transcribe provider it asks for `MAI_TRANSCRIBE_API_KEY`
-   first, then `GROQ_API_KEY`; set both by hand to get the tray picker. For the
-   explain key it asks for OpenRouter first; an empty answer there moves on to
-   Claude. For the Memoir key it asks for Claude first; an empty answer there
-   moves on to Cerebras. It stops if more than one variable of the explain or
-   Memoir route is already set, if `PARAKEET_URL` is still there, or if the
-   retired `CEREBRAS_API_KEY` is still there. If `MAI_TRANSCRIBE_API_KEY` is
-   set (alone or with Groq), it also checks that `ffmpeg` is on `PATH` (the
-   server converts comart's WebM recordings with it).
+   display. For the transcribe provider it asks for
+   `OPENROUTER_TRANSCRIBE_API_KEY` first, then `GROQ_API_KEY`; set both by hand
+   to get the tray picker. For the explain key it asks for OpenRouter first; an
+   empty answer there moves on to Claude. For the Memoir key it asks for Claude
+   first; an empty answer there moves on to Cerebras. It stops if more than one
+   variable of the explain or Memoir route is already set, if `PARAKEET_URL` is
+   still there, if the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
+   `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
+   still there. If `OPENROUTER_TRANSCRIBE_API_KEY` is set (alone or with Groq),
+   it also checks that `ffmpeg` is on `PATH` (the server converts comart's WebM
+   recordings with it).
    It never prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -169,31 +175,33 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `MAI_TRANSCRIBE_API_KEY`, or both. |
+| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `OPENROUTER_TRANSCRIBE_API_KEY`, or both. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY`, or both. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
+| `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on **both** `/api/transcribe` and `/api/transcribe-verbatim`. Set this, `GROQ_API_KEY`, or both. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. Requires `ffmpeg` on `PATH`: see below. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain` only. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `EXPLAIN_REASONING_TOKENS` | `1024` | OpenRouter only: thinking budget (`reasoning.max_tokens`). Claude ignores it. |
 | `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no separate thinking-token budget, so this is the thinking control (`max_tokens` still caps the answer). OpenRouter ignores it. |
 | `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
 | `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/check`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
-| `AZURE_SPEECH_KEY` | (empty) | Secret. Azure Speech key for `/api/transcribe-verbatim`. |
-| `AZURE_SPEECH_ENDPOINT` | `https://eastus.api.cognitive.microsoft.com` | Azure Speech endpoint (region) for `/api/transcribe-verbatim` and the MAI `/api/transcribe` route. |
 | `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/check`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
 | `MEMOIR_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Cerebras ignores it. |
 | `MEMOIR_REASONING_EFFORT` | `medium` | Cerebras only: `low`, `medium`, `high`, or `none` to turn reasoning off. Claude ignores it. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
-**Azure transcribe formats.** Azure's Fast Transcription endpoint decodes WAV,
-MP3, OGG/Opus and FLAC, but not the `audio/webm;codecs=opus` that comart's
-`MediaRecorder` produces. With `MAI_TRANSCRIBE_API_KEY`, `/api/transcribe`
-therefore converts every clip to mono 16 kHz WAV with `ffmpeg` rather than
-trusting its MIME type. `install.sh` checks for `ffmpeg`
+**OpenRouter transcribe formats.** OpenRouter's STT endpoint takes base64 JSON,
+not the multipart upload the old Azure path used. MAI-Transcribe-2 is served by
+Azure, so OpenRouter caps uploads at **25 MB** per request. The `audio/webm`
+that comart's `MediaRecorder` produces is not worth trusting across providers,
+so `/api/transcribe` converts every clip to mono 16 kHz WAV with `ffmpeg` first.
+`install.sh` checks for `ffmpeg` when `OPENROUTER_TRANSCRIBE_API_KEY` is set
 (Debian/Ubuntu: `sudo apt install ffmpeg`; macOS: `brew install ffmpeg`).
-`/api/transcribe-verbatim` is unaffected: daily-dictation's clips are already in
-a format Azure accepts.
+`/api/transcribe-verbatim` sends daily-dictation's file as-is in WAV, MP3, FLAC,
+M4A, OGG, WebM or AAC format; its 25 MB cap is about 26 minutes of 128 kbps MP3.
+OpenRouter also documents a 60-second upstream processing deadline. MAI is
+roughly 300× real-time, so the 50–100 s clips daily-dictation and comart send
+finish far below it; chunk anything much longer.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
@@ -215,9 +223,13 @@ refuses to start.
 **The service refuses to start** (it logs `config: …` and exits 1; the service
 manager keeps retrying every 10 s) when a route has no usable provider:
 
-- neither `GROQ_API_KEY` nor `MAI_TRANSCRIBE_API_KEY` is set;
+- neither `GROQ_API_KEY` nor `OPENROUTER_TRANSCRIBE_API_KEY` is set;
 - the retired `PARAKEET_URL` is still set (the local Parakeet integration was
   removed);
+- the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
+  `AZURE_SPEECH_ENDPOINT` is still set. MAI-Transcribe-2 now goes through
+  OpenRouter, which both transcription routes read from
+  `OPENROUTER_TRANSCRIBE_API_KEY`;
 - both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
   as unset, so leave the unused key as an empty `KEY=` line (that also beats
   a copy of the variable in your login environment, because `run.sh` sources the
@@ -235,7 +247,7 @@ manager keeps retrying every 10 s) when a route has no usable provider:
 
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the route it chose, for example
-`transcribe route: Azure Speech, model MAI-Transcribe-2 (https://eastus.api.cognitive.microsoft.com)`,
+`transcribe route: OpenRouter, model microsoft/mai-transcribe-2`,
 `explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
 same for `memoir route: …`, and every Claude request whose stream starts logs
 the model it asked for next to the model the API says answered (`llm[Claude/explain]`
@@ -245,12 +257,13 @@ re-route the call.
 
 ### Tray picker (both transcribe providers)
 
-Set both `GROQ_API_KEY` and `MAI_TRANSCRIBE_API_KEY` and the service shows a
-tray icon: the macOS menu bar or the Linux status area (GNOME's AppIndicator
-extension, KDE, and anything else implementing StatusNotifierItem). Clicking it
-opens two check items, **Groq Whisper** and **MAI-Transcribe-2 (Azure)**; the
-checked one answers `/api/transcribe`. There is no tray icon with only one key,
-and the choice does not touch any client: comart keeps calling the same route.
+Set both `GROQ_API_KEY` and `OPENROUTER_TRANSCRIBE_API_KEY` and the service
+shows a tray icon: the macOS menu bar or the Linux status area (GNOME's
+AppIndicator extension, KDE, and anything else implementing StatusNotifierItem).
+Clicking it opens two check items, **Groq Whisper** and
+**MAI-Transcribe-2 (OpenRouter)**; the checked one answers `/api/transcribe`.
+There is no tray icon with only one key, and the choice does not touch any
+client: comart keeps calling the same route.
 
 - The service starts on Groq and remembers a pick in the SQLite cache
   (`data/cache.db`, key `transcribe:provider`), so a restart keeps it.
@@ -260,8 +273,13 @@ and the choice does not touch any client: comart keeps calling the same route.
   manager imports it at login. Without a desktop session the service still
   serves HTTP, logs `tray: no session D-Bus …`, and skips the icon.
 - macOS builds the tray with cgo/Cocoa, so `install.sh` needs the Xcode
-  command-line tools (`xcode-select --install`). Linux uses D-Bus from pure Go
-  and keeps the static `CGO_ENABLED=0` build.
+  command-line tools (`xcode-select --install`). Linux uses a small in-repo
+  StatusNotifierItem/dbusmenu backend (`internal/tray/tray_linux.go`) and keeps
+  the static `CGO_ENABLED=0` build. It deliberately omits the optional
+  `Activate` method: GNOME's AppIndicator extension waits out the double-click
+  interval before opening a menu for items that advertise it, which is what
+  made fyne's Linux backend feel about a second slow. Without it, one click
+  opens the picker.
 - The tray is part of the service process, not an HTTP route. It writes only the
   cache row above; no new listening socket, no extra file.
 
@@ -303,13 +321,14 @@ Request limits:
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe`: 25 MiB audio (413 `recording too long`). 25 MiB is
   Groq's limit, applied to every transcribe provider.
-- `/api/transcribe-verbatim`: 300 MiB audio (413 `audio too long`), Azure Fast
-  Transcription's limit.
+- `/api/transcribe-verbatim`: 25 MiB audio (413 `audio too long`). This is
+  OpenRouter's cap for the Azure-backed MAI-Transcribe-2 endpoint; base64 adds
+  about a third on the wire.
 
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter/Claude, Cerebras, Groq and Azure Speech quota.
+  route and spend the OpenRouter, Claude, Cerebras and Groq quota.
   There is no rate limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
@@ -327,9 +346,9 @@ Request limits:
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
-| `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
+| `/api/transcribe` | OpenRouter, if `OPENROUTER_TRANSCRIBE_API_KEY` is set | `microsoft/mai-transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set (the starting default when both are configured) | `whisper-large-v3-turbo` | — |
-| `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |
+| `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
 (`internal/llm`'s `Client`) serves both. The only difference is the request fields for
@@ -433,7 +452,7 @@ go test ./...
 On Linux the result is one static binary with no cgo; macOS links Cocoa for the
 menu-bar picker. At runtime it needs the SQLite
 file it creates on first run; credentials come from `ai-service.env`, and the
-Azure MAI path needs `ffmpeg` on `PATH`. After a build, restart the service to
+OpenRouter MAI mic path needs `ffmpeg` on `PATH`. After a build, restart the service to
 run the new binary
 (`systemctl --user restart ai-service`, or
 `launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run

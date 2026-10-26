@@ -485,7 +485,7 @@ func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500", rec.Code)
 	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "MAI_TRANSCRIBE_API_KEY") {
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "OPENROUTER_TRANSCRIBE_API_KEY") {
 		t.Fatalf("error %q does not name both variables", errMsg)
 	}
 
@@ -539,11 +539,49 @@ func TestTranscribeGroqProvider(t *testing.T) {
 	}
 }
 
+// openRouterTestRequest is the subset of the OpenRouter STT body the tests
+// inspect. []byte unmarshals from base64, exactly as the real request encodes it.
+type openRouterTestRequest struct {
+	Model      string `json:"model"`
+	InputAudio struct {
+		Data   []byte `json:"data"`
+		Format string `json:"format"`
+	} `json:"input_audio"`
+	ResponseFormat         string   `json:"response_format"`
+	TimestampGranularities []string `json:"timestamp_granularities"`
+	Provider               struct {
+		Options struct {
+			Azure struct {
+				EnhancedMode struct {
+					ModelOptions struct {
+						TranscribeStyle string `json:"transcribeStyle"`
+					} `json:"modelOptions"`
+				} `json:"enhancedMode"`
+			} `json:"azure"`
+		} `json:"options"`
+	} `json:"provider"`
+}
+
+func readOpenRouterRequest(t *testing.T, r *http.Request) openRouterTestRequest {
+	t.Helper()
+	var req openRouterTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		t.Errorf("decode OpenRouter body: %v", err)
+	}
+	if got := r.Header.Get("Authorization"); got != "Bearer or-key" {
+		t.Errorf("authorization %q, want Bearer or-key", got)
+	}
+	if r.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("content-type %q, want application/json", r.Header.Get("Content-Type"))
+	}
+	return req
+}
+
 // The tray picker flips the provider between requests, and a provider that has
 // no key cannot be selected.
 func TestTranscribeProviderSwitch(t *testing.T) {
-	oldGroq := groqURL
-	defer func() { groqURL = oldGroq }()
+	oldGroq, oldOR := groqURL, openRouterSTTURL
+	defer func() { groqURL, openRouterSTTURL = oldGroq, oldOR }()
 	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"text":"from groq"}`))
@@ -551,24 +589,26 @@ func TestTranscribeProviderSwitch(t *testing.T) {
 	defer groqSrv.Close()
 	groqURL = groqSrv.URL
 
-	oldConvert := convertForAzure
-	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForAzure = oldConvert })
-	maiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	oldConvert := convertForOpenRouter
+	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
+	var orReq openRouterTestRequest
+	orSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		orReq = readOpenRouterRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"phrases":[{"text":"from mai.","offsetMilliseconds":0}]}`))
+		_, _ = w.Write([]byte(`{"text":"from mai."}`))
 	}))
-	defer maiSrv.Close()
+	defer orSrv.Close()
+	openRouterSTTURL = orSrv.URL
 
 	s := New(config.Config{
-		TranscribeProviders: []string{config.ProviderGroq, config.ProviderMAITranscribe},
-		TranscribeProvider:  config.ProviderGroq,
-		GroqAPIKey:          "g",
-		MAITranscribeAPIKey: "m",
-		AzureSpeechEndpoint: maiSrv.URL,
+		TranscribeProviders:        []string{config.ProviderGroq, config.ProviderMAITranscribe},
+		TranscribeProvider:         config.ProviderGroq,
+		GroqAPIKey:                 "g",
+		OpenRouterTranscribeAPIKey: "or-key",
 	}, nil)
 	s.httpShort = groqSrv.Client()
-	s.httpAzure = maiSrv.Client()
+	s.httpOpenRouter = orSrv.Client()
 
 	text := func(rec *httptest.ResponseRecorder) string {
 		t.Helper()
@@ -592,6 +632,9 @@ func TestTranscribeProviderSwitch(t *testing.T) {
 	if rec.Code != http.StatusOK || text(rec) != "from mai." {
 		t.Fatalf("mai: status %d text %q", rec.Code, text(rec))
 	}
+	if orReq.Model != openRouterMAIModel || orReq.InputAudio.Format != "wav" {
+		t.Errorf("OpenRouter got model=%q format=%q", orReq.Model, orReq.InputAudio.Format)
+	}
 	if s.SetTranscribeProvider("not-configured") {
 		t.Error("selected a provider that has no key")
 	}
@@ -604,33 +647,25 @@ func TestTranscribeProviderSwitch(t *testing.T) {
 }
 
 func TestTranscribeVerbatimProvider(t *testing.T) {
-	var gotKey, gotPath, gotDef, gotFile string
+	oldURL := openRouterSTTURL
+	defer func() { openRouterSTTURL = oldURL }()
+
+	var got openRouterTestRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.Header.Get("Ocp-Apim-Subscription-Key")
-		gotPath = r.URL.Path + "?" + r.URL.RawQuery
-		if err := r.ParseMultipartForm(4 << 20); err != nil {
-			t.Errorf("ParseMultipartForm: %v", err)
-			return
-		}
-		gotDef = r.FormValue("definition")
-		if f, hdr, err := r.FormFile("audio"); err == nil {
-			defer f.Close()
-			b, _ := io.ReadAll(f)
-			gotFile = hdr.Filename + ":" + string(b)
-		}
+		got = readOpenRouterRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"phrases":[` +
-			`{"text":"world.","offsetMilliseconds":800,"words":[{"text":"world.","offsetMilliseconds":800,"durationMilliseconds":200}]},` +
-			`{"text":"Hello","offsetMilliseconds":100,"words":[{"text":"Hello","offsetMilliseconds":100,"durationMilliseconds":300}]}]}`))
+		_, _ = w.Write([]byte(`{"text":"Hello world.","duration":1.0,` +
+			`"segments":[{"id":0,"start":0.8,"end":1.0,"text":"world."},{"id":1,"start":0.1,"end":0.4,"text":"Hello"}],` +
+			`"words":[{"word":"world.","start":0.8,"end":1.0},{"word":"Hello","start":0.1,"end":0.4}]}`))
 	}))
 	defer srv.Close()
+	openRouterSTTURL = srv.URL
 
 	s := &Server{
 		cfg: config.Config{
-			AzureSpeechKey:      "azure-key",
-			AzureSpeechEndpoint: srv.URL,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
-		httpAzure: srv.Client(),
+		httpOpenRouter: srv.Client(),
 	}
 
 	var body bytes.Buffer
@@ -651,16 +686,19 @@ func TestTranscribeVerbatimProvider(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	if gotKey != "azure-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version="+azureAPIVersion {
-		t.Errorf("got key=%q path=%q", gotKey, gotPath)
+	if got.Model != openRouterMAIModel || got.InputAudio.Format != "mp3" || string(got.InputAudio.Data) != "audio-bytes" {
+		t.Errorf("got model=%q format=%q audio=%q", got.Model, got.InputAudio.Format, got.InputAudio.Data)
 	}
-	if !strings.Contains(gotDef, `"transcribeStyle":"verbatim"`) || gotFile != "clip.mp3:audio-bytes" {
-		t.Errorf("got def=%q file=%q", gotDef, gotFile)
+	if got.ResponseFormat != "verbose_json" || len(got.TimestampGranularities) != 2 {
+		t.Errorf("got response_format=%q granularities=%v", got.ResponseFormat, got.TimestampGranularities)
+	}
+	if got.Provider.Options.Azure.EnhancedMode.ModelOptions.TranscribeStyle != "verbatim" {
+		t.Errorf("verbatim style missing from provider options: %+v", got.Provider)
 	}
 
 	var out struct {
-		Lines []azureLine `json:"lines"`
-		Words []azureWord `json:"words"`
+		Lines []transcriptLine `json:"lines"`
+		Words []transcriptWord `json:"words"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
@@ -674,32 +712,31 @@ func TestTranscribeVerbatimProvider(t *testing.T) {
 }
 
 func TestTranscribeMAIProvider(t *testing.T) {
-	oldConvert := convertForAzure
+	oldURL := openRouterSTTURL
+	defer func() { openRouterSTTURL = oldURL }()
+	oldConvert := convertForOpenRouter
 	converted := false
-	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) {
+	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) {
 		converted = true
 		return audio, nil
 	}
-	t.Cleanup(func() { convertForAzure = oldConvert })
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
 
-	var gotKey, gotDef, gotPath string
+	var got openRouterTestRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotKey = r.Header.Get("Ocp-Apim-Subscription-Key")
-		gotPath = r.URL.Path + "?" + r.URL.RawQuery
-		_ = r.ParseMultipartForm(4 << 20)
-		gotDef = r.FormValue("definition")
+		got = readOpenRouterRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"phrases":[{"text":"world.","offsetMilliseconds":800},{"text":"Hello","offsetMilliseconds":100}]}`))
+		_, _ = w.Write([]byte(`{"text":"Hello world."}`))
 	}))
 	defer srv.Close()
+	openRouterSTTURL = srv.URL
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider:  config.ProviderMAITranscribe,
-			MAITranscribeAPIKey: "mai-key",
-			AzureSpeechEndpoint: srv.URL,
+			TranscribeProvider:         config.ProviderMAITranscribe,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
-		httpAzure: srv.Client(),
+		httpOpenRouter: srv.Client(),
 	}
 	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusOK {
@@ -714,45 +751,41 @@ func TestTranscribeMAIProvider(t *testing.T) {
 	if !converted {
 		t.Error("WAV input was not passed through the converter")
 	}
-	if gotKey != "mai-key" || gotPath != "/speechtotext/transcriptions:transcribe?api-version="+azureAPIVersion || !strings.Contains(gotDef, `"MAI-Transcribe-2"`) {
-		t.Errorf("got key=%q path=%q def=%q", gotKey, gotPath, gotDef)
+	if got.Model != openRouterMAIModel || got.InputAudio.Format != "wav" {
+		t.Errorf("got model=%q format=%q", got.Model, got.InputAudio.Format)
+	}
+	if got.ResponseFormat != "" || got.Provider.Options.Azure.EnhancedMode.ModelOptions.TranscribeStyle != "" {
+		t.Errorf("plain mic transcription asked for verbose/verbatim output: %+v", got)
 	}
 }
 
 func TestTranscribeMAIConvertsWebM(t *testing.T) {
-	oldConvert := convertForAzure
-	t.Cleanup(func() { convertForAzure = oldConvert })
+	oldURL := openRouterSTTURL
+	defer func() { openRouterSTTURL = oldURL }()
+	oldConvert := convertForOpenRouter
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
 
 	var convertedInput string
-	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) {
+	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) {
 		convertedInput = string(audio)
 		return []byte("converted-wav"), nil
 	}
 
-	var gotType, gotName, gotAudio string
+	var got openRouterTestRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		file, hdr, err := r.FormFile("audio")
-		if err != nil {
-			t.Errorf("FormFile: %v", err)
-			return
-		}
-		defer file.Close()
-		raw, _ := io.ReadAll(file)
-		gotAudio = string(raw)
-		gotType = hdr.Header.Get("Content-Type")
-		gotName = hdr.Filename
+		got = readOpenRouterRequest(t, r)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"combinedPhrases":[{"text":"converted."}]}`))
+		_, _ = w.Write([]byte(`{"text":"converted."}`))
 	}))
 	defer srv.Close()
+	openRouterSTTURL = srv.URL
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider:  config.ProviderMAITranscribe,
-			MAITranscribeAPIKey: "mai-key",
-			AzureSpeechEndpoint: srv.URL,
+			TranscribeProvider:         config.ProviderMAITranscribe,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
-		httpShort: srv.Client(),
+		httpOpenRouter: srv.Client(),
 	}
 	rec := postAudio(t, s, "audio/webm;codecs=opus", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusOK {
@@ -761,23 +794,22 @@ func TestTranscribeMAIConvertsWebM(t *testing.T) {
 	if convertedInput != strings.Repeat("z", 1500) {
 		t.Errorf("converter saw %d input bytes, want 1500", len(convertedInput))
 	}
-	if gotType != "audio/wav" || gotName != "audio.wav" || gotAudio != "converted-wav" {
-		t.Errorf("azure got type=%q name=%q audio=%q", gotType, gotName, gotAudio)
+	if got.InputAudio.Format != "wav" || string(got.InputAudio.Data) != "converted-wav" {
+		t.Errorf("OpenRouter got format=%q audio=%q", got.InputAudio.Format, got.InputAudio.Data)
 	}
 }
 
 func TestTranscribeMAIConversionFailure(t *testing.T) {
-	oldConvert := convertForAzure
-	t.Cleanup(func() { convertForAzure = oldConvert })
-	convertForAzure = func(context.Context, []byte) ([]byte, error) {
+	oldConvert := convertForOpenRouter
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
+	convertForOpenRouter = func(context.Context, []byte) ([]byte, error) {
 		return nil, errors.New("ffmpeg exploded")
 	}
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider:  config.ProviderMAITranscribe,
-			MAITranscribeAPIKey: "mai-key",
-			AzureSpeechEndpoint: "http://127.0.0.1:1",
+			TranscribeProvider:         config.ProviderMAITranscribe,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
 	}
 	rec := postAudio(t, s, "audio/webm", strings.Repeat("z", 1500))
@@ -790,77 +822,123 @@ func TestTranscribeMAIConversionFailure(t *testing.T) {
 }
 
 func TestTranscribeMAIRetriesTransient(t *testing.T) {
-	oldBase := azureRetryBase
-	azureRetryBase = 0
-	t.Cleanup(func() { azureRetryBase = oldBase })
-	oldConvert := convertForAzure
-	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForAzure = oldConvert })
+	oldBase, oldURL := openRouterRetryBase, openRouterSTTURL
+	openRouterRetryBase = 0
+	defer func() { openRouterRetryBase, openRouterSTTURL = oldBase, oldURL }()
+	oldConvert := convertForOpenRouter
+	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
 
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if atomic.AddInt32(&calls, 1) == 1 {
-			http.Error(w, `{"error":{"code":"transient"}}`, http.StatusServiceUnavailable)
+			http.Error(w, `{"error":{"code":503,"message":"transient"}}`, http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"phrases":[{"text":"retried.","offsetMilliseconds":0}]}`))
+		_, _ = w.Write([]byte(`{"text":"retried."}`))
 	}))
 	defer srv.Close()
+	openRouterSTTURL = srv.URL
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider:  config.ProviderMAITranscribe,
-			MAITranscribeAPIKey: "mai-key",
-			AzureSpeechEndpoint: srv.URL,
+			TranscribeProvider:         config.ProviderMAITranscribe,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
-		httpShort: srv.Client(),
+		httpOpenRouter: srv.Client(),
 	}
 	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Errorf("azure calls = %d, want 2 (one retry)", got)
+		t.Errorf("OpenRouter calls = %d, want 2 (one retry)", got)
 	}
 }
 
 func TestTranscribeMAIDoesNotRetryBadRequest(t *testing.T) {
-	oldConvert := convertForAzure
-	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForAzure = oldConvert })
+	oldURL := openRouterSTTURL
+	defer func() { openRouterSTTURL = oldURL }()
+	oldConvert := convertForOpenRouter
+	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForOpenRouter = oldConvert })
 
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		http.Error(w, `{"error":{"code":"invalid_audio"}}`, http.StatusBadRequest)
+		http.Error(w, `{"error":{"code":400,"message":"invalid audio"}}`, http.StatusBadRequest)
 	}))
 	defer srv.Close()
+	openRouterSTTURL = srv.URL
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider:  config.ProviderMAITranscribe,
-			MAITranscribeAPIKey: "mai-key",
-			AzureSpeechEndpoint: srv.URL,
+			TranscribeProvider:         config.ProviderMAITranscribe,
+			OpenRouterTranscribeAPIKey: "or-key",
 		},
-		httpShort: srv.Client(),
+		httpOpenRouter: srv.Client(),
 	}
 	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status %d, want 502", rec.Code)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("azure calls = %d, want 1 (4xx must not be retried)", got)
+		t.Errorf("OpenRouter calls = %d, want 1 (4xx must not be retried)", got)
 	}
 	var body struct {
-		Error       string `json:"error"`
-		AzureStatus int    `json:"azureStatus"`
-		Detail      string `json:"detail"`
+		Error            string `json:"error"`
+		OpenRouterStatus int    `json:"openRouterStatus"`
+		Detail           string `json:"detail"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
 	}
-	if body.AzureStatus != 400 || !strings.Contains(body.Detail, "invalid_audio") {
-		t.Errorf("got %+v, want azureStatus 400 and the invalid_audio detail", body)
+	if body.OpenRouterStatus != 400 || !strings.Contains(body.Detail, "invalid audio") {
+		t.Errorf("got %+v, want openRouterStatus 400 and the invalid audio detail", body)
+	}
+}
+
+// daily-dictation still reads azureStatus to tell a permanent 4xx from a
+// retryable failure, so the verbatim error body keeps it alongside the new name.
+func TestTranscribeVerbatimErrorKeepsClientCompatibility(t *testing.T) {
+	oldURL := openRouterSTTURL
+	defer func() { openRouterSTTURL = oldURL }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"code":400,"message":"bad audio"}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	openRouterSTTURL = srv.URL
+
+	s := &Server{
+		cfg:            config.Config{OpenRouterTranscribeAPIKey: "or-key"},
+		httpOpenRouter: srv.Client(),
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("audio", "clip.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("audio-bytes"))
+	_ = form.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe-verbatim", &body)
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", rec.Code)
+	}
+	var out struct {
+		OpenRouterStatus int `json:"openRouterStatus"`
+		AzureStatus      int `json:"azureStatus"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.OpenRouterStatus != 400 || out.AzureStatus != 400 {
+		t.Errorf("got %+v, want both status fields 400", out)
 	}
 }

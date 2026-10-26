@@ -8,12 +8,15 @@ import (
 // clearTranscribeEnv blanks every variable that decides the /api/transcribe
 // route, so the machine's own environment cannot leak into a case. It then
 // leaves one Groq key set, because Load now refuses to start with no
-// transcribe provider at all; the transcribe cases override it.
-// PARAKEET_URL is retired but still cleared: a case sets it to prove that Load
-// refuses it.
+// transcribe provider at all; the transcribe cases override it. The retired
+// PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY and
+// AZURE_SPEECH_ENDPOINT are cleared too; cases set them to prove Load refuses.
 func clearTranscribeEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL", "PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
+	for _, k := range []string{
+		"GROQ_API_KEY", "GROQ_MODEL", "OPENROUTER_TRANSCRIBE_API_KEY",
+		"PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT",
+	} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("GROQ_API_KEY", "test-groq")
@@ -209,7 +212,7 @@ func TestLoadAllowsBothTranscribeProviders(t *testing.T) {
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
 	t.Setenv("GROQ_API_KEY", "g")
-	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
+	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "or")
 	c, _, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +224,9 @@ func TestLoadAllowsBothTranscribeProviders(t *testing.T) {
 	if c.TranscribeProvider != ProviderGroq {
 		t.Errorf("starting provider %q, want %q", c.TranscribeProvider, ProviderGroq)
 	}
+	if c.OpenRouterTranscribeAPIKey != "or" {
+		t.Errorf("OpenRouter transcribe key was not kept")
+	}
 }
 
 func TestLoadRefusesNoTranscribeProvider(t *testing.T) {
@@ -228,9 +234,9 @@ func TestLoadRefusesNoTranscribeProvider(t *testing.T) {
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
 	t.Setenv("GROQ_API_KEY", "")
-	t.Setenv("MAI_TRANSCRIBE_API_KEY", "")
+	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "")
 	_, _, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") || !strings.Contains(err.Error(), "MAI_TRANSCRIBE_API_KEY") {
+	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") || !strings.Contains(err.Error(), "OPENROUTER_TRANSCRIBE_API_KEY") {
 		t.Fatalf("err %v, want one naming both keys", err)
 	}
 }
@@ -246,6 +252,21 @@ func TestLoadRefusesRetiredParakeetURL(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesRetiredAzureVariables(t *testing.T) {
+	for _, key := range []string{"MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
+		t.Run(key, func(t *testing.T) {
+			clearTranscribeEnv(t)
+			clearExplainEnv(t)
+			clearMemoirEnv(t)
+			t.Setenv(key, "old-value")
+			_, _, err := Load()
+			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "no longer used") {
+				t.Fatalf("err %v, want one naming retired %s", err, key)
+			}
+		})
+	}
+}
+
 func TestLoadTranscribeProvider(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -255,8 +276,8 @@ func TestLoadTranscribeProvider(t *testing.T) {
 	}{
 		{"none set", map[string]string{"GROQ_API_KEY": ""}, "", false},
 		{"groq", map[string]string{"GROQ_API_KEY": "g"}, ProviderGroq, true},
-		{"mai-transcribe-2", map[string]string{"GROQ_API_KEY": "", "MAI_TRANSCRIBE_API_KEY": "m"}, ProviderMAITranscribe, true},
-		{"both", map[string]string{"GROQ_API_KEY": "g", "MAI_TRANSCRIBE_API_KEY": "m"}, ProviderGroq, true},
+		{"mai-transcribe-2 via openrouter", map[string]string{"GROQ_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, ProviderMAITranscribe, true},
+		{"both", map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, ProviderGroq, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -283,19 +304,21 @@ func TestLoadTranscribeProvider(t *testing.T) {
 	}
 }
 
-// AZURE_SPEECH_KEY belongs to /api/transcribe-verbatim alone: it must not
-// select a provider for /api/transcribe or conflict with GROQ_API_KEY or
-// MAI_TRANSCRIBE_API_KEY.
-func TestTranscribeKeysAreIndependentOfVerbatimAzureKey(t *testing.T) {
+// OPENROUTER_API_KEY belongs to /api/explain; the transcription routes use the
+// separate OPENROUTER_TRANSCRIBE_API_KEY. One must not select the other.
+func TestOpenRouterKeysAreIndependent(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
-	t.Setenv("AZURE_SPEECH_KEY", "az-verbatim")
+	t.Setenv("OPENROUTER_API_KEY", "explain-key")
 	c, _, err := Load()
-	if err != nil || c.TranscribeProvider != ProviderGroq || c.AzureSpeechKey != "az-verbatim" {
-		t.Fatalf("transcribe %q azure %q err %v", c.TranscribeProvider, c.AzureSpeechKey, err)
+	if err != nil || c.TranscribeProvider != ProviderGroq || len(c.TranscribeProviders) != 1 {
+		t.Fatalf("transcribe %q providers %v err %v", c.TranscribeProvider, c.TranscribeProviders, err)
 	}
-	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
+	if c.ExplainProvider != ProviderOpenRouter {
+		t.Errorf("explain provider %q, want %q", c.ExplainProvider, ProviderOpenRouter)
+	}
+	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "stt-key")
 	c, _, err = Load()
 	if err != nil || c.TranscribeProvider != ProviderGroq || len(c.TranscribeProviders) != 2 {
 		t.Fatalf("transcribe %q providers %v err %v", c.TranscribeProvider, c.TranscribeProviders, err)
@@ -308,8 +331,8 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 		want []string
 	}{
 		{map[string]string{"GROQ_API_KEY": "g"}, []string{"Groq", "whisper-large-v3-turbo"}},
-		{map[string]string{"GROQ_API_KEY": "", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Azure Speech", "MAI-Transcribe-2", "https://eastus.api.cognitive.microsoft.com"}},
-		{map[string]string{"GROQ_API_KEY": "g", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Groq", "Azure Speech", "both enabled", "tray picker", "starting on Groq"}},
+		{map[string]string{"GROQ_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, []string{"OpenRouter", "microsoft/mai-transcribe-2"}},
+		{map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, []string{"Groq", "OpenRouter", "both enabled", "tray picker", "starting on Groq"}},
 	} {
 		clearTranscribeEnv(t)
 		clearExplainEnv(t)

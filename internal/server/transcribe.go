@@ -47,16 +47,6 @@ func (s *Server) shortClient() *http.Client {
 	return http.DefaultClient
 }
 
-// azureClient is the bounded client for Azure transcription. The MAI handler
-// adds its own 3-minute context, so httpAzure's 10-minute timeout is only a
-// backstop.
-func (s *Server) azureClient() *http.Client {
-	if s.httpAzure != nil {
-		return s.httpAzure
-	}
-	return s.shortClient()
-}
-
 // headerOrNil is the header's value, or nil (JSON null) when it is absent.
 func headerOrNil(h http.Header, name string) any { return nullableString(h.Get(name)) }
 
@@ -98,7 +88,7 @@ func (s *Server) SetTranscribeProvider(provider string) bool {
 }
 
 // handleTranscribe sends one clip from comart's mic recorder (Exscriptor) to
-// the selected /api/transcribe provider (Groq Whisper or Azure
+// the selected /api/transcribe provider (Groq Whisper or OpenRouter's
 // MAI-Transcribe-2) and answers {"text": ...}.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "an audio type", func(mt string) bool {
@@ -108,7 +98,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := s.TranscribeProvider()
 	if provider == "" {
-		jsonError(w, "server not configured: neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set", http.StatusInternalServerError)
+		jsonError(w, "server not configured: neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set", http.StatusInternalServerError)
 		return
 	}
 	contentType := r.Header.Get("Content-Type")
@@ -197,30 +187,28 @@ func (s *Server) transcribeGroq(w http.ResponseWriter, r *http.Request, audio []
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(data.Text)})
 }
 
-// transcribeMAI sends the clip to Azure Speech Fast Transcription
-// (MAI-Transcribe-2) using MAI_TRANSCRIBE_API_KEY and returns {"text": ...}.
-// Separate from /api/transcribe-verbatim, which uses AZURE_SPEECH_KEY and
+// transcribeMAI sends the clip to OpenRouter's MAI-Transcribe-2 using
+// OPENROUTER_TRANSCRIBE_API_KEY and returns {"text": ...}. Separate from
+// /api/transcribe-verbatim, which uses the same key with verbose_json and
 // returns word-level timestamps for daily-dictation.
 func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []byte, contentType string) {
-	ctx, cancel := context.WithTimeout(r.Context(), azureTranscribeTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), openRouterTranscribeTimeout)
 	defer cancel()
 
-	// comart records audio/webm;codecs=opus, which Azure rejects with
-	// invalid_audio. Decode every clip and send WAV (see audio.go).
+	// comart records audio/webm;codecs=opus. OpenRouter's per-model format
+	// support varies, and OpenRouter recommends WAV, so decode every clip and
+	// send WAV (see audio.go). The converter also rejects clips whose length
+	// would blow past the 25 MB OpenRouter ceiling.
 	inputBytes, inputType := len(audio), contentType
-	converted, err := convertForAzure(ctx, audio)
+	converted, err := convertForOpenRouter(ctx, audio)
 	if err != nil {
 		log.Printf("transcribe[MAI]: conversion failed (%d bytes, %q): %v", inputBytes, inputType, err)
-		jsonErrorDetail(w, "could not convert the recording for Azure", http.StatusBadGateway, err.Error())
+		jsonErrorDetail(w, "could not convert the recording for OpenRouter", http.StatusBadGateway, err.Error())
 		return
 	}
 	audio = converted
 
-	endpoint := s.cfg.AzureSpeechEndpoint
-	if endpoint == "" {
-		endpoint = config.DefaultAzureSpeechEndpoint
-	}
-	upload, err := newAzureUpload(endpoint, "audio", "audio.wav", "audio/wav", audio, maiDefinition)
+	body, err := newOpenRouterSTTBody(audio, "wav", false)
 	if err != nil {
 		jsonError(w, "internal", http.StatusInternalServerError)
 		return
@@ -232,57 +220,50 @@ func (s *Server) transcribeMAI(w http.ResponseWriter, r *http.Request, audio []b
 		raw        []byte
 		lastErr    error
 	)
-	for attempt := 1; attempt <= azureMaxAttempts; attempt++ {
-		req, reqErr := upload.request(ctx, s.cfg.MAITranscribeAPIKey)
-		if reqErr != nil {
-			jsonError(w, "internal", http.StatusInternalServerError)
-			return
-		}
-
-		res, doErr := s.azureClient().Do(req)
+	for attempt := 1; attempt <= openRouterMaxAttempts; attempt++ {
+		res, doErr := s.postOpenRouterSTT(ctx, body)
 		if doErr != nil {
 			status, raw, lastErr = 0, nil, doErr
 			log.Printf("transcribe[MAI]: input %d bytes %q, WAV %d bytes; attempt %d/%d: %v",
-				inputBytes, inputType, len(audio), attempt, azureMaxAttempts, doErr)
-			if attempt == azureMaxAttempts || ctx.Err() != nil || !sleepContext(ctx, azureBackoff(attempt)) {
+				inputBytes, inputType, len(audio), attempt, openRouterMaxAttempts, doErr)
+			if attempt == openRouterMaxAttempts || ctx.Err() != nil || !sleepContext(ctx, openRouterBackoff(attempt)) {
 				break
 			}
 			continue
 		}
-		raw, _ = io.ReadAll(res.Body)
-		_ = res.Body.Close()
+		raw = drainBody(res)
 		status, retryAfter, lastErr = res.StatusCode, res.Header.Get("Retry-After"), nil
 		if status >= 200 && status < 300 {
 			break
 		}
-		log.Printf("transcribe[MAI]: input %d bytes %q, WAV %d bytes; attempt %d/%d: azure %d: %s",
-			inputBytes, inputType, len(audio), attempt, azureMaxAttempts, status, logTail(raw))
-		if attempt == azureMaxAttempts || !azureRetryable(status) {
+		log.Printf("transcribe[MAI]: input %d bytes %q, WAV %d bytes; attempt %d/%d: openrouter %d: %s",
+			inputBytes, inputType, len(audio), attempt, openRouterMaxAttempts, status, openRouterErrorDetail(raw))
+		if attempt == openRouterMaxAttempts || !openRouterRetryable(status) {
 			break
 		}
-		delay, ok := azureRetryWait(res, attempt)
+		delay, ok := openRouterRetryWait(res, attempt)
 		if !ok || !sleepContext(ctx, delay) {
 			break
 		}
 	}
 	if lastErr != nil {
-		jsonErrorDetail(w, "could not reach Azure", http.StatusBadGateway, lastErr.Error())
+		jsonErrorDetail(w, "could not reach OpenRouter", http.StatusBadGateway, lastErr.Error())
 		return
 	}
 	if status < 200 || status >= 300 {
 		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":       fmt.Sprintf("azure returned %d", status),
-			"azureStatus": status,
-			"retryAfter":  nullableString(retryAfter),
-			"detail":      string(raw),
+			"error":            fmt.Sprintf("openrouter returned %d", status),
+			"openRouterStatus": status,
+			"retryAfter":       nullableString(retryAfter),
+			"detail":           string(raw),
 		})
 		return
 	}
 
-	var az azureResponse
-	if err := json.Unmarshal(raw, &az); err != nil {
-		jsonErrorDetail(w, "azure returned unparseable JSON", http.StatusBadGateway, string(raw))
+	var out openRouterSTTResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		jsonErrorDetail(w, "openrouter returned unparseable JSON", http.StatusBadGateway, string(raw))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"text": az.text()})
+	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(out.Text)})
 }

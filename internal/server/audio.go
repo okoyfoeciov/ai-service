@@ -9,25 +9,25 @@ import (
 	"time"
 )
 
-// Azure Fast Transcription (MAI-Transcribe-2) does not accept the WebM that
-// comart's MediaRecorder produces, and its MIME type cannot be trusted. So
-// every MAI clip is decoded and re-encoded to mono 16 kHz WAV, the format Azure
-// parses most reliably.
+// OpenRouter's speech-to-text endpoint accepts WebM for some models, but
+// OpenRouter recommends WAV and comart's WebM/Opus MIME type cannot be trusted
+// across providers. So every MAI mic clip is decoded and re-encoded to mono
+// 16 kHz WAV, the format OpenRouter handles most reliably.
 //
 // The conversion shells out to ffmpeg, which must be on PATH. install.sh checks
-// for it when MAI_TRANSCRIBE_API_KEY is the /api/transcribe provider.
+// for it when OPENROUTER_TRANSCRIBE_API_KEY is set.
 const (
-	azureConversionTimeout = 60 * time.Second
-	maxConvertedBytes      = 32 << 20 // 16 kHz mono PCM: ~1.9 MB for a 60 s clip
+	sttConversionTimeout = 60 * time.Second
+	maxConvertedBytes    = 32 << 20 // 16 kHz mono PCM: ~1.9 MB for a 60 s clip
 )
 
-// convertForAzure is a variable so tests can stand in for ffmpeg.
-var convertForAzure = convertWithFFmpeg
+// convertForOpenRouter is a variable so tests can stand in for ffmpeg.
+var convertForOpenRouter = convertWithFFmpeg
 
 // convertWithFFmpeg decodes the clip from stdin and writes WAV to stdout. The
 // output is capped so a very long or hostile input cannot exhaust memory.
 func convertWithFFmpeg(ctx context.Context, audio []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, azureConversionTimeout)
+	ctx, cancel := context.WithTimeout(ctx, sttConversionTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffmpeg",

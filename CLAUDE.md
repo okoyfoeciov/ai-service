@@ -6,14 +6,19 @@ daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
 security model and models.
 
-In short, `/api/transcribe` has two providers (Groq and Azure
+In short, `/api/transcribe` has two providers (Groq and OpenRouter's
 MAI-Transcribe-2) and may have both keys at once: the tray picker
 (`internal/tray`) then switches between them. It refuses to start with neither
 key. `/api/explain` and `/api/memoir/check` still have two each and refuse both.
 Every Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
-`/api/explain`'s). The Azure MAI path needs `ffmpeg` on `PATH`:
-`internal/server/audio.go` re-encodes every clip to mono 16 kHz WAV first.
-Linux's tray is pure D-Bus; macOS links Cocoa, so its build needs cgo.
+`/api/explain`'s); every transcription key is `OPENROUTER_TRANSCRIBE_API_KEY` or
+`GROQ_API_KEY` (plain `OPENROUTER_API_KEY` is `/api/explain`'s). The OpenRouter
+MAI mic path needs `ffmpeg` on `PATH`: `internal/server/audio.go` re-encodes
+every clip to mono 16 kHz WAV first. Verbatim also uses OpenRouter, with
+`verbose_json`, word timestamps and Azure's verbatim style. Linux's tray is a
+small in-repo D-Bus backend that intentionally omits `Activate`, because GNOME
+then opens the menu on the first click instead of waiting out the double-click
+interval; macOS links Cocoa, so its build needs cgo.
 
 ## This is a BACKEND. The front ends live elsewhere.
 

@@ -9,8 +9,8 @@ import (
 )
 
 // multipartBody encodes one file part followed by ordered text fields. An empty
-// fileType uses CreateFormFile, which escapes the filename; Azure's verbatim
-// route passes the client's own filename.
+// fileType uses CreateFormFile, which escapes the filename; Groq's upload path
+// uses that form.
 func multipartBody(fileField, filename, fileType string, file []byte, fields ...[2]string) (*bytes.Buffer, string, error) {
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)

@@ -188,10 +188,10 @@ ask_key() {
   echo "saved $key"
 }
 
-# AZURE_SPEECH_KEY is the only standalone key. /api/transcribe takes
-# GROQ_API_KEY, MAI_TRANSCRIBE_API_KEY or both; /api/explain takes
-# OPENROUTER_API_KEY or CLAUDE_API_KEY; Memoir takes MEMOIR_CLAUDE_API_KEY or
-# MEMOIR_CEREBRAS_API_KEY. The blocks below handle all three routes.
+# /api/transcribe takes GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY or both;
+# /api/explain takes OPENROUTER_API_KEY or CLAUDE_API_KEY; Memoir takes
+# MEMOIR_CLAUDE_API_KEY or MEMOIR_CEREBRAS_API_KEY. The blocks below handle all
+# three routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
@@ -211,6 +211,12 @@ else
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
   fi
+  if env_set MAI_TRANSCRIBE_API_KEY; then
+    die "ai-service.env still sets MAI_TRANSCRIBE_API_KEY, which was replaced by OPENROUTER_TRANSCRIBE_API_KEY: MAI-Transcribe-2 now runs through OpenRouter, and the old Azure key makes the service refuse to start. Rename it (or comment it out), then re-run."
+  fi
+  if env_set AZURE_SPEECH_KEY || env_set AZURE_SPEECH_ENDPOINT; then
+    die "ai-service.env still sets AZURE_SPEECH_KEY or AZURE_SPEECH_ENDPOINT. The direct Azure Speech path was removed; both transcription routes now use OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired lines (or comment them out), then re-run."
+  fi
   if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
     die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
   fi
@@ -221,29 +227,24 @@ else
   if env_set CEREBRAS_API_KEY; then
     die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
   fi
-  if env_set AZURE_SPEECH_KEY; then
-    say "[d] ai-service.env: AZURE_SPEECH_KEY is set"
-  else
-    ask_key AZURE_SPEECH_KEY "verbatim transcription via Azure MAI-Transcribe-2"
-  fi
   # /api/transcribe needs at least one provider; both are allowed (the tray
-  # picker then chooses). Ask for MAI-Transcribe-2 first, then Groq.
-  if ! env_set GROQ_API_KEY && ! env_set MAI_TRANSCRIBE_API_KEY; then
-    ask_key MAI_TRANSCRIBE_API_KEY "transcription via Azure MAI-Transcribe-2. Leave it empty to use a Groq key instead" 1 ||
+  # picker then chooses). Ask for OpenRouter MAI-Transcribe-2 first, then Groq.
+  if ! env_set GROQ_API_KEY && ! env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    ask_key OPENROUTER_TRANSCRIBE_API_KEY "transcription via OpenRouter MAI-Transcribe-2. Leave it empty to use a Groq key instead" 1 ||
       ask_key GROQ_API_KEY "transcription via Groq Whisper"
   fi
-  if env_set MAI_TRANSCRIBE_API_KEY; then
-    # Azure decodes WAV/MP3/OGG/FLAC but not the WebM that comart records, so
-    # the server re-encodes every clip to WAV with ffmpeg before uploading it.
+  if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    # OpenRouter accepts WAV, but comart records WebM, so the server
+    # re-encodes every mic clip to WAV with ffmpeg before uploading it.
     if ! command -v ffmpeg >/dev/null 2>&1; then
-      die "ffmpeg is required to convert comart's WebM recordings for Azure MAI-Transcribe-2, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
+      die "ffmpeg is required to convert comart's WebM recordings for OpenRouter MAI-Transcribe-2, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
     fi
-    say "[d] ffmpeg: $(command -v ffmpeg) — converts comart's WebM recordings for Azure"
+    say "[d] ffmpeg: $(command -v ffmpeg) — converts comart's WebM recordings to WAV for OpenRouter"
   fi
-  if env_set GROQ_API_KEY && env_set MAI_TRANSCRIBE_API_KEY; then
-    say "[d] ai-service.env: both GROQ_API_KEY and MAI_TRANSCRIBE_API_KEY are set — /api/transcribe uses the tray picker (starts on Groq)"
-  elif env_set MAI_TRANSCRIBE_API_KEY; then
-    say "[d] ai-service.env: MAI_TRANSCRIBE_API_KEY is set — /api/transcribe runs on Azure MAI-Transcribe-2"
+  if env_set GROQ_API_KEY && env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    say "[d] ai-service.env: both GROQ_API_KEY and OPENROUTER_TRANSCRIBE_API_KEY are set — /api/transcribe uses the tray picker (starts on Groq)"
+  elif env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe runs on OpenRouter MAI-Transcribe-2"
   else
     say "[d] ai-service.env: GROQ_API_KEY is set — /api/transcribe runs on Groq"
   fi

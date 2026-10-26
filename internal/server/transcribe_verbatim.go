@@ -1,34 +1,36 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
 
 // handleTranscribeVerbatim takes one audio file from daily-dictation's import
 // pipeline (multipart field "audio") and answers its transcript shape
-// {"lines": [...], "words": [...]} via Azure MAI-Transcribe-2 (verbatim with
-// word timestamps).
+// {"lines": [...], "words": [...]} from OpenRouter's MAI-Transcribe-2
+// (verbose_json with word timestamps, verbatim style).
 func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "multipart/form-data", func(mt string) bool {
 		return mt == "multipart/form-data"
 	}) {
 		return
 	}
-	if s.cfg.AzureSpeechKey == "" {
-		jsonError(w, "server not configured: AZURE_SPEECH_KEY missing", http.StatusInternalServerError)
+	if s.cfg.OpenRouterTranscribeAPIKey == "" {
+		jsonError(w, "server not configured: OPENROUTER_TRANSCRIBE_API_KEY missing", http.StatusInternalServerError)
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, azureMaxBytes+1024*1024)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// OpenRouter caps Azure-backed MAI uploads at 25 MB. Leave room for the
+	// multipart headers, then check the audio itself below.
+	r.Body = http.MaxBytesReader(w, r.Body, openRouterSTTMaxBytes+2*1024*1024)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			jsonError(w, "audio too long (over 300 MB)", http.StatusRequestEntityTooLarge)
+			jsonError(w, "audio too long (over 25 MB)", http.StatusRequestEntityTooLarge)
 			return
 		}
 		jsonError(w, "could not read multipart body", http.StatusBadRequest)
@@ -45,61 +47,57 @@ func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request
 		jsonError(w, "could not read audio", http.StatusBadRequest)
 		return
 	}
+	if len(audio) > openRouterSTTMaxBytes {
+		jsonError(w, "audio too long (over 25 MB)", http.StatusRequestEntityTooLarge)
+		return
+	}
 	filename := hdr.Filename
 	if filename == "" {
 		filename = "audio.mp3"
 	}
+	format, ok := openRouterAudioFormat(filename)
+	if !ok {
+		jsonError(w, "unsupported audio format (use WAV, MP3, FLAC, M4A, OGG, WebM or AAC)", http.StatusUnsupportedMediaType)
+		return
+	}
 
-	upload, err := newAzureUpload(s.cfg.AzureSpeechEndpoint, "audio", filename, "", audio, verbatimDefinition)
+	body, err := newOpenRouterSTTBody(audio, format, true)
 	if err != nil {
 		jsonError(w, "internal", http.StatusInternalServerError)
 		return
 	}
-	req, err := upload.request(r.Context(), s.cfg.AzureSpeechKey)
+	ctx, cancel := context.WithTimeout(r.Context(), openRouterVerbatimTimeout)
+	defer cancel()
+	res, err := s.postOpenRouterSTT(ctx, body)
 	if err != nil {
-		jsonError(w, "internal", http.StatusInternalServerError)
+		jsonErrorDetail(w, "could not reach OpenRouter", http.StatusBadGateway, err.Error())
 		return
 	}
+	raw := drainBody(res)
 
-	res, err := s.azureClient().Do(req)
-	if err != nil {
-		jsonErrorDetail(w, "could not reach Azure", http.StatusBadGateway, err.Error())
-		return
-	}
-	defer res.Body.Close()
-
-	raw, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		// HTTP stays 502 (proxy failure); body carries the real Azure status.
+		// HTTP stays 502 (proxy failure); the body carries the real upstream
+		// status. azureStatus is kept for daily-dictation's existing
+		// permanent-vs-retryable classifier; openRouterStatus names the new
+		// provider explicitly.
 		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":       fmt.Sprintf("azure returned %d", res.StatusCode),
-			"azureStatus": res.StatusCode,
-			"detail":      string(raw),
+			"error":            fmt.Sprintf("openrouter returned %d", res.StatusCode),
+			"openRouterStatus": res.StatusCode,
+			"azureStatus":      res.StatusCode,
+			"detail":           string(raw),
 		})
 		return
 	}
 
-	var az azureResponse
-	if err := json.Unmarshal(raw, &az); err != nil {
-		jsonError(w, "azure returned unparseable JSON", http.StatusBadGateway)
+	var out openRouterSTTResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		jsonError(w, "openrouter returned unparseable JSON", http.StatusBadGateway)
 		return
 	}
-
-	lines := make([]azureLine, 0, len(az.Phrases))
-	words := make([]azureWord, 0, 256)
-	for _, p := range az.sortedPhrases() {
-		if t := strings.TrimSpace(p.Text); t != "" {
-			lines = append(lines, azureLine{Text: t, Start: p.OffsetMs / 1000})
-		}
-		for _, wd := range p.Words {
-			if t := strings.TrimSpace(wd.Text); t != "" {
-				start := wd.OffsetMs / 1000
-				words = append(words, azureWord{Text: t, Start: start, End: start + wd.DurationMs/1000})
-			}
-		}
-	}
+	lines := out.lines()
+	words := out.wordList()
 	if len(lines) == 0 || len(words) == 0 {
-		jsonError(w, "azure returned no transcript", http.StatusBadGateway)
+		jsonError(w, "openrouter returned no transcript", http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "words": words})

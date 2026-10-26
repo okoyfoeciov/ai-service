@@ -33,8 +33,8 @@ type Server struct {
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort *http.Client // /api/transcribe: Groq (2 min)
-	httpAzure *http.Client // Azure Speech: MAI-Transcribe-2 and verbatim (10 min)
+	httpShort      *http.Client // /api/transcribe: Groq (2 min)
+	httpOpenRouter *http.Client // OpenRouter MAI: transcribe and verbatim (10 min backstop)
 
 	// transcribeProviders is every provider config.Load found (Groq first),
 	// and transcribeProvider is the one /api/transcribe uses now. The tray
@@ -63,7 +63,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 		cfg:                 cfg,
 		mw:                  mw.New(st),
 		httpShort:           &http.Client{Timeout: 120 * time.Second},
-		httpAzure:           &http.Client{Timeout: 10 * time.Minute},
+		httpOpenRouter:      &http.Client{Timeout: 10 * time.Minute},
 		transcribeProviders: append([]string(nil), cfg.TranscribeProviders...),
 	}
 	if cfg.TranscribeProvider != "" {
@@ -181,7 +181,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // loopbackOnly is the guard ServeHTTP runs before every route. Binding
 // 127.0.0.1 keeps other machines out, but not pages open in this machine's
 // browser: DNS rebinding could read responses, and any site can fire blind
-// cross-site POSTs that bill the OpenRouter/Claude, Cerebras, Groq or Azure
+// cross-site POSTs that bill the OpenRouter, Claude, Cerebras or Groq
 // accounts. The Host and any http(s) Origin must name loopback; an absent or
 // "null" Origin, or a non-web one (chrome-extension:// for comart, file:// for
 // Cairn's Electron renderer), passes: loopback stays the trust boundary.
