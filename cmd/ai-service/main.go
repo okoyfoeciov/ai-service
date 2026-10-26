@@ -133,7 +133,7 @@ func main() {
 		}
 	}()
 	if multiProvider {
-		log.Printf("tray: both transcription providers are configured; the picker is in the menu bar")
+		log.Printf("tray: multiple transcription providers are configured; the picker is in the menu bar")
 		trayActive.Store(true)
 		tray.Run(app, func(provider string) {
 			st.Set(savedTranscribeProviderKey, provider, 0)
