@@ -6,7 +6,9 @@ import (
 )
 
 // clearTranscribeEnv blanks every variable that decides the /api/transcribe
-// route, so the machine's own environment cannot leak into a case.
+// route, so the machine's own environment cannot leak into a case. It then
+// leaves one Groq key set, because Load now refuses to start with no
+// transcribe provider at all; the transcribe cases override it.
 // PARAKEET_URL is retired but still cleared: a case sets it to prove that Load
 // refuses it.
 func clearTranscribeEnv(t *testing.T) {
@@ -14,6 +16,7 @@ func clearTranscribeEnv(t *testing.T) {
 	for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL", "PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
 		t.Setenv(k, "")
 	}
+	t.Setenv("GROQ_API_KEY", "test-groq")
 }
 
 // clearExplainEnv blanks every variable that decides the explain route, so the
@@ -201,12 +204,31 @@ func TestMemoirRouteNamesTheProviderAndModel(t *testing.T) {
 	}
 }
 
-func TestLoadRefusesMultipleTranscribeProviders(t *testing.T) {
+func TestLoadAllowsBothTranscribeProviders(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
 	t.Setenv("GROQ_API_KEY", "g")
 	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
+	c, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ProviderGroq, ProviderMAITranscribe}
+	if len(c.TranscribeProviders) != len(want) || c.TranscribeProviders[0] != want[0] || c.TranscribeProviders[1] != want[1] {
+		t.Fatalf("providers %v, want %v", c.TranscribeProviders, want)
+	}
+	if c.TranscribeProvider != ProviderGroq {
+		t.Errorf("starting provider %q, want %q", c.TranscribeProvider, ProviderGroq)
+	}
+}
+
+func TestLoadRefusesNoTranscribeProvider(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("GROQ_API_KEY", "")
+	t.Setenv("MAI_TRANSCRIBE_API_KEY", "")
 	_, _, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") || !strings.Contains(err.Error(), "MAI_TRANSCRIBE_API_KEY") {
 		t.Fatalf("err %v, want one naming both keys", err)
@@ -226,14 +248,15 @@ func TestLoadRefusesRetiredParakeetURL(t *testing.T) {
 
 func TestLoadTranscribeProvider(t *testing.T) {
 	cases := []struct {
-		name                          string
-		env                           map[string]string
-		wantProvider                  string
-		wantMissingTranscribe, wantOK bool
+		name         string
+		env          map[string]string
+		wantProvider string
+		wantOK       bool
 	}{
-		{"none set", nil, "", true, true},
-		{"groq", map[string]string{"GROQ_API_KEY": "g"}, ProviderGroq, false, true},
-		{"mai-transcribe-2", map[string]string{"MAI_TRANSCRIBE_API_KEY": "m"}, ProviderMAITranscribe, false, true},
+		{"none set", map[string]string{"GROQ_API_KEY": ""}, "", false},
+		{"groq", map[string]string{"GROQ_API_KEY": "g"}, ProviderGroq, true},
+		{"mai-transcribe-2", map[string]string{"GROQ_API_KEY": "", "MAI_TRANSCRIBE_API_KEY": "m"}, ProviderMAITranscribe, true},
+		{"both", map[string]string{"GROQ_API_KEY": "g", "MAI_TRANSCRIBE_API_KEY": "m"}, ProviderGroq, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -243,7 +266,7 @@ func TestLoadTranscribeProvider(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			c, missing, err := Load()
+			c, _, err := Load()
 			if (err == nil) != tc.wantOK {
 				t.Fatalf("err %v, want ok=%v", err, tc.wantOK)
 			}
@@ -253,14 +276,8 @@ func TestLoadTranscribeProvider(t *testing.T) {
 			if c.TranscribeProvider != tc.wantProvider {
 				t.Errorf("got provider %q, want %q", c.TranscribeProvider, tc.wantProvider)
 			}
-			gotMissing := false
-			for _, m := range missing {
-				if strings.HasPrefix(m, "GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY") {
-					gotMissing = true
-				}
-			}
-			if gotMissing != tc.wantMissingTranscribe {
-				t.Errorf("missing %v, want transcribe missing=%v", missing, tc.wantMissingTranscribe)
+			if len(c.TranscribeProviders) == 0 || c.TranscribeProviders[0] != tc.wantProvider {
+				t.Errorf("providers %v, want first %q", c.TranscribeProviders, tc.wantProvider)
 			}
 		})
 	}
@@ -275,13 +292,13 @@ func TestTranscribeKeysAreIndependentOfVerbatimAzureKey(t *testing.T) {
 	clearMemoirEnv(t)
 	t.Setenv("AZURE_SPEECH_KEY", "az-verbatim")
 	c, _, err := Load()
-	if err != nil || c.TranscribeProvider != "" || c.AzureSpeechKey != "az-verbatim" {
+	if err != nil || c.TranscribeProvider != ProviderGroq || c.AzureSpeechKey != "az-verbatim" {
 		t.Fatalf("transcribe %q azure %q err %v", c.TranscribeProvider, c.AzureSpeechKey, err)
 	}
 	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
 	c, _, err = Load()
-	if err != nil || c.TranscribeProvider != ProviderMAITranscribe {
-		t.Fatalf("transcribe %q err %v", c.TranscribeProvider, err)
+	if err != nil || c.TranscribeProvider != ProviderGroq || len(c.TranscribeProviders) != 2 {
+		t.Fatalf("transcribe %q providers %v err %v", c.TranscribeProvider, c.TranscribeProviders, err)
 	}
 }
 
@@ -290,9 +307,9 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{nil, []string{"none", "GROQ_API_KEY", "MAI_TRANSCRIBE_API_KEY"}},
 		{map[string]string{"GROQ_API_KEY": "g"}, []string{"Groq", "whisper-large-v3-turbo"}},
-		{map[string]string{"MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Azure Speech", "MAI-Transcribe-2", "https://eastus.api.cognitive.microsoft.com"}},
+		{map[string]string{"GROQ_API_KEY": "", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Azure Speech", "MAI-Transcribe-2", "https://eastus.api.cognitive.microsoft.com"}},
+		{map[string]string{"GROQ_API_KEY": "g", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Groq", "Azure Speech", "both enabled", "tray picker", "starting on Groq"}},
 	} {
 		clearTranscribeEnv(t)
 		clearExplainEnv(t)

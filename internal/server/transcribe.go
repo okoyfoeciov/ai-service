@@ -68,8 +68,37 @@ func nullableString(s string) any {
 	return nil
 }
 
+// TranscribeProviders returns the providers config.Load found, in the order
+// the tray menu shows them. The slice is a copy.
+func (s *Server) TranscribeProviders() []string {
+	return append([]string(nil), s.transcribeProviders...)
+}
+
+// TranscribeProvider returns the provider /api/transcribe is using now.
+func (s *Server) TranscribeProvider() string {
+	if v, ok := s.transcribeProvider.Load().(string); ok && v != "" {
+		return v
+	}
+	// A Server built by hand in a test has no atomic value; fall back to the
+	// configuration it was given.
+	return s.cfg.TranscribeProvider
+}
+
+// SetTranscribeProvider switches /api/transcribe to provider. It reports false
+// for a provider that is not configured, so a stale saved selection or a bogus
+// menu click cannot route a recording to a service without a key.
+func (s *Server) SetTranscribeProvider(provider string) bool {
+	for _, enabled := range s.transcribeProviders {
+		if provider == enabled {
+			s.transcribeProvider.Store(provider)
+			return true
+		}
+	}
+	return false
+}
+
 // handleTranscribe sends one clip from comart's mic recorder (Exscriptor) to
-// the configured /api/transcribe provider (Groq Whisper or Azure
+// the selected /api/transcribe provider (Groq Whisper or Azure
 // MAI-Transcribe-2) and answers {"text": ...}.
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "an audio type", func(mt string) bool {
@@ -77,7 +106,8 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}) {
 		return
 	}
-	if s.cfg.TranscribeProvider == "" {
+	provider := s.TranscribeProvider()
+	if provider == "" {
 		jsonError(w, "server not configured: neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set", http.StatusInternalServerError)
 		return
 	}
@@ -101,7 +131,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 
 	ext := pickExt(contentType)
 
-	switch s.cfg.TranscribeProvider {
+	switch provider {
 	case config.ProviderGroq:
 		s.transcribeGroq(w, r, audio, ext, contentType)
 	case config.ProviderMAITranscribe:

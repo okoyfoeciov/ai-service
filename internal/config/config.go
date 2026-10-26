@@ -10,8 +10,9 @@ import (
 )
 
 // Providers that can serve /api/transcribe, /api/explain and /api/memoir/check.
-// For each route exactly one is active, picked by which environment variable is
-// set (Load refuses to run when more than one is).
+// The explain and Memoir routes activate exactly one, picked by which
+// environment variable is set (Load refuses both). /api/transcribe may have
+// both of its providers at once; the tray picker selects the active one.
 const (
 	ProviderGroq          = "groq"
 	ProviderMAITranscribe = "mai-transcribe-2"
@@ -25,16 +26,18 @@ type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
 	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on Groq
-	// Whisper or on Azure Speech (MAI-Transcribe-2), whichever one of
-	// GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY is set. Setting more than one is a
-	// startup error: with two providers for one route it would be too easy to
-	// believe one service answers while the other does.
+	// Whisper and/or Azure Speech (MAI-Transcribe-2). Both may be enabled at
+	// once; the tray picker then chooses which one answers. At least one key is
+	// required, and having none is a startup error.
 	GroqAPIKey          string
 	GroqModel           string
 	MAITranscribeAPIKey string
-	// TranscribeProvider is ProviderGroq or ProviderMAITranscribe, or "" when
-	// neither key is set (the transcribe handler then reports the missing
-	// configuration).
+	// TranscribeProviders lists every configured provider in a fixed order
+	// (Groq first). It has one or two entries after Load succeeds.
+	TranscribeProviders []string
+	// TranscribeProvider is the provider /api/transcribe starts on: the first
+	// entry of TranscribeProviders, unless main restores a selection saved by
+	// the tray picker.
 	TranscribeProvider string
 
 	// Verbatim import transcription (/api/transcribe-verbatim) runs on
@@ -110,10 +113,10 @@ const (
 // piece instead of the whole server failing.
 //
 // The error is for a configuration that must not run at all: more than one
-// variable of one route set, the retired PARAKEET_URL still present, a Claude
-// key with a model id that is not Claude's or an effort not in
-// low/medium/high/xhigh/max, or the retired CEREBRAS_API_KEY still present. The
-// caller exits on it.
+// variable of the explain or Memoir route set, neither transcription key set,
+// the retired PARAKEET_URL still present, a Claude key with a model id that is
+// not Claude's or an effort not in low/medium/high/xhigh/max, or the retired
+// CEREBRAS_API_KEY still present. The caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:          env("LISTEN_ADDR", "127.0.0.1:8770"),
@@ -162,7 +165,6 @@ func Load() (Config, []string, error) {
 
 	var missing []string
 	for _, k := range []struct{ name, val string }{
-		{"GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY", c.TranscribeProvider},
 		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
 		{"MEMOIR_CEREBRAS_API_KEY or MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
 		{"AZURE_SPEECH_KEY", c.AzureSpeechKey},
@@ -174,28 +176,21 @@ func Load() (Config, []string, error) {
 	return c, missing, nil
 }
 
-// resolveTranscribe picks the /api/transcribe provider from the two
-// environment variables. An empty variable counts as unset, because
-// .env.example ships empty lines.
+// resolveTranscribe collects the /api/transcribe providers. Both may be set;
+// the tray picker then switches between them. An empty variable counts as
+// unset, because .env.example ships empty lines.
 func (c *Config) resolveTranscribe() error {
-	var set []string
 	if c.GroqAPIKey != "" {
-		set = append(set, "GROQ_API_KEY")
+		c.TranscribeProviders = append(c.TranscribeProviders, ProviderGroq)
 	}
 	if c.MAITranscribeAPIKey != "" {
-		set = append(set, "MAI_TRANSCRIBE_API_KEY")
+		c.TranscribeProviders = append(c.TranscribeProviders, ProviderMAITranscribe)
 	}
-	if len(set) > 1 {
-		return fmt.Errorf("%s are set, so it is unclear which "+
-			"provider answers /api/transcribe. Keep one, and set the other to empty (KEY=) or comment it out in ai-service.env",
-			strings.Join(set, " and "))
+	if len(c.TranscribeProviders) == 0 {
+		return fmt.Errorf("neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set, so /api/transcribe has no " +
+			"provider. Set at least one in ai-service.env")
 	}
-	switch {
-	case c.GroqAPIKey != "":
-		c.TranscribeProvider = ProviderGroq
-	case c.MAITranscribeAPIKey != "":
-		c.TranscribeProvider = ProviderMAITranscribe
-	}
+	c.TranscribeProvider = c.TranscribeProviders[0]
 	return nil
 }
 
@@ -266,13 +261,34 @@ func (c *Config) resolveMemoir() error {
 
 // TranscribeRoute is one line saying where /api/transcribe goes, for the startup log.
 func (c Config) TranscribeRoute() string {
-	switch c.TranscribeProvider {
-	case ProviderGroq:
-		return fmt.Sprintf("Groq, model %s", c.GroqModel)
-	case ProviderMAITranscribe:
-		return fmt.Sprintf("Azure Speech, model MAI-Transcribe-2 (%s)", c.AzureSpeechEndpoint)
+	var parts []string
+	for _, p := range c.TranscribeProviders {
+		switch p {
+		case ProviderGroq:
+			parts = append(parts, fmt.Sprintf("Groq, model %s", c.GroqModel))
+		case ProviderMAITranscribe:
+			parts = append(parts, fmt.Sprintf("Azure Speech, model MAI-Transcribe-2 (%s)", c.AzureSpeechEndpoint))
+		}
 	}
-	return "none (neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set)"
+	switch len(parts) {
+	case 0:
+		return "none (neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set)"
+	case 1:
+		return parts[0]
+	}
+	return strings.Join(parts, " and ") +
+		fmt.Sprintf(" (both enabled; tray picker, starting on %s)", transcribeProviderName(c.TranscribeProvider))
+}
+
+// transcribeProviderName is the short human name used in the startup log.
+func transcribeProviderName(provider string) string {
+	switch provider {
+	case ProviderGroq:
+		return "Groq"
+	case ProviderMAITranscribe:
+		return "Azure MAI-Transcribe-2"
+	}
+	return provider
 }
 
 // ExplainRoute is one line saying where /api/explain goes, for the startup log.

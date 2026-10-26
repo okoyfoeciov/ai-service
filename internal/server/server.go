@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ai-service/internal/config"
@@ -26,7 +27,7 @@ type Server struct {
 	mw  *mw.Client
 	// explainLLM is /api/explain's model (OpenRouter or Claude), memoirLLM is
 	// Memoir's (Cerebras or Claude). Whichever key config.Load found picks the
-	// provider, and it refuses to run with both keys of one route. Each is nil
+	// provider, and it refuses both keys of the explain or Memoir route. Each is nil
 	// when its API key is missing; the handler then reports that instead of the
 	// whole server refusing to start.
 	explainLLM llm.Streamer
@@ -34,6 +35,12 @@ type Server struct {
 
 	httpShort *http.Client // /api/transcribe: Groq (2 min)
 	httpAzure *http.Client // Azure Speech: MAI-Transcribe-2 and verbatim (10 min)
+
+	// transcribeProviders is every provider config.Load found (Groq first),
+	// and transcribeProvider is the one /api/transcribe uses now. The tray
+	// picker may change it while requests are running, hence atomic.
+	transcribeProviders []string
+	transcribeProvider  atomic.Value // string
 
 	// inflight counts running handlers, so Drain can wait for handlers that
 	// http.Server.Close cut off.
@@ -53,10 +60,14 @@ const (
 
 func New(cfg config.Config, st *store.Store) *Server {
 	s := &Server{
-		cfg:       cfg,
-		mw:        mw.New(st),
-		httpShort: &http.Client{Timeout: 120 * time.Second},
-		httpAzure: &http.Client{Timeout: 10 * time.Minute},
+		cfg:                 cfg,
+		mw:                  mw.New(st),
+		httpShort:           &http.Client{Timeout: 120 * time.Second},
+		httpAzure:           &http.Client{Timeout: 10 * time.Minute},
+		transcribeProviders: append([]string(nil), cfg.TranscribeProviders...),
+	}
+	if cfg.TranscribeProvider != "" {
+		s.transcribeProvider.Store(cfg.TranscribeProvider)
 	}
 	// Model calls have no overall timeout: a stream can run for minutes and
 	// the request context cancels it.

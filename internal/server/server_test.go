@@ -539,6 +539,70 @@ func TestTranscribeGroqProvider(t *testing.T) {
 	}
 }
 
+// The tray picker flips the provider between requests, and a provider that has
+// no key cannot be selected.
+func TestTranscribeProviderSwitch(t *testing.T) {
+	oldGroq := groqURL
+	defer func() { groqURL = oldGroq }()
+	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"from groq"}`))
+	}))
+	defer groqSrv.Close()
+	groqURL = groqSrv.URL
+
+	oldConvert := convertForAzure
+	convertForAzure = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
+	t.Cleanup(func() { convertForAzure = oldConvert })
+	maiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"phrases":[{"text":"from mai.","offsetMilliseconds":0}]}`))
+	}))
+	defer maiSrv.Close()
+
+	s := New(config.Config{
+		TranscribeProviders: []string{config.ProviderGroq, config.ProviderMAITranscribe},
+		TranscribeProvider:  config.ProviderGroq,
+		GroqAPIKey:          "g",
+		MAITranscribeAPIKey: "m",
+		AzureSpeechEndpoint: maiSrv.URL,
+	}, nil)
+	s.httpShort = groqSrv.Client()
+	s.httpAzure = maiSrv.Client()
+
+	text := func(rec *httptest.ResponseRecorder) string {
+		t.Helper()
+		var out struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("body %q: %v", rec.Body.String(), err)
+		}
+		return out.Text
+	}
+
+	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusOK || text(rec) != "from groq" {
+		t.Fatalf("groq: status %d text %q", rec.Code, text(rec))
+	}
+	if !s.SetTranscribeProvider(config.ProviderMAITranscribe) {
+		t.Fatal("could not select the configured MAI provider")
+	}
+	rec = postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
+	if rec.Code != http.StatusOK || text(rec) != "from mai." {
+		t.Fatalf("mai: status %d text %q", rec.Code, text(rec))
+	}
+	if s.SetTranscribeProvider("not-configured") {
+		t.Error("selected a provider that has no key")
+	}
+	if got := s.TranscribeProvider(); got != config.ProviderMAITranscribe {
+		t.Errorf("provider %q after the rejected switch, want %q", got, config.ProviderMAITranscribe)
+	}
+	if got := s.TranscribeProviders(); len(got) != 2 {
+		t.Errorf("providers %v, want two", got)
+	}
+}
+
 func TestTranscribeVerbatimProvider(t *testing.T) {
 	var gotKey, gotPath, gotDef, gotFile string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

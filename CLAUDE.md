@@ -6,26 +6,31 @@ daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
 security model and models.
 
-In short, `config.Load` refuses to start when a route has more than one
-possible provider: `/api/transcribe` has two (Groq and Azure MAI-Transcribe-2);
-`/api/explain` and `/api/memoir/check` have two each. Every
-Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
+In short, `/api/transcribe` has two providers (Groq and Azure
+MAI-Transcribe-2) and may have both keys at once: the tray picker
+(`internal/tray`) then switches between them. It refuses to start with neither
+key. `/api/explain` and `/api/memoir/check` still have two each and refuse both.
+Every Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
 `/api/explain`'s). The Azure MAI path needs `ffmpeg` on `PATH`:
 `internal/server/audio.go` re-encodes every clip to mono 16 kHz WAV first.
+Linux's tray is pure D-Bus; macOS links Cocoa, so its build needs cgo.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
-- **There is no UI to fix here.** A complaint about how something looks, where
-  a button sits or what a panel says belongs to a client: the comart extension
-  (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's Memoir tab
-  (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
-  (`~/daily-dictation`).
+- **There is no web UI to fix here.** A complaint about how something looks,
+  where a button sits or what a panel says belongs to a client: the comart
+  extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
+  Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
+  (`~/daily-dictation`). The one native UI is the tray picker that appears only
+  when both transcribe keys are set (`internal/tray`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one
   line. Do not grow it into a status page.
-- **Do not add a template, a static directory or an `embed` back.** A served
-  copy of a client would have to be kept in step with the real one by hand.
+- **Do not add a served template, a static directory or an `embed` for one.** A
+  served copy of a client would have to be kept in step with the real one by
+  hand. The tray's two icons are embedded in the binary and never served over
+  HTTP, which is not an exception to this rule.
 - **Keep the comart client API stable.** comart uses its five routes with no
   CORS, no auth and no route of its own added since. Memoir's
   `/api/memoir/check` and daily-dictation's `/api/transcribe-verbatim` are the

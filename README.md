@@ -29,7 +29,7 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the configured STT provider (Groq Whisper or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
+| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to Groq Whisper or Azure MAI-Transcribe-2 (whichever the tray picker has selected) and returns `{"text": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -56,22 +56,24 @@ the build, the env file and the restart):
 
 1. Checks the OS and that `go` is on `PATH` (on macOS, for example
    `brew install go`).
-2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
+2. Builds `bin/ai-service` (`CGO_ENABLED=0` on Linux; on macOS cgo is on so
+   the menu-bar picker can use Cocoa, which needs the Xcode command-line
+   tools).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each missing credential it asks in a hidden prompt: `AZURE_SPEECH_KEY`;
-   exactly one of `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`;
+   at least one of `MAI_TRANSCRIBE_API_KEY` and `GROQ_API_KEY`;
    one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
    display. For the transcribe provider it asks for `MAI_TRANSCRIBE_API_KEY`
-   first, then `GROQ_API_KEY`. For the
+   first, then `GROQ_API_KEY`; set both by hand to get the tray picker. For the
    explain key it asks for OpenRouter first; an empty answer there moves on to
    Claude. For the Memoir key it asks for Claude first; an empty answer there
-   moves on to Cerebras. It stops if more than one variable of any route is
-   already set, if `PARAKEET_URL` is still there, or if the retired
-   `CEREBRAS_API_KEY` is still there. If
-   `MAI_TRANSCRIBE_API_KEY` is the transcribe provider, it also checks that
-   `ffmpeg` is on `PATH` (the server converts comart's WebM recordings with it).
+   moves on to Cerebras. It stops if more than one variable of the explain or
+   Memoir route is already set, if `PARAKEET_URL` is still there, or if the
+   retired `CEREBRAS_API_KEY` is still there. If `MAI_TRANSCRIBE_API_KEY` is
+   set (alone or with Groq), it also checks that `ffmpeg` is on `PATH` (the
+   server converts comart's WebM recordings with it).
    It never prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -167,9 +169,9 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this **or** `MAI_TRANSCRIBE_API_KEY`, never both. |
+| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `MAI_TRANSCRIBE_API_KEY`, or both. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this **or** `GROQ_API_KEY`, never both. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
+| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY`, or both. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
@@ -205,15 +207,15 @@ server at start; the service manager retries every 10 s and the error is in
 `logs/ai-service.log`.
 
 After an edit, restart the service. A missing API key is only a warning at
-start: `/api/transcribe` and `/api/transcribe-verbatim` answer 500,
-`/api/explain` sends an `error` event and `/api/memoir/check` answers 503, each
-naming the missing key, until it is set.
+start: `/api/transcribe-verbatim` answers 500, `/api/explain` sends an `error`
+event and `/api/memoir/check` answers 503, each naming the missing key, until it
+is set. `/api/transcribe` is the exception: with neither of its keys the service
+refuses to start.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
-manager keeps retrying every 10 s) when the transcribe, explain or Memoir route
-would be unclear:
+manager keeps retrying every 10 s) when a route has no usable provider:
 
-- both `GROQ_API_KEY` and `MAI_TRANSCRIBE_API_KEY` are set;
+- neither `GROQ_API_KEY` nor `MAI_TRANSCRIBE_API_KEY` is set;
 - the retired `PARAKEET_URL` is still set (the local Parakeet integration was
   removed);
 - both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
@@ -240,6 +242,28 @@ the model it asked for next to the model the API says answered (`llm[Claude/expl
 or `llm[Claude/memoir]`). The Anthropic SDK's own `ANTHROPIC_*` environment variables are
 switched off, so a stray `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` cannot
 re-route the call.
+
+### Tray picker (both transcribe providers)
+
+Set both `GROQ_API_KEY` and `MAI_TRANSCRIBE_API_KEY` and the service shows a
+tray icon: the macOS menu bar or the Linux status area (GNOME's AppIndicator
+extension, KDE, and anything else implementing StatusNotifierItem). Clicking it
+opens two check items, **Groq Whisper** and **MAI-Transcribe-2 (Azure)**; the
+checked one answers `/api/transcribe`. There is no tray icon with only one key,
+and the choice does not touch any client: comart keeps calling the same route.
+
+- The service starts on Groq and remembers a pick in the SQLite cache
+  (`data/cache.db`, key `transcribe:provider`), so a restart keeps it.
+- If a saved pick's key is later removed, the service falls back to the first
+  configured provider instead of routing to a service with no credentials.
+- Linux needs the service to have the session D-Bus address; the systemd user
+  manager imports it at login. Without a desktop session the service still
+  serves HTTP, logs `tray: no session D-Bus …`, and skips the icon.
+- macOS builds the tray with cgo/Cocoa, so `install.sh` needs the Xcode
+  command-line tools (`xcode-select --install`). Linux uses D-Bus from pure Go
+  and keeps the static `CGO_ENABLED=0` build.
+- The tray is part of the service process, not an HTTP route. It writes only the
+  cache row above; no new listening socket, no extra file.
 
 ## Security model
 
@@ -304,7 +328,7 @@ Request limits:
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
-| `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
+| `/api/transcribe` | Groq, if `GROQ_API_KEY` is set (the starting default when both are configured) | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
@@ -385,6 +409,7 @@ cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers
+internal/tray       the /api/transcribe provider picker (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
@@ -399,12 +424,14 @@ deliberate.
 ## Build and test
 
 ```sh
-CGO_ENABLED=0 go build -o bin/ai-service ./cmd/ai-service
+CGO_ENABLED=0 go build -o bin/ai-service ./cmd/ai-service   # Linux: static
+CGO_ENABLED=1 go build -o bin/ai-service ./cmd/ai-service   # macOS: Cocoa tray
 go vet ./...
 go test ./...
 ```
 
-The result is one static binary with no cgo. At runtime it needs the SQLite
+On Linux the result is one static binary with no cgo; macOS links Cocoa for the
+menu-bar picker. At runtime it needs the SQLite
 file it creates on first run; credentials come from `ai-service.env`, and the
 Azure MAI path needs `ffmpeg` on `PATH`. After a build, restart the service to
 run the new binary
