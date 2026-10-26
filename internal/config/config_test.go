@@ -7,6 +7,8 @@ import (
 
 // clearTranscribeEnv blanks every variable that decides the /api/transcribe
 // route, so the machine's own environment cannot leak into a case.
+// PARAKEET_URL is retired but still cleared: a case sets it to prove that Load
+// refuses it.
 func clearTranscribeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL", "PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
@@ -200,34 +202,25 @@ func TestMemoirRouteNamesTheProviderAndModel(t *testing.T) {
 }
 
 func TestLoadRefusesMultipleTranscribeProviders(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-		want []string
-	}{
-		{"groq and parakeet", map[string]string{"GROQ_API_KEY": "g", "PARAKEET_URL": "http://127.0.0.1:8790"}, []string{"GROQ_API_KEY", "PARAKEET_URL"}},
-		{"groq and mai", map[string]string{"GROQ_API_KEY": "g", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"GROQ_API_KEY", "MAI_TRANSCRIBE_API_KEY"}},
-		{"parakeet and mai", map[string]string{"PARAKEET_URL": "http://127.0.0.1:8790", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY"}},
-		{"all three", map[string]string{"GROQ_API_KEY": "g", "PARAKEET_URL": "http://127.0.0.1:8790", "MAI_TRANSCRIBE_API_KEY": "m"}, []string{"GROQ_API_KEY", "PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY"}},
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("GROQ_API_KEY", "g")
+	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
+	_, _, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") || !strings.Contains(err.Error(), "MAI_TRANSCRIBE_API_KEY") {
+		t.Fatalf("err %v, want one naming both keys", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			clearTranscribeEnv(t)
-			clearExplainEnv(t)
-			clearMemoirEnv(t)
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			_, _, err := Load()
-			if err == nil {
-				t.Fatal("want error when multiple transcribe providers are set")
-			}
-			for _, w := range tc.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("err %q does not name %s", err.Error(), w)
-				}
-			}
-		})
+}
+
+func TestLoadRefusesRetiredParakeetURL(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("PARAKEET_URL", "http://127.0.0.1:8790")
+	_, _, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "PARAKEET_URL") || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("err %v, want one saying PARAKEET_URL is no longer supported", err)
 	}
 }
 
@@ -240,11 +233,6 @@ func TestLoadTranscribeProvider(t *testing.T) {
 	}{
 		{"none set", nil, "", true, true},
 		{"groq", map[string]string{"GROQ_API_KEY": "g"}, ProviderGroq, false, true},
-		{"parakeet http", map[string]string{"PARAKEET_URL": "http://127.0.0.1:8790"}, ProviderParakeet, false, true},
-		{"parakeet https", map[string]string{"PARAKEET_URL": "https://localhost:8790"}, ProviderParakeet, false, true},
-		{"parakeet bad scheme", map[string]string{"PARAKEET_URL": "ftp://127.0.0.1:8790"}, "", false, false},
-		{"parakeet bare path", map[string]string{"PARAKEET_URL": "parakeet-ov"}, "", false, false},
-		{"parakeet empty host", map[string]string{"PARAKEET_URL": "http://"}, "", false, false},
 		{"mai-transcribe-2", map[string]string{"MAI_TRANSCRIBE_API_KEY": "m"}, ProviderMAITranscribe, false, true},
 	}
 	for _, tc := range cases {
@@ -267,7 +255,7 @@ func TestLoadTranscribeProvider(t *testing.T) {
 			}
 			gotMissing := false
 			for _, m := range missing {
-				if strings.Contains(m, "PARAKEET_URL") {
+				if strings.HasPrefix(m, "GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY") {
 					gotMissing = true
 				}
 			}
@@ -279,8 +267,8 @@ func TestLoadTranscribeProvider(t *testing.T) {
 }
 
 // AZURE_SPEECH_KEY belongs to /api/transcribe-verbatim alone: it must not
-// select a provider for /api/transcribe or conflict with PARAKEET_URL,
-// GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY.
+// select a provider for /api/transcribe or conflict with GROQ_API_KEY or
+// MAI_TRANSCRIBE_API_KEY.
 func TestTranscribeKeysAreIndependentOfVerbatimAzureKey(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
@@ -290,9 +278,9 @@ func TestTranscribeKeysAreIndependentOfVerbatimAzureKey(t *testing.T) {
 	if err != nil || c.TranscribeProvider != "" || c.AzureSpeechKey != "az-verbatim" {
 		t.Fatalf("transcribe %q azure %q err %v", c.TranscribeProvider, c.AzureSpeechKey, err)
 	}
-	t.Setenv("PARAKEET_URL", "http://127.0.0.1:8790")
+	t.Setenv("MAI_TRANSCRIBE_API_KEY", "m")
 	c, _, err = Load()
-	if err != nil || c.TranscribeProvider != ProviderParakeet {
+	if err != nil || c.TranscribeProvider != ProviderMAITranscribe {
 		t.Fatalf("transcribe %q err %v", c.TranscribeProvider, err)
 	}
 }
@@ -302,9 +290,8 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{nil, []string{"none", "GROQ_API_KEY", "PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY"}},
+		{nil, []string{"none", "GROQ_API_KEY", "MAI_TRANSCRIBE_API_KEY"}},
 		{map[string]string{"GROQ_API_KEY": "g"}, []string{"Groq", "whisper-large-v3-turbo"}},
-		{map[string]string{"PARAKEET_URL": "http://127.0.0.1:8790"}, []string{"Parakeet", "http://127.0.0.1:8790"}},
 		{map[string]string{"MAI_TRANSCRIBE_API_KEY": "m"}, []string{"Azure Speech", "MAI-Transcribe-2", "https://eastus.api.cognitive.microsoft.com"}},
 	} {
 		clearTranscribeEnv(t)

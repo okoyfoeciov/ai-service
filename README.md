@@ -29,7 +29,7 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the configured STT provider (Groq Whisper, local Parakeet at `~/parakeet-ov`, or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
+| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the configured STT provider (Groq Whisper or Azure MAI-Transcribe-2) and returns `{"text": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to Azure MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -59,16 +59,17 @@ the build, the env file and the restart):
 2. Builds `bin/ai-service` (`CGO_ENABLED=0`).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each missing credential it asks in a hidden prompt: `AZURE_SPEECH_KEY`;
-   exactly one of `PARAKEET_URL`, `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`;
+   exactly one of `MAI_TRANSCRIBE_API_KEY` or `GROQ_API_KEY`;
    one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
-   display. For the transcribe provider it asks for `PARAKEET_URL` first, then
-   `MAI_TRANSCRIBE_API_KEY`, then `GROQ_API_KEY`. For the
+   display. For the transcribe provider it asks for `MAI_TRANSCRIBE_API_KEY`
+   first, then `GROQ_API_KEY`. For the
    explain key it asks for OpenRouter first; an empty answer there moves on to
    Claude. For the Memoir key it asks for Claude first; an empty answer there
    moves on to Cerebras. It stops if more than one variable of any route is
-   already set, or if the retired `CEREBRAS_API_KEY` is still there. If
+   already set, if `PARAKEET_URL` is still there, or if the retired
+   `CEREBRAS_API_KEY` is still there. If
    `MAI_TRANSCRIBE_API_KEY` is the transcribe provider, it also checks that
    `ffmpeg` is on `PATH` (the server converts comart's WebM recordings with it).
    It never prints a key. The keys are required here: if you cancel, enter nothing, or
@@ -166,10 +167,9 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `PARAKEET_URL` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
+| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this **or** `MAI_TRANSCRIBE_API_KEY`, never both. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `PARAKEET_URL` | (empty) | Local Parakeet service URL for `/api/transcribe` (`~/parakeet-ov`, for example `http://127.0.0.1:8790`). Set this, `GROQ_API_KEY` **or** `MAI_TRANSCRIBE_API_KEY`, never more than one. |
-| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this, `GROQ_API_KEY` **or** `PARAKEET_URL`, never more than one. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
+| `MAI_TRANSCRIBE_API_KEY` | (empty) | Secret. Azure Speech (`MAI-Transcribe-2`) key for `/api/transcribe`. Set this **or** `GROQ_API_KEY`, never both. A separate variable from `AZURE_SPEECH_KEY` (that one is `/api/transcribe-verbatim`'s), and it may hold the same key. Requires `ffmpeg` on `PATH`: see below. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
@@ -213,8 +213,9 @@ naming the missing key, until it is set.
 manager keeps retrying every 10 s) when the transcribe, explain or Memoir route
 would be unclear:
 
-- more than one of `GROQ_API_KEY`, `PARAKEET_URL` and `MAI_TRANSCRIBE_API_KEY`
-  is set, or `PARAKEET_URL` is not a valid `http(s)` URL;
+- both `GROQ_API_KEY` and `MAI_TRANSCRIBE_API_KEY` are set;
+- the retired `PARAKEET_URL` is still set (the local Parakeet integration was
+  removed);
 - both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
   as unset, so leave the unused key as an empty `KEY=` line (that also beats
   a copy of the variable in your login environment, because `run.sh` sources the
@@ -232,7 +233,7 @@ would be unclear:
 
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the route it chose, for example
-`transcribe route: local Parakeet (http://127.0.0.1:8790)`,
+`transcribe route: Azure Speech, model MAI-Transcribe-2 (https://eastus.api.cognitive.microsoft.com)`,
 `explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
 same for `memoir route: …`, and every Claude request whose stream starts logs
 the model it asked for next to the model the API says answered (`llm[Claude/explain]`
@@ -302,7 +303,6 @@ Request limits:
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
-| `/api/transcribe` | local Parakeet (`~/parakeet-ov`), if `PARAKEET_URL` is set | `parakeet-tdt-0.6b-v2` | — |
 | `/api/transcribe` | Azure Speech, if `MAI_TRANSCRIBE_API_KEY` is set | `MAI-Transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | Azure Speech (`AZURE_SPEECH_KEY`) | `MAI-Transcribe-2` (verbatim, word timestamps) | — |

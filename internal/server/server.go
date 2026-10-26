@@ -32,7 +32,7 @@ type Server struct {
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort *http.Client // /api/transcribe: Groq or local Parakeet (2 min)
+	httpShort *http.Client // /api/transcribe: Groq (2 min)
 	httpAzure *http.Client // Azure Speech: MAI-Transcribe-2 and verbatim (10 min)
 
 	// inflight counts running handlers, so Drain can wait for handlers that

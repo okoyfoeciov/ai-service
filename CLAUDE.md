@@ -7,8 +7,8 @@ daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 security model and models.
 
 In short, `config.Load` refuses to start when a route has more than one
-possible provider: `/api/transcribe` has three (Groq, local Parakeet, Azure
-MAI-Transcribe-2); `/api/explain` and `/api/memoir/check` have two each. Every
+possible provider: `/api/transcribe` has two (Groq and Azure MAI-Transcribe-2);
+`/api/explain` and `/api/memoir/check` have two each. Every
 Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
 `/api/explain`'s). The Azure MAI path needs `ffmpeg` on `PATH`:
 `internal/server/audio.go` re-encodes every clip to mono 16 kHz WAV first.

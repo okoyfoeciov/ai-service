@@ -4,7 +4,6 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 // set (Load refuses to run when more than one is).
 const (
 	ProviderGroq          = "groq"
-	ProviderParakeet      = "parakeet"
 	ProviderMAITranscribe = "mai-transcribe-2"
 
 	ProviderOpenRouter = "openrouter"
@@ -27,18 +25,16 @@ type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
 	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on Groq
-	// Whisper, on the local Parakeet service (~/parakeet-ov), or on Azure
-	// Speech (MAI-Transcribe-2), whichever one of GROQ_API_KEY, PARAKEET_URL
-	// or MAI_TRANSCRIBE_API_KEY is set. Setting more than one is a startup
-	// error: with three providers for one route it would be too easy to believe
-	// one service answers while another does.
+	// Whisper or on Azure Speech (MAI-Transcribe-2), whichever one of
+	// GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY is set. Setting more than one is a
+	// startup error: with two providers for one route it would be too easy to
+	// believe one service answers while the other does.
 	GroqAPIKey          string
 	GroqModel           string
-	ParakeetURL         string // e.g. http://127.0.0.1:8790
 	MAITranscribeAPIKey string
-	// TranscribeProvider is ProviderGroq, ProviderParakeet or
-	// ProviderMAITranscribe, or "" when none is set (the transcribe handler
-	// then reports the missing configuration).
+	// TranscribeProvider is ProviderGroq or ProviderMAITranscribe, or "" when
+	// neither key is set (the transcribe handler then reports the missing
+	// configuration).
 	TranscribeProvider string
 
 	// Verbatim import transcription (/api/transcribe-verbatim) runs on
@@ -99,7 +95,6 @@ type Config struct {
 // Defaults for the model and effort when EXPLAIN_MODEL / MEMOIR_MODEL (and the
 // effort) are unset.
 const (
-	defaultParakeetURL     = "http://127.0.0.1:8790"
 	defaultOpenRouterModel = "google/gemini-3.8-flash"
 	defaultCerebrasModel   = "qwen-3.8-27b"
 	defaultClaudeModel     = "claude-opus-5-5"
@@ -115,15 +110,15 @@ const (
 // piece instead of the whole server failing.
 //
 // The error is for a configuration that must not run at all: more than one
-// variable of one route set, an invalid PARAKEET_URL, a Claude key with a model
-// id that is not Claude's or an effort not in low/medium/high/xhigh/max, or the
-// retired CEREBRAS_API_KEY still present. The caller exits on it.
+// variable of one route set, the retired PARAKEET_URL still present, a Claude
+// key with a model id that is not Claude's or an effort not in
+// low/medium/high/xhigh/max, or the retired CEREBRAS_API_KEY still present. The
+// caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:          env("LISTEN_ADDR", "127.0.0.1:8770"),
 		GroqAPIKey:          os.Getenv("GROQ_API_KEY"),
 		GroqModel:           env("GROQ_MODEL", "whisper-large-v3-turbo"),
-		ParakeetURL:         os.Getenv("PARAKEET_URL"),
 		MAITranscribeAPIKey: os.Getenv("MAI_TRANSCRIBE_API_KEY"),
 
 		AzureSpeechKey:      os.Getenv("AZURE_SPEECH_KEY"),
@@ -145,6 +140,13 @@ func Load() (Config, []string, error) {
 	if err := c.resolveTranscribe(); err != nil {
 		return c, nil, err
 	}
+	// Parakeet was removed. Ignoring a leftover URL silently would leave a
+	// setting in the file that does nothing while /api/transcribe uses Groq or
+	// Azure.
+	if os.Getenv("PARAKEET_URL") != "" {
+		return c, nil, fmt.Errorf("PARAKEET_URL is no longer supported (the local Parakeet integration was removed). " +
+			"Delete the line from ai-service.env; /api/transcribe uses GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY")
+	}
 	if err := c.resolveExplain(); err != nil {
 		return c, nil, err
 	}
@@ -160,7 +162,7 @@ func Load() (Config, []string, error) {
 
 	var missing []string
 	for _, k := range []struct{ name, val string }{
-		{"GROQ_API_KEY, PARAKEET_URL or MAI_TRANSCRIBE_API_KEY", c.TranscribeProvider},
+		{"GROQ_API_KEY or MAI_TRANSCRIBE_API_KEY", c.TranscribeProvider},
 		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
 		{"MEMOIR_CEREBRAS_API_KEY or MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
 		{"AZURE_SPEECH_KEY", c.AzureSpeechKey},
@@ -172,7 +174,7 @@ func Load() (Config, []string, error) {
 	return c, missing, nil
 }
 
-// resolveTranscribe picks the /api/transcribe provider from the three
+// resolveTranscribe picks the /api/transcribe provider from the two
 // environment variables. An empty variable counts as unset, because
 // .env.example ships empty lines.
 func (c *Config) resolveTranscribe() error {
@@ -180,26 +182,17 @@ func (c *Config) resolveTranscribe() error {
 	if c.GroqAPIKey != "" {
 		set = append(set, "GROQ_API_KEY")
 	}
-	if c.ParakeetURL != "" {
-		set = append(set, "PARAKEET_URL")
-	}
 	if c.MAITranscribeAPIKey != "" {
 		set = append(set, "MAI_TRANSCRIBE_API_KEY")
 	}
 	if len(set) > 1 {
 		return fmt.Errorf("%s are set, so it is unclear which "+
-			"provider answers /api/transcribe. Keep one, and set the others to empty (KEY=) or comment them out in ai-service.env",
+			"provider answers /api/transcribe. Keep one, and set the other to empty (KEY=) or comment it out in ai-service.env",
 			strings.Join(set, " and "))
 	}
 	switch {
 	case c.GroqAPIKey != "":
 		c.TranscribeProvider = ProviderGroq
-	case c.ParakeetURL != "":
-		u, err := url.Parse(c.ParakeetURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("PARAKEET_URL=%q is not a valid http(s) URL (for example %s)", c.ParakeetURL, defaultParakeetURL)
-		}
-		c.TranscribeProvider = ProviderParakeet
 	case c.MAITranscribeAPIKey != "":
 		c.TranscribeProvider = ProviderMAITranscribe
 	}
@@ -276,12 +269,10 @@ func (c Config) TranscribeRoute() string {
 	switch c.TranscribeProvider {
 	case ProviderGroq:
 		return fmt.Sprintf("Groq, model %s", c.GroqModel)
-	case ProviderParakeet:
-		return fmt.Sprintf("local Parakeet (%s)", c.ParakeetURL)
 	case ProviderMAITranscribe:
 		return fmt.Sprintf("Azure Speech, model MAI-Transcribe-2 (%s)", c.AzureSpeechEndpoint)
 	}
-	return "none (none of GROQ_API_KEY, PARAKEET_URL, MAI_TRANSCRIBE_API_KEY is set)"
+	return "none (neither GROQ_API_KEY nor MAI_TRANSCRIBE_API_KEY is set)"
 }
 
 // ExplainRoute is one line saying where /api/explain goes, for the startup log.

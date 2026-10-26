@@ -485,11 +485,11 @@ func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500", rec.Code)
 	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "PARAKEET_URL") || !strings.Contains(errMsg, "MAI_TRANSCRIBE_API_KEY") {
-		t.Fatalf("error %q does not name all three variables", errMsg)
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "MAI_TRANSCRIBE_API_KEY") {
+		t.Fatalf("error %q does not name both variables", errMsg)
 	}
 
-	s = &Server{cfg: config.Config{TranscribeProvider: config.ProviderParakeet, ParakeetURL: "http://127.0.0.1:8790"}}
+	s = &Server{cfg: config.Config{TranscribeProvider: config.ProviderGroq}}
 	rec = postAudio(t, s, "audio/webm", strings.Repeat("a", 500))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("short clip: status %d, want 422", rec.Code)
@@ -537,92 +537,6 @@ func TestTranscribeGroqProvider(t *testing.T) {
 	if gotAuth != "Bearer g-secret" || gotModel != "whisper-large-v3-turbo" || gotFile != "audio.mp4:abcd" {
 		t.Errorf("upstream got auth=%q model=%q file=%q", gotAuth, gotModel, gotFile)
 	}
-}
-
-func TestTranscribeParakeetProvider(t *testing.T) {
-	oldInterval := parakeetPollInterval
-	parakeetPollInterval = 5 * time.Millisecond
-	defer func() { parakeetPollInterval = oldInterval }()
-
-	t.Run("polls until done and joins lines", func(t *testing.T) {
-		var polls atomic.Int32
-		var gotFile string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			switch {
-			case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
-				_ = r.ParseMultipartForm(4 << 20)
-				if f, hdr, err := r.FormFile("file"); err == nil {
-					defer f.Close()
-					b, _ := io.ReadAll(f)
-					gotFile = hdr.Filename + ":" + fmt.Sprint(len(b))
-				}
-				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte(`{"job_id":"job123","sha256":"abc"}`))
-			case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job123":
-				switch polls.Add(1) {
-				case 1:
-					_, _ = w.Write([]byte(`{"job_id":"job123","status":"queued","result":null,"error":null}`))
-				case 2:
-					_, _ = w.Write([]byte(`{"job_id":"job123","status":"processing","result":null,"error":null}`))
-				default:
-					_, _ = w.Write([]byte(`{"job_id":"job123","status":"done","result":{"lines":[{"text":"First sentence.","start":0.1},{"text":"Second sentence.","start":1.5}],"words":[]},"error":null}`))
-				}
-			default:
-				w.WriteHeader(http.StatusNotFound)
-			}
-		}))
-		defer srv.Close()
-
-		s := &Server{
-			cfg: config.Config{
-				TranscribeProvider: config.ProviderParakeet,
-				ParakeetURL:        srv.URL,
-			},
-			httpShort: srv.Client(),
-		}
-		rec := postAudio(t, s, "audio/webm;codecs=opus", strings.Repeat("x", 1500))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-		}
-		var out struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "First sentence. Second sentence." {
-			t.Fatalf("got %+v, err %v", out, err)
-		}
-		if gotFile != "audio.webm:1500" {
-			t.Errorf("got file %q, want audio.webm:1500", gotFile)
-		}
-		if polls.Load() < 3 {
-			t.Errorf("polls = %d, want >= 3", polls.Load())
-		}
-	})
-
-	t.Run("job error becomes 502", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if r.Method == http.MethodPost {
-				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte(`{"job_id":"jerr"}`))
-				return
-			}
-			_, _ = w.Write([]byte(`{"job_id":"jerr","status":"error","result":null,"error":"audio decode failed"}`))
-		}))
-		defer srv.Close()
-
-		s := &Server{
-			cfg:       config.Config{TranscribeProvider: config.ProviderParakeet, ParakeetURL: srv.URL},
-			httpShort: srv.Client(),
-		}
-		rec := postAudio(t, s, "audio/webm", strings.Repeat("x", 1500))
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("status %d, want 502", rec.Code)
-		}
-		if got := decodeError(t, rec); !strings.Contains(got, "audio decode failed") {
-			t.Errorf("error %q", got)
-		}
-	})
 }
 
 func TestTranscribeVerbatimProvider(t *testing.T) {
