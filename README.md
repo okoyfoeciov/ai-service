@@ -29,7 +29,8 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart | The body is one recorded clip (`audio/*` or `video/*`). Sends it to Groq Whisper or OpenRouter's MAI-Transcribe-2 (whichever the tray picker has selected) and returns `{"text": …}`. |
+| `POST /api/transcribe` | comart; daily-dictation | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the provider selected in the tray (Groq Whisper, OpenRouter's MAI-Transcribe-2 or AssemblyAI Universal-3.5 Pro) and returns `{"text": …}`. |
+| `GET /api/transcribe/warm` | comart; daily-dictation | Fire-and-forget connection warm-up, sent when recording starts. It is a 204 no-op for Groq and OpenRouter MAI; for AssemblyAI it opens the HTTPS connection to `sync.assemblyai.com` so the later POST skips DNS/TCP/TLS setup. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -212,6 +213,16 @@ universal-3-5-pro` and the clip's own Content-Type (`audio/webm`, `audio/mp4`,
 `ffmpeg`. Its own limits are 20 minutes and 256 MB, but `/api/transcribe` still
 applies the shared 25 MB mic-clip cap; its server deadline is 30 seconds.
 
+**AssemblyAI warm-up.** comart and daily-dictation call
+`GET /api/transcribe/warm` when recording starts. The route is a 204 no-op for
+Groq and OpenRouter MAI; for AssemblyAI it sends `GET
+https://sync.assemblyai.com/v1/warm` on the same HTTP client as the transcription
+POST, so the handshake happens while the user is speaking. In testing this cut a
+6 s clip from ~1.4 s to ~0.4 s. A failed warm-up is only logged; it never fails
+the recording. The code comment beside the AssemblyAI client records the larger
+but unimplemented improvement: `/v1/transcribe/live` would stream audio while
+recording, at the cost of a chunked client protocol.
+
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
 `ProtectSystem=strict` and `ProtectHome=read-only`, with only `data/` and
@@ -344,7 +355,8 @@ Request limits:
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
   read the answer. The GET routes bill nothing; `/api/pron` can at most cause
-  Merriam-Webster lookups.
+  Merriam-Webster lookups, and `/api/transcribe/warm` at most opens an
+  unauthenticated AssemblyAI connection.
 - The API keys are in a plain file on disk, `ai-service.env`. It is not
   encrypted: any program that runs as you (or as root) can read and use them.
   Older zips in `backups/`, if any, hold secrets too; keep that folder private.

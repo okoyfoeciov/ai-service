@@ -676,6 +676,76 @@ func TestTranscribeAssemblyAIError(t *testing.T) {
 	}
 }
 
+func TestTranscribeWarmOnlyHitsAssemblyAI(t *testing.T) {
+	oldURL := assemblyAIWarmURL
+	defer func() { assemblyAIWarmURL = oldURL }()
+
+	var calls int32
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		gotModel = r.Header.Get("X-AAI-Model")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"warm":"toasty"}`))
+	}))
+	defer srv.Close()
+	assemblyAIWarmURL = srv.URL
+
+	warm := func(provider string) *httptest.ResponseRecorder {
+		t.Helper()
+		s := &Server{
+			cfg:       config.Config{TranscribeProvider: provider, AssemblyAIKey: "aai-key"},
+			httpShort: srv.Client(),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/transcribe/warm", nil)
+		req.Host = "127.0.0.1:8770"
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, p := range []string{config.ProviderGroq, config.ProviderMAITranscribe} {
+		if rec := warm(p); rec.Code != http.StatusNoContent {
+			t.Errorf("%s: status %d, want 204", p, rec.Code)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("%d warm calls for non-AssemblyAI providers", got)
+	}
+
+	if rec := warm(config.ProviderAssemblyAI); rec.Code != http.StatusNoContent {
+		t.Errorf("assemblyai: status %d, want 204", rec.Code)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("assemblyai warm calls = %d, want 1", got)
+	}
+	if gotModel != assemblyAIModel {
+		t.Errorf("warm X-AAI-Model = %q, want %q", gotModel, assemblyAIModel)
+	}
+}
+
+func TestTranscribeWarmFailureIsStillNoContent(t *testing.T) {
+	oldURL := assemblyAIWarmURL
+	defer func() { assemblyAIWarmURL = oldURL }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	assemblyAIWarmURL = srv.URL
+
+	s := &Server{
+		cfg:       config.Config{TranscribeProvider: config.ProviderAssemblyAI, AssemblyAIKey: "aai-key"},
+		httpShort: srv.Client(),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/transcribe/warm", nil)
+	req.Host = "127.0.0.1:8770"
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204 even when warm fails", rec.Code)
+	}
+}
+
 // The tray picker flips the provider between requests, and a provider that has
 // no key cannot be selected.
 func TestTranscribeProviderSwitch(t *testing.T) {

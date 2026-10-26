@@ -5,16 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"ai-service/internal/config"
 )
 
 // AssemblyAI's Sync API: one multipart request, one finished transcript. The
 // model is Universal-3.5 Pro; the X-AAI-Model header selects it. Unlike the
 // OpenRouter MAI path, AssemblyAI accepts compressed comart recordings
 // directly, so this provider does not need ffmpeg.
-var assemblyAIURL = "https://sync.assemblyai.com/v1/transcribe"
+//
+// Potential improvement (not implemented): AssemblyAI's /v1/transcribe/live
+// accepts audio while it is still being recorded, up to 120 seconds. Streaming
+// chunks from comart would overlap upload and inference with the recording and
+// remove most of the post-stop wait, but it needs a chunked client protocol.
+var (
+	assemblyAIURL     = "https://sync.assemblyai.com/v1/transcribe"
+	assemblyAIWarmURL = "https://sync.assemblyai.com/v1/warm"
+)
 
 const (
 	assemblyAIModel   = "universal-3-5-pro"
@@ -74,6 +85,44 @@ func (s *Server) transcribeAssemblyAI(w http.ResponseWriter, r *http.Request, au
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(out.Text)})
+}
+
+// handleTranscribeWarm opens the AssemblyAI HTTPS connection while the client
+// is still recording, so the eventual POST does not pay DNS/TCP/TLS setup. It
+// is a no-op for every other provider: Groq and OpenRouter do not need it.
+func (s *Server) handleTranscribeWarm(w http.ResponseWriter, r *http.Request) {
+	if s.TranscribeProvider() != config.ProviderAssemblyAI {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.warmAssemblyAI(ctx); err != nil {
+		// Warm-up is an optimisation; a failed one must not fail the recording.
+		log.Printf("transcribe[warm]: %v", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// warmAssemblyAI opens and keeps the connection in s.shortClient's pool. It
+// uses the same client and host as transcribeAssemblyAI, which is what makes
+// the later POST reuse it.
+func (s *Server) warmAssemblyAI(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assemblyAIWarmURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-AAI-Model", assemblyAIModel)
+	res, err := s.shortClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("assemblyai warm returned %d", res.StatusCode)
+	}
+	return nil
 }
 
 // assemblyAIPartType maps the extension chosen by pickExt to the Content-Type
