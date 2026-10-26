@@ -2,8 +2,8 @@
 
 One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves three clients: the
 comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`) and
-daily-dictation (`~/daily-dictation`, which uses `/api/transcribe` and
-`/api/transcribe-verbatim`). `README.md` is the full guide: install, service
+daily-dictation (`~/daily-dictation`, which uses the streaming transcription
+routes and `/api/transcribe-verbatim`). `README.md` is the full guide: install, service
 management, configuration, security model and models.
 
 In short, `/api/transcribe` has three providers (Groq, AssemblyAI Universal-3.5
@@ -13,13 +13,15 @@ refuses to start with none of the three. `/api/explain` and `/api/memoir/check`
 still have two each and refuse both. Every Memoir variable starts with `MEMOIR_`
 (plain `CLAUDE_API_KEY` is `/api/explain`'s); the transcription keys are
 `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY` and `OPENROUTER_TRANSCRIBE_API_KEY` (plain
-`OPENROUTER_API_KEY` is `/api/explain`'s). The OpenRouter MAI mic path needs
-`ffmpeg` on `PATH`: `internal/server/audio.go` re-encodes every clip to mono
-16 kHz WAV first. Both mic clients call `GET /api/transcribe/warm` when
-recording starts; it is a 204 no-op unless AssemblyAI is the active provider,
-where it opens the Sync API connection while the user is speaking. Verbatim also
-uses OpenRouter, with `verbose_json`, word timestamps and Azure's verbatim style.
-Linux's tray is a small in-repo D-Bus
+`OPENROUTER_API_KEY` is `/api/explain`'s). OpenRouter MAI and AssemblyAI
+streaming need `ffmpeg` on `PATH`: MAI re-encodes clips to WAV in
+`internal/server/audio.go`, and `/api/transcribe/stream` decodes MediaRecorder
+WebM/Opus to 16 kHz PCM for AssemblyAI's `/v1/transcribe/live`. The browser
+clients use `/api/transcribe/ws` for the same stream: Chrome blocks a streaming
+`fetch` body to loopback from an extension page, so the WS handler forwards
+MediaRecorder frames to the stream route over loopback. Groq and OpenRouter MAI
+buffer the streamed body and use the batch route; AssemblyAI is native live. Verbatim also uses OpenRouter, with `verbose_json`, word timestamps
+and Azure's verbatim style. Linux's tray is a small in-repo D-Bus
 backend that intentionally omits `Activate`, because GNOME then opens the menu
 on the first click instead of waiting out the double-click interval; macOS
 links Cocoa, so its build needs cgo.
@@ -40,11 +42,12 @@ links Cocoa, so its build needs cgo.
   served copy of a client would have to be kept in step with the real one by
   hand. The tray's two icons are embedded in the binary and never served over
   HTTP, which is not an exception to this rule.
-- **Keep the comart client API stable.** comart uses its six routes with no
+- **Keep the comart client API stable.** comart uses its seven routes with no
   CORS and no auth. Memoir's `/api/memoir/check`, daily-dictation's
-  `/api/transcribe-verbatim` and the clients' `GET /api/transcribe/warm`
-  (no-op except AssemblyAI) are the deliberate additions. Change a route only
-  together with the client that calls it.
+  `/api/transcribe-verbatim` and the clients' streaming transcription routes
+  (`POST /api/transcribe/stream` and its `GET /api/transcribe/ws` transport;
+  AssemblyAI live, buffered for others) are the deliberate additions. Change a
+  route only together with the client that calls it.
 
 ## Hosting and security
 

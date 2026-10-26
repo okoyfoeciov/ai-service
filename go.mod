@@ -7,6 +7,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.82.0
 	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/bogdanfinn/tls-client v1.15.1
+	github.com/coder/websocket v1.8.15
 	github.com/godbus/dbus/v5 v5.1.0
 	modernc.org/sqlite v1.52.0
 )

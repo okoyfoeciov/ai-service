@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,11 +11,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"ai-service/internal/config"
 	"ai-service/internal/llm"
@@ -676,73 +680,193 @@ func TestTranscribeAssemblyAIError(t *testing.T) {
 	}
 }
 
-func TestTranscribeWarmOnlyHitsAssemblyAI(t *testing.T) {
-	oldURL := assemblyAIWarmURL
-	defer func() { assemblyAIWarmURL = oldURL }()
+func testWAV() []byte {
+	const rate = 16000
+	data := make([]byte, rate) // 0.25 s of silence, 16-bit mono
+	b := make([]byte, 44+len(data))
+	copy(b[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(b[4:8], uint32(36+len(data)))
+	copy(b[8:12], "WAVE")
+	copy(b[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(b[16:20], 16)
+	binary.LittleEndian.PutUint16(b[20:22], 1)
+	binary.LittleEndian.PutUint16(b[22:24], 1)
+	binary.LittleEndian.PutUint32(b[24:28], rate)
+	binary.LittleEndian.PutUint32(b[28:32], rate*2)
+	binary.LittleEndian.PutUint16(b[32:34], 2)
+	binary.LittleEndian.PutUint16(b[34:36], 16)
+	copy(b[36:40], "data")
+	binary.LittleEndian.PutUint32(b[40:44], uint32(len(data)))
+	return b
+}
 
-	var calls int32
-	var gotModel string
+func TestTranscribeStreamAssemblyAI(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	oldURL := assemblyAILiveURL
+	defer func() { assemblyAILiveURL = oldURL }()
+
+	var gotConfig, gotAudio string
+	var parts int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		gotModel = r.Header.Get("X-AAI-Model")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"warm":"toasty"}`))
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Errorf("MultipartReader: %v", err)
+			return
+		}
+		for {
+			p, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Errorf("NextPart: %v", err)
+				return
+			}
+			b, _ := io.ReadAll(p)
+			parts++
+			switch p.FormName() {
+			case "config":
+				gotConfig = string(b)
+			case "audio":
+				gotAudio = string(b)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"streamed transcript"}`))
 	}))
 	defer srv.Close()
-	assemblyAIWarmURL = srv.URL
+	assemblyAILiveURL = srv.URL
 
-	warm := func(provider string) *httptest.ResponseRecorder {
-		t.Helper()
-		s := &Server{
-			cfg:       config.Config{TranscribeProvider: provider, AssemblyAIKey: "aai-key"},
-			httpShort: srv.Client(),
-		}
-		req := httptest.NewRequest(http.MethodGet, "/api/transcribe/warm", nil)
-		req.Host = "127.0.0.1:8770"
-		rec := httptest.NewRecorder()
-		s.ServeHTTP(rec, req)
-		return rec
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider: config.ProviderAssemblyAI,
+			AssemblyAIKey:      "aai-key",
+		},
+		httpShort: srv.Client(),
 	}
-
-	for _, p := range []string{config.ProviderGroq, config.ProviderMAITranscribe} {
-		if rec := warm(p); rec.Code != http.StatusNoContent {
-			t.Errorf("%s: status %d, want 204", p, rec.Code)
-		}
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", bytes.NewReader(testWAV()))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "audio/wav")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt32(&calls); got != 0 {
-		t.Fatalf("%d warm calls for non-AssemblyAI providers", got)
+	var out struct {
+		Text string `json:"text"`
 	}
-
-	if rec := warm(config.ProviderAssemblyAI); rec.Code != http.StatusNoContent {
-		t.Errorf("assemblyai: status %d, want 204", rec.Code)
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "streamed transcript" {
+		t.Fatalf("got %+v, err %v", out, err)
 	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("assemblyai warm calls = %d, want 1", got)
-	}
-	if gotModel != assemblyAIModel {
-		t.Errorf("warm X-AAI-Model = %q, want %q", gotModel, assemblyAIModel)
+	if parts != 2 || !strings.Contains(gotConfig, `"sample_rate":16000`) || len(gotAudio) == 0 {
+		t.Errorf("parts=%d config=%q audio=%d bytes", parts, gotConfig, len(gotAudio))
 	}
 }
 
-func TestTranscribeWarmFailureIsStillNoContent(t *testing.T) {
-	oldURL := assemblyAIWarmURL
-	defer func() { assemblyAIWarmURL = oldURL }()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusServiceUnavailable)
+func TestTranscribeWebSocket(t *testing.T) {
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"ws transcript"}`))
 	}))
-	defer srv.Close()
-	assemblyAIWarmURL = srv.URL
+	defer upstream.Close()
+	oldGroq := groqURL
+	groqURL = upstream.URL
+	defer func() { groqURL = oldGroq }()
 
 	s := &Server{
-		cfg:       config.Config{TranscribeProvider: config.ProviderAssemblyAI, AssemblyAIKey: "aai-key"},
-		httpShort: srv.Client(),
+		cfg: config.Config{
+			TranscribeProvider: config.ProviderGroq,
+			GroqAPIKey:         "g",
+		},
+		httpShort: upstream.Client(),
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/transcribe/warm", nil)
+	srv := httptest.NewUnstartedServer(s)
+	srv.Start()
+	defer srv.Close()
+	// The handler forwards the streamed body to this same server over loopback,
+	// exactly as it does in production.
+	s.cfg.ListenAddr = strings.TrimPrefix(srv.URL, "http://")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/transcribe/ws?type=audio/webm"
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.CloseNow()
+
+	audio := bytes.Repeat([]byte("x"), 1500)
+	if err := c.Write(ctx, websocket.MessageBinary, audio); err != nil {
+		t.Fatalf("write audio: %v", err)
+	}
+	if err := c.Write(ctx, websocket.MessageText, []byte("stop")); err != nil {
+		t.Fatalf("write stop: %v", err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read answer: %v", err)
+	}
+	var out struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("answer %q is not JSON: %v", data, err)
+	}
+	if out.Text != "ws transcript" {
+		t.Errorf("text %q, want %q", out.Text, "ws transcript")
+	}
+	if !bytes.Contains(gotBody, audio) {
+		t.Errorf("upstream body (%d bytes) does not carry the %d-byte recording", len(gotBody), len(audio))
+	}
+}
+
+func TestTranscribeStreamBuffersForOtherProviders(t *testing.T) {
+	var gotType string
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"buffered transcript"}`))
+	}))
+	defer upstream.Close()
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider: config.ProviderGroq,
+			GroqAPIKey:         "g",
+			ListenAddr:         strings.TrimPrefix(upstream.URL, "http://"),
+		},
+		httpShort: upstream.Client(),
+	}
+	body := bytes.Repeat([]byte("x"), 1500)
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", bytes.NewReader(body))
 	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "audio/webm;codecs=opus")
 	rec := httptest.NewRecorder()
 	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status %d, want 204 even when warm fails", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotType != "audio/webm;codecs=opus" || !bytes.Equal(gotBody, body) {
+		t.Errorf("upstream got type=%q body=%d bytes", gotType, len(gotBody))
+	}
+}
+
+func TestTranscribeStreamDemandsAudioType(t *testing.T) {
+	s := &Server{cfg: config.Config{TranscribeProvider: config.ProviderGroq}}
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", strings.NewReader("{}"))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status %d, want 415", rec.Code)
 	}
 }
 

@@ -158,8 +158,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p := r.URL.Path
 	switch {
-	case r.Method == http.MethodGet && p == "/api/transcribe/warm":
-		s.handleTranscribeWarm(w, r)
+	case r.Method == http.MethodPost && p == "/api/transcribe/stream":
+		s.handleTranscribeStream(w, r)
+	case r.Method == http.MethodGet && p == "/api/transcribe/ws":
+		s.handleTranscribeWS(w, r)
 	case r.Method == http.MethodPost && p == "/api/transcribe":
 		s.handleTranscribe(w, r)
 	case r.Method == http.MethodPost && p == "/api/transcribe-verbatim":

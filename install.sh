@@ -235,13 +235,13 @@ else
       ask_key ASSEMBLYAI_API_KEY "transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to use a Groq key instead" 1 ||
       ask_key GROQ_API_KEY "transcription via Groq Whisper"
   fi
-  if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
-    # OpenRouter accepts WAV, but comart records WebM, so the server
-    # re-encodes every mic clip to WAV with ffmpeg before uploading it.
+  if env_set OPENROUTER_TRANSCRIBE_API_KEY || env_set ASSEMBLYAI_API_KEY; then
+    # OpenRouter MAI re-encodes mic clips to WAV; AssemblyAI streaming decodes
+    # MediaRecorder WebM to PCM for /v1/transcribe/live.
     if ! command -v ffmpeg >/dev/null 2>&1; then
-      die "ffmpeg is required to convert comart's WebM recordings for OpenRouter MAI-Transcribe-2, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
+      die "ffmpeg is required to convert comart's WebM recordings for OpenRouter MAI and AssemblyAI streaming, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
     fi
-    say "[d] ffmpeg: $(command -v ffmpeg) — converts comart's WebM recordings to WAV for OpenRouter"
+    say "[d] ffmpeg: $(command -v ffmpeg) — converts comart's WebM recordings for OpenRouter/AssemblyAI"
   fi
   transcribe_count=0
   if env_set GROQ_API_KEY; then transcribe_count=$((transcribe_count + 1)); fi

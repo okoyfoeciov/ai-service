@@ -29,8 +29,9 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe` | comart; daily-dictation | The body is one recorded clip (`audio/*` or `video/*`). Sends it to the provider selected in the tray (Groq Whisper, OpenRouter's MAI-Transcribe-2 or AssemblyAI Universal-3.5 Pro) and returns `{"text": …}`. |
-| `GET /api/transcribe/warm` | comart; daily-dictation | Fire-and-forget connection warm-up, sent when recording starts. It is a 204 no-op for Groq and OpenRouter MAI; for AssemblyAI it opens the HTTPS connection to `sync.assemblyai.com` so the later POST skips DNS/TCP/TLS setup. |
+| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). AssemblyAI gets a native `/v1/transcribe/live` request, with `ffmpeg` decoding the WebM/Opus stream to PCM. Groq and OpenRouter MAI are buffered and passed to the batch route below. Answer: `{"text": …}`. |
+| `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` or `{"error": …}`. |
+| `POST /api/transcribe` | batch/legacy clients | The body is one finished clip (`audio/*` or `video/*`). Sends it to the provider selected in the tray (Groq Whisper, OpenRouter's MAI-Transcribe-2 or AssemblyAI Universal-3.5 Pro) and returns `{"text": …}`. The current mic clients use the streaming route. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -79,9 +80,10 @@ the build, the env file and the restart):
    variable of the explain or Memoir route is already set, if `PARAKEET_URL` is
    still there, if the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
    `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
-   still there. If `OPENROUTER_TRANSCRIBE_API_KEY` is set, it also checks that
-   `ffmpeg` is on `PATH` (the server converts comart's WebM recordings for the
-   OpenRouter MAI path; Groq and AssemblyAI take them directly).
+   still there. If `OPENROUTER_TRANSCRIBE_API_KEY` or `ASSEMBLYAI_API_KEY` is
+   set, it also checks that `ffmpeg` is on `PATH` (the OpenRouter MAI path
+   re-encodes mic clips to WAV, and the AssemblyAI streaming path decodes them
+   to PCM; Groq takes WebM directly).
    It never prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -179,7 +181,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | --- | --- | --- |
 | `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `ASSEMBLYAI_API_KEY`, `OPENROUTER_TRANSCRIBE_API_KEY`, or any combination. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro on `/api/transcribe` through the Sync API (`sync.assemblyai.com/v1/transcribe`). Set this, `GROQ_API_KEY`, `OPENROUTER_TRANSCRIBE_API_KEY`, or any combination. No `ffmpeg` needed: the Sync API accepts comart's WebM directly. |
+| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro on `/api/transcribe`. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/Opus to 16 kHz mono PCM. Set this, `GROQ_API_KEY`, `OPENROUTER_TRANSCRIBE_API_KEY`, or any combination. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on **both** `/api/transcribe` and `/api/transcribe-verbatim`. Set this, `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY`, or any combination. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. Requires `ffmpeg` on `PATH`: see below. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain` only. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
@@ -198,30 +200,36 @@ not the multipart upload the old Azure path used. MAI-Transcribe-2 is served by
 Azure, so OpenRouter caps uploads at **25 MB** per request. The `audio/webm`
 that comart's `MediaRecorder` produces is not worth trusting across providers,
 so `/api/transcribe` converts every clip to mono 16 kHz WAV with `ffmpeg` first.
-`install.sh` checks for `ffmpeg` when `OPENROUTER_TRANSCRIBE_API_KEY` is set
-(Debian/Ubuntu: `sudo apt install ffmpeg`; macOS: `brew install ffmpeg`).
+`install.sh` checks for `ffmpeg` when `OPENROUTER_TRANSCRIBE_API_KEY` or
+`ASSEMBLYAI_API_KEY` is set (Debian/Ubuntu: `sudo apt install ffmpeg`; macOS:
+`brew install ffmpeg`).
 `/api/transcribe-verbatim` sends daily-dictation's file as-is in WAV, MP3, FLAC,
 M4A, OGG, WebM or AAC format; its 25 MB cap is about 26 minutes of 128 kbps MP3.
 OpenRouter also documents a 60-second upstream processing deadline. MAI is
 roughly 300× real-time, so the 50–100 s clips daily-dictation and comart send
 finish far below it; chunk anything much longer.
 
-**AssemblyAI Sync formats.** `ASSEMBLYAI_API_KEY` sends the mic clip straight to
-`https://sync.assemblyai.com/v1/transcribe` with `X-AAI-Model:
-universal-3-5-pro` and the clip's own Content-Type (`audio/webm`, `audio/mp4`,
-`audio/mpeg`, …). The Sync API accepts WebM directly, so this path does not use
-`ffmpeg`. Its own limits are 20 minutes and 256 MB, but `/api/transcribe` still
-applies the shared 25 MB mic-clip cap; its server deadline is 30 seconds.
+**AssemblyAI streaming.** `ASSEMBLYAI_API_KEY` uses AssemblyAI's native
+`POST https://sync.assemblyai.com/v1/transcribe/live`, with `X-AAI-Model:
+universal-3-5-pro`. The clients send their MediaRecorder WebM/MP4 stream to
+`/api/transcribe/stream` while recording; ai-service pipes it through `ffmpeg`
+to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
+part second, and closes the AssemblyAI request when the client body ends. That
+close is the finish signal; AssemblyAI returns one final JSON transcript, not
+per-chunk results. The browser clients reach this route through
+`/api/transcribe/ws`: Chrome blocks a streaming `fetch` body to loopback from an
+extension page, while a WebSocket to the same host works. The WS handler only
+carries bytes; the decoding and provider choice are the stream route's.
 
-**AssemblyAI warm-up.** comart and daily-dictation call
-`GET /api/transcribe/warm` when recording starts. The route is a 204 no-op for
-Groq and OpenRouter MAI; for AssemblyAI it sends `GET
-https://sync.assemblyai.com/v1/warm` on the same HTTP client as the transcription
-POST, so the handshake happens while the user is speaking. In testing this cut a
-6 s clip from ~1.4 s to ~0.4 s. A failed warm-up is only logged; it never fails
-the recording. The code comment beside the AssemblyAI client records the larger
-but unimplemented improvement: `/v1/transcribe/live` would stream audio while
-recording, at the cost of a chunked client protocol.
+Measured on this host with a warm connection, the post-stop wait was ~0.35 s for
+a 6 s clip and ~0.9 s for a 30 s clip, versus ~0.7 s and ~1.6 s for the batch
+endpoint. Transcripts were identical in 24 paired runs on one clip. Live audio
+is capped at 120 s by AssemblyAI (the mic clients cap at 60 s). The live request
+has a 300 s deadline; `/api/transcribe/stream` caps the uploaded body at 25 MB.
+
+Groq and OpenRouter MAI do not have a live endpoint here. Their streamed body is
+buffered and handed to the existing `/api/transcribe` handler after the stop, so
+those providers keep their previous behavior.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
@@ -329,7 +337,8 @@ The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
 - `application/json` on `/api/explain` and `/api/memoir/check`;
-- `audio/*` (or `video/*`) on `/api/transcribe`;
+- `audio/*` (or `video/*`) on `/api/transcribe` and as the `type` query on
+  `/api/transcribe/ws`;
 - `multipart/form-data` on `/api/transcribe-verbatim`.
 
 A web page can send a cross-site POST without a CORS preflight only as
@@ -341,6 +350,8 @@ Request limits:
 - `/api/explain`: 5 MiB JSON body (413 `Request too large.`).
 - `/api/memoir/check`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
+- `/api/transcribe/stream`: 25 MiB streamed audio (413 `recording too long`).
+  A 60 s MediaRecorder clip is well under 1 MiB.
 - `/api/transcribe`: 25 MiB audio (413 `recording too long`). 25 MiB is
   Groq's limit, applied to every transcribe provider.
 - `/api/transcribe-verbatim`: 25 MiB audio (413 `audio too long`). This is
@@ -355,8 +366,7 @@ Request limits:
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
   read the answer. The GET routes bill nothing; `/api/pron` can at most cause
-  Merriam-Webster lookups, and `/api/transcribe/warm` at most opens an
-  unauthenticated AssemblyAI connection.
+  Merriam-Webster lookups.
 - The API keys are in a plain file on disk, `ai-service.env`. It is not
   encrypted: any program that runs as you (or as root) can read and use them.
   Older zips in `backups/`, if any, hold secrets too; keep that folder private.
@@ -370,7 +380,7 @@ Request limits:
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | OpenRouter, if `OPENROUTER_TRANSCRIBE_API_KEY` is set | `microsoft/mai-transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
-| `/api/transcribe` | AssemblyAI Sync, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`X-AAI-Model`, WebM sent directly) | — |
+| `/api/transcribe` | AssemblyAI Sync live, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
 | `/api/transcribe` | Groq, if `GROQ_API_KEY` is set (the starting default when several are configured) | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
@@ -476,7 +486,7 @@ go test ./...
 On Linux the result is one static binary with no cgo; macOS links Cocoa for the
 menu-bar picker. At runtime it needs the SQLite
 file it creates on first run; credentials come from `ai-service.env`, and the
-OpenRouter MAI mic path needs `ffmpeg` on `PATH`. After a build, restart the service to
+OpenRouter MAI and AssemblyAI streaming paths need `ffmpeg` on `PATH`. After a build, restart the service to
 run the new binary
 (`systemctl --user restart ai-service`, or
 `launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run
