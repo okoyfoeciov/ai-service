@@ -485,8 +485,10 @@ func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500", rec.Code)
 	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") || !strings.Contains(errMsg, "OPENROUTER_TRANSCRIBE_API_KEY") {
-		t.Fatalf("error %q does not name both variables", errMsg)
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") ||
+		!strings.Contains(errMsg, "OPENROUTER_TRANSCRIBE_API_KEY") ||
+		!strings.Contains(errMsg, "ASSEMBLYAI_API_KEY") {
+		t.Fatalf("error %q does not name all three variables", errMsg)
 	}
 
 	s = &Server{cfg: config.Config{TranscribeProvider: config.ProviderGroq}}
@@ -575,6 +577,103 @@ func readOpenRouterRequest(t *testing.T, r *http.Request) openRouterTestRequest 
 		t.Errorf("content-type %q, want application/json", r.Header.Get("Content-Type"))
 	}
 	return req
+}
+
+func TestTranscribeAssemblyAIProvider(t *testing.T) {
+	oldURL := assemblyAIURL
+	defer func() { assemblyAIURL = oldURL }()
+
+	for _, tc := range []struct {
+		name, contentType, wantName, wantPartType string
+	}{
+		{"webm from comart", "audio/webm;codecs=opus", "audio.webm", "audio/webm"},
+		{"mp4 from comart", "audio/mp4", "audio.mp4", "audio/mp4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotAuth, gotModel, gotName, gotType string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				gotModel = r.Header.Get("X-AAI-Model")
+				if err := r.ParseMultipartForm(4 << 20); err != nil {
+					t.Errorf("ParseMultipartForm: %v", err)
+					return
+				}
+				f, hdr, err := r.FormFile("audio")
+				if err != nil {
+					t.Errorf("FormFile: %v", err)
+					return
+				}
+				defer f.Close()
+				gotName = hdr.Filename
+				gotType = hdr.Header.Get("Content-Type")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"text":"  hello from assemblyai  "}`))
+			}))
+			defer srv.Close()
+			assemblyAIURL = srv.URL
+
+			s := &Server{
+				cfg: config.Config{
+					TranscribeProvider: config.ProviderAssemblyAI,
+					AssemblyAIKey:      "aai-secret",
+				},
+				httpShort: srv.Client(),
+			}
+			rec := postAudio(t, s, tc.contentType, strings.Repeat("abcd", 400))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			var out struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "hello from assemblyai" {
+				t.Fatalf("got %+v, err %v", out, err)
+			}
+			if gotAuth != "aai-secret" || gotModel != "universal-3-5-pro" {
+				t.Errorf("upstream got auth=%q model=%q", gotAuth, gotModel)
+			}
+			if gotName != tc.wantName || gotType != tc.wantPartType {
+				t.Errorf("upstream got file=%q type=%q, want %q %q", gotName, gotType, tc.wantName, tc.wantPartType)
+			}
+		})
+	}
+}
+
+func TestTranscribeAssemblyAIError(t *testing.T) {
+	oldURL := assemblyAIURL
+	defer func() { assemblyAIURL = oldURL }()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"status":429,"title":"Too Many Requests","detail":"slow down"}`))
+	}))
+	defer srv.Close()
+	assemblyAIURL = srv.URL
+
+	s := &Server{
+		cfg: config.Config{
+			TranscribeProvider: config.ProviderAssemblyAI,
+			AssemblyAIKey:      "aai-secret",
+		},
+		httpShort: srv.Client(),
+	}
+	rec := postAudio(t, s, "audio/webm", strings.Repeat("abcd", 400))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502", rec.Code)
+	}
+	var body struct {
+		Error            string `json:"error"`
+		AssemblyAIStatus int    `json:"assemblyAIStatus"`
+		RetryAfter       string `json:"retryAfter"`
+		Detail           string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	if body.AssemblyAIStatus != 429 || body.RetryAfter != "3" || !strings.Contains(body.Detail, "slow down") {
+		t.Errorf("got %+v, want 429 with Retry-After and detail", body)
+	}
 }
 
 // The tray picker flips the provider between requests, and a provider that has

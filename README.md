@@ -65,21 +65,22 @@ the build, the env file and the restart):
    tools).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each missing credential it asks in a hidden prompt:
-   at least one of `OPENROUTER_TRANSCRIBE_API_KEY` and `GROQ_API_KEY`;
-   one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
+   at least one of `OPENROUTER_TRANSCRIBE_API_KEY`, `ASSEMBLYAI_API_KEY` and
+   `GROQ_API_KEY`; one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
    display. For the transcribe provider it asks for
-   `OPENROUTER_TRANSCRIBE_API_KEY` first, then `GROQ_API_KEY`; set both by hand
-   to get the tray picker. For the explain key it asks for OpenRouter first; an
+   `OPENROUTER_TRANSCRIBE_API_KEY`, then `ASSEMBLYAI_API_KEY`, then
+   `GROQ_API_KEY`; set more than one by hand to get the tray picker. For the
+   explain key it asks for OpenRouter first; an
    empty answer there moves on to Claude. For the Memoir key it asks for Claude
    first; an empty answer there moves on to Cerebras. It stops if more than one
    variable of the explain or Memoir route is already set, if `PARAKEET_URL` is
    still there, if the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
    `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
-   still there. If `OPENROUTER_TRANSCRIBE_API_KEY` is set (alone or with Groq),
-   it also checks that `ffmpeg` is on `PATH` (the server converts comart's WebM
-   recordings with it).
+   still there. If `OPENROUTER_TRANSCRIBE_API_KEY` is set, it also checks that
+   `ffmpeg` is on `PATH` (the server converts comart's WebM recordings for the
+   OpenRouter MAI path; Groq and AssemblyAI take them directly).
    It never prints a key. The keys are required here: if you cancel, enter nothing, or
    no prompt can be shown, `install.sh` stops before step 4 and does not
    (re)start the service. It also stops if a key contains a space, quote,
@@ -175,9 +176,10 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `OPENROUTER_TRANSCRIBE_API_KEY`, or both. |
+| `GROQ_API_KEY` | (empty) | Secret. Groq key for `/api/transcribe`. Set this, `ASSEMBLYAI_API_KEY`, `OPENROUTER_TRANSCRIBE_API_KEY`, or any combination. |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Groq transcription model. |
-| `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on **both** `/api/transcribe` and `/api/transcribe-verbatim`. Set this, `GROQ_API_KEY`, or both. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. Requires `ffmpeg` on `PATH`: see below. |
+| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro on `/api/transcribe` through the Sync API (`sync.assemblyai.com/v1/transcribe`). Set this, `GROQ_API_KEY`, `OPENROUTER_TRANSCRIBE_API_KEY`, or any combination. No `ffmpeg` needed: the Sync API accepts comart's WebM directly. |
+| `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on **both** `/api/transcribe` and `/api/transcribe-verbatim`. Set this, `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY`, or any combination. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. Requires `ffmpeg` on `PATH`: see below. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain` only. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
 | `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
@@ -203,6 +205,13 @@ OpenRouter also documents a 60-second upstream processing deadline. MAI is
 roughly 300× real-time, so the 50–100 s clips daily-dictation and comart send
 finish far below it; chunk anything much longer.
 
+**AssemblyAI Sync formats.** `ASSEMBLYAI_API_KEY` sends the mic clip straight to
+`https://sync.assemblyai.com/v1/transcribe` with `X-AAI-Model:
+universal-3-5-pro` and the clip's own Content-Type (`audio/webm`, `audio/mp4`,
+`audio/mpeg`, …). The Sync API accepts WebM directly, so this path does not use
+`ffmpeg`. Its own limits are 20 minutes and 256 MB, but `/api/transcribe` still
+applies the shared 25 MB mic-clip cap; its server deadline is 30 seconds.
+
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
 `ProtectSystem=strict` and `ProtectHome=read-only`, with only `data/` and
@@ -223,7 +232,8 @@ refuses to start.
 **The service refuses to start** (it logs `config: …` and exits 1; the service
 manager keeps retrying every 10 s) when a route has no usable provider:
 
-- neither `GROQ_API_KEY` nor `OPENROUTER_TRANSCRIBE_API_KEY` is set;
+- none of `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY` and
+  `OPENROUTER_TRANSCRIBE_API_KEY` is set;
 - the retired `PARAKEET_URL` is still set (the local Parakeet integration was
   removed);
 - the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
@@ -255,15 +265,16 @@ or `llm[Claude/memoir]`). The Anthropic SDK's own `ANTHROPIC_*` environment vari
 switched off, so a stray `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` cannot
 re-route the call.
 
-### Tray picker (both transcribe providers)
+### Tray picker (multiple transcribe providers)
 
-Set both `GROQ_API_KEY` and `OPENROUTER_TRANSCRIBE_API_KEY` and the service
-shows a tray icon: the macOS menu bar or the Linux status area (GNOME's
-AppIndicator extension, KDE, and anything else implementing StatusNotifierItem).
-Clicking it opens two check items, **Groq Whisper** and
-**MAI-Transcribe-2 (OpenRouter)**; the checked one answers `/api/transcribe`.
-There is no tray icon with only one key, and the choice does not touch any
-client: comart keeps calling the same route.
+Set any two or all three of `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY` and
+`OPENROUTER_TRANSCRIBE_API_KEY` and the service shows a tray icon: the macOS
+menu bar or the Linux status area (GNOME's AppIndicator extension, KDE, and
+anything else implementing StatusNotifierItem). Clicking it opens check items
+for **Groq Whisper**, **MAI-Transcribe-2 (OpenRouter)** and **AssemblyAI
+Universal-3.5 Pro**; the checked one answers `/api/transcribe`. There is no tray
+icon with only one key, and the choice does not touch any client: comart keeps
+calling the same route.
 
 - The service starts on Groq and remembers a pick in the SQLite cache
   (`data/cache.db`, key `transcribe:provider`), so a restart keeps it.
@@ -328,7 +339,7 @@ Request limits:
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter, Claude, Cerebras and Groq quota.
+  route and spend the OpenRouter, AssemblyAI, Claude, Cerebras and Groq quota.
   There is no rate limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
@@ -347,7 +358,8 @@ Request limits:
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe` | OpenRouter, if `OPENROUTER_TRANSCRIBE_API_KEY` is set | `microsoft/mai-transcribe-2` (every clip converted to WAV by `ffmpeg`) | — |
-| `/api/transcribe` | Groq, if `GROQ_API_KEY` is set (the starting default when both are configured) | `whisper-large-v3-turbo` | — |
+| `/api/transcribe` | AssemblyAI Sync, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`X-AAI-Model`, WebM sent directly) | — |
+| `/api/transcribe` | Groq, if `GROQ_API_KEY` is set (the starting default when several are configured) | `whisper-large-v3-turbo` | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client

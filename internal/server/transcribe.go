@@ -29,6 +29,7 @@ var extByType = [][2]string{
 	{"flac", "flac"},
 	{"wav", "wav"},
 	{"webm", "webm"},
+	{"aac", "aac"},
 }
 
 func pickExt(contentType string) string {
@@ -98,7 +99,7 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := s.TranscribeProvider()
 	if provider == "" {
-		jsonError(w, "server not configured: neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set", http.StatusInternalServerError)
+		jsonError(w, "server not configured: none of GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY or ASSEMBLYAI_API_KEY is set", http.StatusInternalServerError)
 		return
 	}
 	contentType := r.Header.Get("Content-Type")
@@ -126,6 +127,8 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		s.transcribeGroq(w, r, audio, ext, contentType)
 	case config.ProviderMAITranscribe:
 		s.transcribeMAI(w, r, audio, contentType)
+	case config.ProviderAssemblyAI:
+		s.transcribeAssemblyAI(w, r, audio, ext)
 	default:
 		jsonError(w, "server not configured", http.StatusInternalServerError)
 	}

@@ -35,6 +35,8 @@ func providerLabel(provider string) string {
 		return "Groq Whisper"
 	case config.ProviderMAITranscribe:
 		return "MAI-Transcribe-2 (OpenRouter)"
+	case config.ProviderAssemblyAI:
+		return "AssemblyAI Universal-3.5 Pro"
 	}
 	return provider
 }

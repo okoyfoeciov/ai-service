@@ -14,7 +14,7 @@ import (
 func clearTranscribeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"GROQ_API_KEY", "GROQ_MODEL", "OPENROUTER_TRANSCRIBE_API_KEY",
+		"GROQ_API_KEY", "GROQ_MODEL", "OPENROUTER_TRANSCRIBE_API_KEY", "ASSEMBLYAI_API_KEY",
 		"PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT",
 	} {
 		t.Setenv(k, "")
@@ -207,25 +207,31 @@ func TestMemoirRouteNamesTheProviderAndModel(t *testing.T) {
 	}
 }
 
-func TestLoadAllowsBothTranscribeProviders(t *testing.T) {
+func TestLoadAllowsAllTranscribeProviders(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
 	t.Setenv("GROQ_API_KEY", "g")
 	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "or")
+	t.Setenv("ASSEMBLYAI_API_KEY", "aai")
 	c, _, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{ProviderGroq, ProviderMAITranscribe}
-	if len(c.TranscribeProviders) != len(want) || c.TranscribeProviders[0] != want[0] || c.TranscribeProviders[1] != want[1] {
+	want := []string{ProviderGroq, ProviderMAITranscribe, ProviderAssemblyAI}
+	if len(c.TranscribeProviders) != len(want) {
 		t.Fatalf("providers %v, want %v", c.TranscribeProviders, want)
+	}
+	for i := range want {
+		if c.TranscribeProviders[i] != want[i] {
+			t.Fatalf("providers %v, want %v", c.TranscribeProviders, want)
+		}
 	}
 	if c.TranscribeProvider != ProviderGroq {
 		t.Errorf("starting provider %q, want %q", c.TranscribeProvider, ProviderGroq)
 	}
-	if c.OpenRouterTranscribeAPIKey != "or" {
-		t.Errorf("OpenRouter transcribe key was not kept")
+	if c.OpenRouterTranscribeAPIKey != "or" || c.AssemblyAIKey != "aai" {
+		t.Errorf("transcription keys were not kept")
 	}
 }
 
@@ -235,9 +241,12 @@ func TestLoadRefusesNoTranscribeProvider(t *testing.T) {
 	clearMemoirEnv(t)
 	t.Setenv("GROQ_API_KEY", "")
 	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "")
+	t.Setenv("ASSEMBLYAI_API_KEY", "")
 	_, _, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") || !strings.Contains(err.Error(), "OPENROUTER_TRANSCRIBE_API_KEY") {
-		t.Fatalf("err %v, want one naming both keys", err)
+	if err == nil || !strings.Contains(err.Error(), "GROQ_API_KEY") ||
+		!strings.Contains(err.Error(), "OPENROUTER_TRANSCRIBE_API_KEY") ||
+		!strings.Contains(err.Error(), "ASSEMBLYAI_API_KEY") {
+		t.Fatalf("err %v, want one naming all three keys", err)
 	}
 }
 
@@ -277,7 +286,8 @@ func TestLoadTranscribeProvider(t *testing.T) {
 		{"none set", map[string]string{"GROQ_API_KEY": ""}, "", false},
 		{"groq", map[string]string{"GROQ_API_KEY": "g"}, ProviderGroq, true},
 		{"mai-transcribe-2 via openrouter", map[string]string{"GROQ_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, ProviderMAITranscribe, true},
-		{"both", map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, ProviderGroq, true},
+		{"assemblyai", map[string]string{"GROQ_API_KEY": "", "ASSEMBLYAI_API_KEY": "aai"}, ProviderAssemblyAI, true},
+		{"all three", map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or", "ASSEMBLYAI_API_KEY": "aai"}, ProviderGroq, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,7 +342,8 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 	}{
 		{map[string]string{"GROQ_API_KEY": "g"}, []string{"Groq", "whisper-large-v3-turbo"}},
 		{map[string]string{"GROQ_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, []string{"OpenRouter", "microsoft/mai-transcribe-2"}},
-		{map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, []string{"Groq", "OpenRouter", "both enabled", "tray picker", "starting on Groq"}},
+		{map[string]string{"GROQ_API_KEY": "", "ASSEMBLYAI_API_KEY": "aai"}, []string{"AssemblyAI", "universal-3-5-pro"}},
+		{map[string]string{"GROQ_API_KEY": "g", "OPENROUTER_TRANSCRIBE_API_KEY": "or", "ASSEMBLYAI_API_KEY": "aai"}, []string{"Groq", "OpenRouter", "AssemblyAI", "3 providers", "tray picker", "starting on Groq"}},
 	} {
 		clearTranscribeEnv(t)
 		clearExplainEnv(t)

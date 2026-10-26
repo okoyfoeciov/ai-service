@@ -6,19 +6,20 @@ daily-dictation (`~/daily-dictation`, `POST /api/transcribe-verbatim` only).
 `README.md` is the full guide: install, service management, configuration,
 security model and models.
 
-In short, `/api/transcribe` has two providers (Groq and OpenRouter's
-MAI-Transcribe-2) and may have both keys at once: the tray picker
-(`internal/tray`) then switches between them. It refuses to start with neither
-key. `/api/explain` and `/api/memoir/check` still have two each and refuse both.
-Every Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
-`/api/explain`'s); every transcription key is `OPENROUTER_TRANSCRIBE_API_KEY` or
-`GROQ_API_KEY` (plain `OPENROUTER_API_KEY` is `/api/explain`'s). The OpenRouter
-MAI mic path needs `ffmpeg` on `PATH`: `internal/server/audio.go` re-encodes
-every clip to mono 16 kHz WAV first. Verbatim also uses OpenRouter, with
-`verbose_json`, word timestamps and Azure's verbatim style. Linux's tray is a
-small in-repo D-Bus backend that intentionally omits `Activate`, because GNOME
-then opens the menu on the first click instead of waiting out the double-click
-interval; macOS links Cocoa, so its build needs cgo.
+In short, `/api/transcribe` has three providers (Groq, AssemblyAI Universal-3.5
+Pro Sync, and OpenRouter's MAI-Transcribe-2) and may have any combination of
+keys at once: the tray picker (`internal/tray`) then switches between them. It
+refuses to start with none of the three. `/api/explain` and `/api/memoir/check`
+still have two each and refuse both. Every Memoir variable starts with `MEMOIR_`
+(plain `CLAUDE_API_KEY` is `/api/explain`'s); the transcription keys are
+`GROQ_API_KEY`, `ASSEMBLYAI_API_KEY` and `OPENROUTER_TRANSCRIBE_API_KEY` (plain
+`OPENROUTER_API_KEY` is `/api/explain`'s). The OpenRouter MAI mic path needs
+`ffmpeg` on `PATH`: `internal/server/audio.go` re-encodes every clip to mono
+16 kHz WAV first. Verbatim also uses OpenRouter, with `verbose_json`, word
+timestamps and Azure's verbatim style. Linux's tray is a small in-repo D-Bus
+backend that intentionally omits `Activate`, because GNOME then opens the menu
+on the first click instead of waiting out the double-click interval; macOS
+links Cocoa, so its build needs cgo.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -27,7 +28,7 @@ interval; macOS links Cocoa, so its build needs cgo.
   extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
   (`~/daily-dictation`). The one native UI is the tray picker that appears only
-  when both transcribe keys are set (`internal/tray`).
+  when more than one transcribe key is set (`internal/tray`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one

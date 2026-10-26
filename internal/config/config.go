@@ -16,6 +16,7 @@ import (
 const (
 	ProviderGroq          = "groq"
 	ProviderMAITranscribe = "mai-transcribe-2"
+	ProviderAssemblyAI    = "assemblyai"
 
 	ProviderOpenRouter = "openrouter"
 	ProviderCerebras   = "cerebras"
@@ -26,11 +27,13 @@ type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
 	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on Groq
-	// Whisper and/or OpenRouter's MAI-Transcribe-2. Both may be enabled at
-	// once; the tray picker then chooses which one answers. At least one key is
-	// required, and having none is a startup error.
-	GroqAPIKey string
-	GroqModel  string
+	// Whisper, AssemblyAI's Universal-3.5 Pro (Sync API), and/or OpenRouter's
+	// MAI-Transcribe-2. Any combination may be enabled at once; the tray
+	// picker then chooses which one answers. At least one key is required, and
+	// having none is a startup error.
+	GroqAPIKey    string
+	GroqModel     string
+	AssemblyAIKey string
 	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2. It
 	// serves both /api/transcribe's MAI option and /api/transcribe-verbatim.
 	// It is deliberately not OPENROUTER_API_KEY: that one belongs to
@@ -38,7 +41,7 @@ type Config struct {
 	// routes may use different keys.
 	OpenRouterTranscribeAPIKey string
 	// TranscribeProviders lists every configured provider in a fixed order
-	// (Groq first). It has one or two entries after Load succeeds.
+	// (Groq, MAI, AssemblyAI). It has one to three entries after Load succeeds.
 	TranscribeProviders []string
 	// TranscribeProvider is the provider /api/transcribe starts on: the first
 	// entry of TranscribeProviders, unless main restores a selection saved by
@@ -117,6 +120,7 @@ func Load() (Config, []string, error) {
 		ListenAddr:                 env("LISTEN_ADDR", "127.0.0.1:8770"),
 		GroqAPIKey:                 os.Getenv("GROQ_API_KEY"),
 		GroqModel:                  env("GROQ_MODEL", "whisper-large-v3-turbo"),
+		AssemblyAIKey:              os.Getenv("ASSEMBLYAI_API_KEY"),
 		OpenRouterTranscribeAPIKey: os.Getenv("OPENROUTER_TRANSCRIBE_API_KEY"),
 
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
@@ -197,9 +201,12 @@ func (c *Config) resolveTranscribe() error {
 	if c.OpenRouterTranscribeAPIKey != "" {
 		c.TranscribeProviders = append(c.TranscribeProviders, ProviderMAITranscribe)
 	}
+	if c.AssemblyAIKey != "" {
+		c.TranscribeProviders = append(c.TranscribeProviders, ProviderAssemblyAI)
+	}
 	if len(c.TranscribeProviders) == 0 {
-		return fmt.Errorf("neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set, so /api/transcribe has no " +
-			"provider. Set at least one in ai-service.env")
+		return fmt.Errorf("none of GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY or ASSEMBLYAI_API_KEY is set, " +
+			"so /api/transcribe has no provider. Set at least one in ai-service.env")
 	}
 	c.TranscribeProvider = c.TranscribeProviders[0]
 	return nil
@@ -279,16 +286,18 @@ func (c Config) TranscribeRoute() string {
 			parts = append(parts, fmt.Sprintf("Groq, model %s", c.GroqModel))
 		case ProviderMAITranscribe:
 			parts = append(parts, "OpenRouter, model microsoft/mai-transcribe-2")
+		case ProviderAssemblyAI:
+			parts = append(parts, "AssemblyAI Sync, model universal-3-5-pro")
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (neither GROQ_API_KEY nor OPENROUTER_TRANSCRIBE_API_KEY is set)"
+		return "none (neither GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY nor ASSEMBLYAI_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
 	return strings.Join(parts, " and ") +
-		fmt.Sprintf(" (both enabled; tray picker, starting on %s)", transcribeProviderName(c.TranscribeProvider))
+		fmt.Sprintf(" (%d providers; tray picker, starting on %s)", len(parts), transcribeProviderName(c.TranscribeProvider))
 }
 
 // transcribeProviderName is the short human name used in the startup log.
@@ -298,6 +307,8 @@ func transcribeProviderName(provider string) string {
 		return "Groq"
 	case ProviderMAITranscribe:
 		return "OpenRouter MAI-Transcribe-2"
+	case ProviderAssemblyAI:
+		return "AssemblyAI Universal-3.5 Pro"
 	}
 	return provider
 }
