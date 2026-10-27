@@ -95,7 +95,7 @@ func TestLoopbackGuard(t *testing.T) {
 // handler that would spend an account.
 func TestLoopbackGuardCoversPosts(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"/api/transcribe", "/api/transcribe-verbatim", "/api/explain", "/api/memoir/check"} {
+	for _, path := range []string{"/api/transcribe/stream", "/api/transcribe-verbatim", "/api/explain", "/api/memoir/check"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Origin", "https://evil.example")
@@ -358,8 +358,8 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 		{"/api/explain", "text/plain;charset=UTF-8"},
 		{"/api/explain", ""},
 		{"/api/memoir/check", "application/x-www-form-urlencoded"},
-		{"/api/transcribe", "text/plain"},
-		{"/api/transcribe", ""},
+		{"/api/transcribe/stream", "text/plain"},
+		{"/api/transcribe/stream", ""},
 		{"/api/transcribe-verbatim", "application/json"},
 		{"/api/transcribe-verbatim", ""},
 	} {
@@ -377,7 +377,7 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 	}
 	// What comart's recorder sends still reaches the handler (which then
 	// reports the missing key, since this Server has none).
-	req := httptest.NewRequest(http.MethodPost, "/api/transcribe", strings.NewReader("x"))
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", strings.NewReader("x"))
 	req.Host = "127.0.0.1:8770"
 	req.Header.Set("Content-Type", "audio/webm;codecs=opus")
 	rec := httptest.NewRecorder()
@@ -473,33 +473,6 @@ func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 	}
 }
 
-func postAudio(t *testing.T, s *Server, contentType string, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/transcribe", strings.NewReader(body))
-	req.Host = "127.0.0.1:8770"
-	req.Header.Set("Content-Type", contentType)
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
-	return rec
-}
-
-func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
-	s := &Server{}
-	rec := postAudio(t, s, "audio/webm", strings.Repeat("a", 1500))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status %d, want 500", rec.Code)
-	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "ASSEMBLYAI_API_KEY") {
-		t.Fatalf("error %q does not name ASSEMBLYAI_API_KEY", errMsg)
-	}
-
-	s = &Server{cfg: config.Config{AssemblyAIKey: "aai", TranscribeProvider: config.ProviderAssemblyAI}}
-	rec = postAudio(t, s, "audio/webm", strings.Repeat("a", 500))
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("short clip: status %d, want 422", rec.Code)
-	}
-}
-
 // openRouterTestRequest is the subset of the OpenRouter STT body the tests
 // inspect. []byte unmarshals from base64, exactly as the real request encodes it.
 type openRouterTestRequest struct {
@@ -562,103 +535,6 @@ func TestTranscribeProviderSelection(t *testing.T) {
 	}
 }
 
-func TestTranscribeAssemblyAIProvider(t *testing.T) {
-	oldURL := assemblyAIURL
-	defer func() { assemblyAIURL = oldURL }()
-
-	for _, tc := range []struct {
-		name, contentType, wantName, wantPartType string
-	}{
-		{"webm from comart", "audio/webm;codecs=opus", "audio.webm", "audio/webm"},
-		{"mp4 from comart", "audio/mp4", "audio.mp4", "audio/mp4"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotAuth, gotModel, gotName, gotType string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotAuth = r.Header.Get("Authorization")
-				gotModel = r.Header.Get("X-AAI-Model")
-				if err := r.ParseMultipartForm(4 << 20); err != nil {
-					t.Errorf("ParseMultipartForm: %v", err)
-					return
-				}
-				f, hdr, err := r.FormFile("audio")
-				if err != nil {
-					t.Errorf("FormFile: %v", err)
-					return
-				}
-				defer f.Close()
-				gotName = hdr.Filename
-				gotType = hdr.Header.Get("Content-Type")
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"text":"  hello from assemblyai  "}`))
-			}))
-			defer srv.Close()
-			assemblyAIURL = srv.URL
-
-			s := &Server{
-				cfg: config.Config{
-					AssemblyAIKey:      "aai-secret",
-					TranscribeProvider: config.ProviderAssemblyAI,
-				},
-				httpShort: srv.Client(),
-			}
-			rec := postAudio(t, s, tc.contentType, strings.Repeat("abcd", 400))
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-			}
-			var out struct {
-				Text string `json:"text"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "hello from assemblyai" {
-				t.Fatalf("got %+v, err %v", out, err)
-			}
-			if gotAuth != "aai-secret" || gotModel != "universal-3-5-pro" {
-				t.Errorf("upstream got auth=%q model=%q", gotAuth, gotModel)
-			}
-			if gotName != tc.wantName || gotType != tc.wantPartType {
-				t.Errorf("upstream got file=%q type=%q, want %q %q", gotName, gotType, tc.wantName, tc.wantPartType)
-			}
-		})
-	}
-}
-
-func TestTranscribeAssemblyAIError(t *testing.T) {
-	oldURL := assemblyAIURL
-	defer func() { assemblyAIURL = oldURL }()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.Header().Set("Retry-After", "3")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"status":429,"title":"Too Many Requests","detail":"slow down"}`))
-	}))
-	defer srv.Close()
-	assemblyAIURL = srv.URL
-
-	s := &Server{
-		cfg: config.Config{
-			AssemblyAIKey:      "aai-secret",
-			TranscribeProvider: config.ProviderAssemblyAI,
-		},
-		httpShort: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/webm", strings.Repeat("abcd", 400))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status %d, want 502", rec.Code)
-	}
-	var body struct {
-		Error            string `json:"error"`
-		AssemblyAIStatus int    `json:"assemblyAIStatus"`
-		RetryAfter       string `json:"retryAfter"`
-		Detail           string `json:"detail"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
-	}
-	if body.AssemblyAIStatus != 429 || body.RetryAfter != "3" || !strings.Contains(body.Detail, "slow down") {
-		t.Errorf("got %+v, want 429 with Retry-After and detail", body)
-	}
-}
-
 func testWAV() []byte {
 	const rate = 16000
 	data := make([]byte, rate) // 0.25 s of silence, 16-bit mono
@@ -677,6 +553,18 @@ func testWAV() []byte {
 	copy(b[36:40], "data")
 	binary.LittleEndian.PutUint32(b[40:44], uint32(len(data)))
 	return b
+}
+
+func TestBatchTranscribeRouteIsGone(t *testing.T) {
+	s := &Server{cfg: config.Config{AssemblyAIKey: "aai", TranscribeProvider: config.ProviderAssemblyAI}}
+	req := httptest.NewRequest(http.MethodPost, "/api/transcribe", strings.NewReader("x"))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "audio/webm")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404", rec.Code)
+	}
 }
 
 func TestTranscribeStreamAssemblyAI(t *testing.T) {

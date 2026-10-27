@@ -188,10 +188,11 @@ ask_key() {
   echo "saved $key"
 }
 
-# /api/transcribe runs on ASSEMBLYAI_API_KEY; /api/transcribe-verbatim uses
-# OPENROUTER_TRANSCRIBE_API_KEY. /api/explain takes OPENROUTER_API_KEY or
-# CLAUDE_API_KEY; Memoir takes MEMOIR_CLAUDE_API_KEY or
-# MEMOIR_CEREBRAS_API_KEY. The blocks below handle all three routes.
+# /api/transcribe/stream runs on ASSEMBLYAI_API_KEY and/or DEEPGRAM_API_KEY;
+# /api/transcribe-verbatim uses OPENROUTER_TRANSCRIBE_API_KEY. /api/explain
+# takes OPENROUTER_API_KEY or CLAUDE_API_KEY; Memoir takes
+# MEMOIR_CLAUDE_API_KEY or MEMOIR_CEREBRAS_API_KEY. The blocks below handle all
+# three routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
@@ -205,14 +206,14 @@ else
     say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
-  # /api/transcribe now has one provider, AssemblyAI. The explain and Memoir
-  # routes still refuse more than one, so stop before restarting the service
-  # into a configuration it would reject.
+  # /api/transcribe/stream now has two providers, AssemblyAI and Deepgram.
+  # The explain and Memoir routes still refuse more than one, so stop before
+  # restarting the service into a configuration it would reject.
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
   fi
   if env_set GROQ_API_KEY || env_set GROQ_MODEL; then
-    die "ai-service.env still sets GROQ_API_KEY or GROQ_MODEL. Groq was removed: /api/transcribe now runs only on AssemblyAI, and the service would refuse to start. Delete the retired lines (or comment them out), then re-run."
+    die "ai-service.env still sets GROQ_API_KEY or GROQ_MODEL. Groq was removed: /api/transcribe/stream now runs on AssemblyAI or Deepgram, and the service would refuse to start. Delete the retired lines (or comment them out), then re-run."
   fi
   if env_set MAI_TRANSCRIBE_API_KEY; then
     die "ai-service.env still sets MAI_TRANSCRIBE_API_KEY, which was replaced by OPENROUTER_TRANSCRIBE_API_KEY: MAI-Transcribe-2 now runs through OpenRouter, and the old Azure key makes the service refuse to start. Rename it (or comment it out), then re-run."
@@ -230,23 +231,37 @@ else
   if env_set CEREBRAS_API_KEY; then
     die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
   fi
-  # /api/transcribe needs AssemblyAI; /api/transcribe-verbatim uses OpenRouter's
-  # MAI-Transcribe-2. Ask for the required AssemblyAI key, then offer the
-  # optional verbatim key.
+  # /api/transcribe/stream needs at least one of AssemblyAI or Deepgram;
+  # /api/transcribe-verbatim uses OpenRouter's MAI-Transcribe-2. Ask for the
+  # required first provider, then offer the other and the optional verbatim key.
+  if ! env_set ASSEMBLYAI_API_KEY && ! env_set DEEPGRAM_API_KEY; then
+    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to use Deepgram instead" 1 ||
+      ask_key DEEPGRAM_API_KEY "microphone transcription via Deepgram Nova-3"
+  fi
+  if ! env_set DEEPGRAM_API_KEY; then
+    ask_key DEEPGRAM_API_KEY "microphone transcription via Deepgram Nova-3. Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: DEEPGRAM_API_KEY left empty — /api/transcribe/stream stays on AssemblyAI"
+  fi
   if ! env_set ASSEMBLYAI_API_KEY; then
-    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro"
+    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: ASSEMBLYAI_API_KEY left empty — /api/transcribe/stream stays on Deepgram"
   fi
   if ! env_set OPENROUTER_TRANSCRIBE_API_KEY; then
     ask_key OPENROUTER_TRANSCRIBE_API_KEY "verbatim transcription via OpenRouter MAI-Transcribe-2. Leave it empty to skip" 1 ||
       say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY left empty — /api/transcribe-verbatim stays unconfigured"
   fi
-  # AssemblyAI streaming decodes MediaRecorder WebM/MP4 to PCM for
-  # /v1/transcribe/live.
+  # Both live providers decode MediaRecorder WebM/MP4 to PCM with ffmpeg.
   if ! command -v ffmpeg >/dev/null 2>&1; then
-    die "ffmpeg is required to decode comart's WebM/MP4 recordings for AssemblyAI streaming, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
+    die "ffmpeg is required to decode comart's WebM/MP4 recordings for the AssemblyAI and Deepgram live APIs, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
   fi
-  say "[d] ffmpeg: $(command -v ffmpeg) — decodes comart's recordings for AssemblyAI"
-  say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe runs on AssemblyAI Universal-3.5 Pro"
+  say "[d] ffmpeg: $(command -v ffmpeg) — decodes comart's recordings for AssemblyAI and Deepgram"
+  if env_set ASSEMBLYAI_API_KEY && env_set DEEPGRAM_API_KEY; then
+    say "[d] ai-service.env: ASSEMBLYAI_API_KEY and DEEPGRAM_API_KEY are set — /api/transcribe/stream uses the tray picker (starts on AssemblyAI)"
+  elif env_set ASSEMBLYAI_API_KEY; then
+    say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe/stream runs on AssemblyAI Universal-3.5 Pro"
+  else
+    say "[d] ai-service.env: DEEPGRAM_API_KEY is set — /api/transcribe/stream runs on Deepgram Nova-3"
+  fi
   if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe-verbatim runs on OpenRouter MAI-Transcribe-2"
   fi

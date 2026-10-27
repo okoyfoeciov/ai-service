@@ -28,11 +28,11 @@ func onReady(c Controller, onPick func(string)) {
 	providers := c.TranscribeProviders()
 	current := c.TranscribeProvider()
 
-	header := systray.AddMenuItem("Transcribe with", "The provider /api/transcribe uses")
+	header := systray.AddMenuItem("Transcribe with", "The provider /api/transcribe/stream uses")
 	header.Disable()
 	items := make(map[string]*systray.MenuItem, len(providers))
 	for _, p := range providers {
-		items[p] = systray.AddMenuItemCheckbox(providerLabel(p), "Use "+providerLabel(p)+" for /api/transcribe", p == current)
+		items[p] = systray.AddMenuItemCheckbox(providerLabel(p), "Use "+providerLabel(p)+" for /api/transcribe/stream", p == current)
 	}
 
 	// One radio-like group: checking one item unchecks the others. The menu

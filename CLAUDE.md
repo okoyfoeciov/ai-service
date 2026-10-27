@@ -6,29 +6,32 @@ daily-dictation (`~/daily-dictation`, which uses the streaming transcription
 routes and `/api/transcribe-verbatim`). `README.md` is the full guide: install, service
 management, configuration, security model and models.
 
-In short, `/api/transcribe` runs only on AssemblyAI Universal-3.5 Pro (Sync API
-and live endpoint); `ASSEMBLYAI_API_KEY` is required, and the service refuses to
-start without it. `/api/transcribe-verbatim` still uses OpenRouter's
-MAI-Transcribe-2, with `verbose_json`, word timestamps and Azure's verbatim
-style. `/api/explain` and `/api/memoir/check` still have two each and refuse
-both. Every Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
-`/api/explain`'s); the transcription keys are `ASSEMBLYAI_API_KEY` and
+In short, `/api/transcribe/stream` runs on AssemblyAI Universal-3.5 Pro or
+Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
+`DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
+`/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
+`verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` and
+`/api/memoir/check` still have two each and refuse both. Every Memoir variable
+starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the
+transcription keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
-`/api/explain`'s). AssemblyAI streaming needs `ffmpeg` on `PATH`:
-`/api/transcribe/stream` decodes MediaRecorder WebM/Opus to 16 kHz PCM for
-`/v1/transcribe/live`. The browser clients use `/api/transcribe/ws` for the same
-stream: Chrome blocks a streaming `fetch` body to loopback from an extension
-page, so the WS handler forwards MediaRecorder frames to the stream route over
-loopback. The tray picker (`internal/tray`) is retained for future providers and
-appears when more than one is configured. Linux's tray is a small in-repo D-Bus
-backend that intentionally omits `Activate`, because GNOME then opens the menu
-on the first click instead of waiting out the double-click interval; macOS
-links Cocoa, so its build needs cgo.
+`/api/explain`'s). Both streaming providers need `ffmpeg` on `PATH`:
+`/api/transcribe/stream` decodes MediaRecorder WebM/Opus to 16 kHz PCM, then
+sends it to AssemblyAI's `/v1/transcribe/live` or Deepgram's
+`wss://api.deepgram.com/v1/listen` (`model=nova-3`, `language=en`, which is
+Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
+`/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body
+to loopback from an extension page, so the WS handler forwards MediaRecorder
+frames to the stream route over loopback. The tray picker (`internal/tray`)
+lists both providers when both keys are configured. Linux's tray is a small
+in-repo D-Bus backend that intentionally omits `Activate`, because GNOME then
+opens the menu on the first click instead of waiting out the double-click
+interval; macOS links Cocoa, so its build needs cgo.
 
 To add a transcribe provider later, extend `resolveTranscribe` with its key,
-add its `providerLabel` in `internal/tray`, and add a case to the batch handler
-in `internal/server/transcribe.go`; the picker, saved selection and the
-streaming fallback (`streamBuffered`) are already generic.
+add its `providerLabel` in `internal/tray`, and add a live case to
+`handleTranscribeStream` in `internal/server/transcribe_stream.go`. There is no
+batch fallback: a provider must implement streaming.
 
 ## This is a BACKEND. The front ends live elsewhere.
 

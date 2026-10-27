@@ -1,10 +1,11 @@
-// Package tray is the /api/transcribe provider picker shown in the desktop's
-// menu bar / status area. It exists only when more than one transcription
-// provider is configured: with one provider there is nothing to pick.
+// Package tray is the /api/transcribe/stream provider picker shown in the
+// desktop's menu bar / status area. It exists only when more than one
+// transcription provider is configured: with one provider there is nothing to
+// pick.
 //
 // The tray is not part of the HTTP API. It runs in the service process and
 // flips the same provider field the transcribe handler reads, so comart keeps
-// calling POST /api/transcribe unchanged.
+// calling GET /api/transcribe/ws unchanged.
 package tray
 
 import (
@@ -33,6 +34,8 @@ func providerLabel(provider string) string {
 	switch provider {
 	case config.ProviderAssemblyAI:
 		return "AssemblyAI Universal-3.5 Pro"
+	case config.ProviderDeepgram:
+		return "Deepgram Nova-3"
 	}
 	return provider
 }

@@ -13,7 +13,7 @@ import (
 // pipeline (multipart field "audio") and answers its transcript shape
 // {"lines": [...], "words": [...]} from OpenRouter's MAI-Transcribe-2
 // (verbose_json with word timestamps, verbatim style). This is the only route
-// that still uses MAI-Transcribe-2; /api/transcribe runs on AssemblyAI.
+// that still uses MAI-Transcribe-2; /api/transcribe/stream runs on AssemblyAI.
 func (s *Server) handleTranscribeVerbatim(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "multipart/form-data", func(mt string) bool {
 		return mt == "multipart/form-data"

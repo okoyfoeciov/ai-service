@@ -33,12 +33,12 @@ type Server struct {
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort      *http.Client // /api/transcribe and AssemblyAI streaming (2 min)
+	httpShort      *http.Client // streaming transcription and the WS transport (2 min)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
 
 	// transcribeProviders is every provider config.Load found, and
-	// transcribeProvider is the one /api/transcribe uses now. The tray picker
-	// may change it while requests are running, hence atomic.
+	// transcribeProvider is the one /api/transcribe/stream uses now. The tray
+	// picker may change it while requests are running, hence atomic.
 	transcribeProviders []string
 	transcribeProvider  atomic.Value // string
 
@@ -162,8 +162,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleTranscribeStream(w, r)
 	case r.Method == http.MethodGet && p == "/api/transcribe/ws":
 		s.handleTranscribeWS(w, r)
-	case r.Method == http.MethodPost && p == "/api/transcribe":
-		s.handleTranscribe(w, r)
 	case r.Method == http.MethodPost && p == "/api/transcribe-verbatim":
 		s.handleTranscribeVerbatim(w, r)
 	case p == "/api/explain" && r.Method == http.MethodPost:

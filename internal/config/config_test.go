@@ -5,17 +5,17 @@ import (
 	"testing"
 )
 
-// clearTranscribeEnv blanks every variable that decides the /api/transcribe
+// clearTranscribeEnv blanks every variable that decides the /api/transcribe/stream
 // route, so the machine's own environment cannot leak into a case. It then
-// leaves ASSEMBLYAI_API_KEY set, because Load now refuses to start without the
-// one transcribe provider; the transcribe cases override it. The retired
-// GROQ_API_KEY, GROQ_MODEL, PARAKEET_URL, MAI_TRANSCRIBE_API_KEY,
-// AZURE_SPEECH_KEY and AZURE_SPEECH_ENDPOINT are cleared too; cases set them to
-// prove Load refuses.
+// leaves ASSEMBLYAI_API_KEY set, because Load needs at least one transcribe
+// provider; the transcribe cases override it. The retired GROQ_API_KEY,
+// GROQ_MODEL, PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY and
+// AZURE_SPEECH_ENDPOINT are cleared too; cases set them to prove Load refuses.
 func clearTranscribeEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"GROQ_API_KEY", "GROQ_MODEL", "OPENROUTER_TRANSCRIBE_API_KEY", "ASSEMBLYAI_API_KEY",
+		"GROQ_API_KEY", "GROQ_MODEL", "OPENROUTER_TRANSCRIBE_API_KEY",
+		"ASSEMBLYAI_API_KEY", "DEEPGRAM_API_KEY",
 		"PARAKEET_URL", "MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT",
 	} {
 		t.Setenv(k, "")
@@ -226,17 +226,19 @@ func TestLoadKeepsVerbatimKeyAlongsideAssemblyAI(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresAssemblyAI(t *testing.T) {
+func TestLoadRequiresTranscribeProvider(t *testing.T) {
 	cases := []struct {
-		name    string
-		env     map[string]string
-		wantKey string
-		wantOK  bool
+		name          string
+		env           map[string]string
+		wantProviders []string
+		wantOK        bool
 	}{
-		{"none set", map[string]string{"ASSEMBLYAI_API_KEY": ""}, "", false},
-		{"only the verbatim key", map[string]string{"ASSEMBLYAI_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, "", false},
-		{"assemblyai", map[string]string{"ASSEMBLYAI_API_KEY": "aai"}, "aai", true},
-		{"assemblyai and verbatim", map[string]string{"ASSEMBLYAI_API_KEY": "aai", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, "aai", true},
+		{"none set", map[string]string{"ASSEMBLYAI_API_KEY": ""}, nil, false},
+		{"only the verbatim key", map[string]string{"ASSEMBLYAI_API_KEY": "", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, nil, false},
+		{"assemblyai", map[string]string{"ASSEMBLYAI_API_KEY": "aai"}, []string{ProviderAssemblyAI}, true},
+		{"deepgram", map[string]string{"ASSEMBLYAI_API_KEY": "", "DEEPGRAM_API_KEY": "dg"}, []string{ProviderDeepgram}, true},
+		{"both", map[string]string{"ASSEMBLYAI_API_KEY": "aai", "DEEPGRAM_API_KEY": "dg"}, []string{ProviderAssemblyAI, ProviderDeepgram}, true},
+		{"assemblyai and verbatim", map[string]string{"ASSEMBLYAI_API_KEY": "aai", "OPENROUTER_TRANSCRIBE_API_KEY": "or"}, []string{ProviderAssemblyAI}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,16 +253,22 @@ func TestLoadRequiresAssemblyAI(t *testing.T) {
 				t.Fatalf("err %v, want ok=%v", err, tc.wantOK)
 			}
 			if !tc.wantOK {
-				if err == nil || !strings.Contains(err.Error(), "ASSEMBLYAI_API_KEY") {
-					t.Fatalf("err %v, want one naming ASSEMBLYAI_API_KEY", err)
+				if err == nil || !strings.Contains(err.Error(), "ASSEMBLYAI_API_KEY") ||
+					!strings.Contains(err.Error(), "DEEPGRAM_API_KEY") {
+					t.Fatalf("err %v, want one naming both keys", err)
 				}
 				return
 			}
-			if c.AssemblyAIKey != tc.wantKey {
-				t.Errorf("got AssemblyAI key %q, want %q", c.AssemblyAIKey, tc.wantKey)
+			if len(c.TranscribeProviders) != len(tc.wantProviders) {
+				t.Fatalf("providers %v, want %v", c.TranscribeProviders, tc.wantProviders)
 			}
-			if len(c.TranscribeProviders) != 1 || c.TranscribeProviders[0] != ProviderAssemblyAI || c.TranscribeProvider != ProviderAssemblyAI {
-				t.Errorf("providers %v, starting %q; want only %q", c.TranscribeProviders, c.TranscribeProvider, ProviderAssemblyAI)
+			for i := range tc.wantProviders {
+				if c.TranscribeProviders[i] != tc.wantProviders[i] {
+					t.Fatalf("providers %v, want %v", c.TranscribeProviders, tc.wantProviders)
+				}
+			}
+			if c.TranscribeProvider != tc.wantProviders[0] {
+				t.Errorf("starting provider %q, want %q", c.TranscribeProvider, tc.wantProviders[0])
 			}
 		})
 	}
@@ -342,7 +350,21 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 			t.Errorf("route %q missing %q", got, w)
 		}
 	}
-	if got := (Config{}).TranscribeRoute(); !strings.Contains(got, "ASSEMBLYAI_API_KEY") {
-		t.Errorf("unconfigured route %q does not name ASSEMBLYAI_API_KEY", got)
+
+	t.Setenv("DEEPGRAM_API_KEY", "dg")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = c.TranscribeRoute()
+	for _, w := range []string{"AssemblyAI", "Deepgram", "nova-3", "2 providers", "tray picker", "starting on AssemblyAI Universal-3.5 Pro"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("route %q missing %q", got, w)
+		}
+	}
+
+	if got := (Config{}).TranscribeRoute(); !strings.Contains(got, "ASSEMBLYAI_API_KEY") ||
+		!strings.Contains(got, "DEEPGRAM_API_KEY") {
+		t.Errorf("unconfigured route %q does not name both keys", got)
 	}
 }

@@ -29,9 +29,8 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). AssemblyAI gets a native `/v1/transcribe/live` request, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`. |
+| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`. |
 | `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` or `{"error": …}`. |
-| `POST /api/transcribe` | batch/legacy clients | The body is one finished clip (`audio/*` or `video/*`). Sends it to AssemblyAI Universal-3.5 Pro and returns `{"text": …}`. The current mic clients use the streaming route. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -39,9 +38,10 @@ The Memoir route does not stream: the client renders the finished result, so
 the server collects the whole answer and replies once.
 
 On an AssemblyAI transcription error the response carries `assemblyAIStatus`
-and `retryAfter`. The verbatim route carries `openRouterStatus`; it also keeps
-the historical `azureStatus` field with the same value because daily-dictation
-already classifies permanent vs retryable failures from it.
+and `retryAfter`; Deepgram errors carry the provider detail in `detail`. The
+verbatim route carries `openRouterStatus`; it also keeps the historical
+`azureStatus` field with the same value because daily-dictation already
+classifies permanent vs retryable failures from it.
 
 ## Install, update, uninstall
 
@@ -68,22 +68,25 @@ the build, the env file and the restart):
    tools).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each missing credential it asks in a hidden prompt:
-   `ASSEMBLYAI_API_KEY` for `/api/transcribe` (required),
+   `ASSEMBLYAI_API_KEY` and/or `DEEPGRAM_API_KEY` for `/api/transcribe/stream`
+   (at least one is required),
    `OPENROUTER_TRANSCRIBE_API_KEY` for `/api/transcribe-verbatim` (optional),
    one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
-   display. For the transcribe key it asks for `ASSEMBLYAI_API_KEY`; an empty
-   answer for `OPENROUTER_TRANSCRIBE_API_KEY` just leaves verbatim
-   unconfigured. For the explain key it asks for OpenRouter first; an
+   display. For the transcribe providers it asks for AssemblyAI first; an empty
+   answer there moves on to Deepgram, and an empty answer for either optional
+   provider just leaves it out. An empty
+   answer for `OPENROUTER_TRANSCRIBE_API_KEY` leaves verbatim unconfigured. For
+   the explain key it asks for OpenRouter first; an
    empty answer there moves on to Claude. For the Memoir key it asks for Claude
    first; an empty answer there moves on to Cerebras. It stops if more than one
    variable of the explain or Memoir route is already set, if `PARAKEET_URL` is
    still there, if the retired `GROQ_API_KEY` or `GROQ_MODEL` is there, if the
    retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
    `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
-   still there. It also checks that `ffmpeg` is on `PATH`, because AssemblyAI's
-   streaming path decodes MediaRecorder WebM/MP4 to PCM.
+   still there. It also checks that `ffmpeg` is on `PATH`, because both live
+   transcription paths decode MediaRecorder WebM/MP4 to PCM.
    It never prints a key. Required keys are enforced here: if you cancel, enter
    nothing for a required key, or no prompt can be shown, `install.sh` stops
    before step 4 and does not (re)start the service. An empty
@@ -180,7 +183,8 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `ASSEMBLYAI_API_KEY` | (empty, required) | Secret. AssemblyAI key for Universal-3.5 Pro, the `/api/transcribe` provider. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
+| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
+| `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain` only. Set this **or** `CLAUDE_API_KEY`, never both. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
@@ -202,7 +206,7 @@ as-is in WAV, MP3, FLAC, M4A, OGG, WebM or AAC format; its 25 MB cap is about
 processing deadline. MAI is roughly 300× real-time, so the 50–100 s clips
 daily-dictation sends finish far below it; chunk anything much longer.
 
-**AssemblyAI streaming.** `ASSEMBLYAI_API_KEY` is the `/api/transcribe`
+**AssemblyAI streaming.** `ASSEMBLYAI_API_KEY` is the `/api/transcribe/stream`
 provider. It uses AssemblyAI's native
 `POST https://sync.assemblyai.com/v1/transcribe/live`, with `X-AAI-Model:
 universal-3-5-pro`. The clients send their MediaRecorder WebM/MP4 stream to
@@ -216,10 +220,48 @@ extension page, while a WebSocket to the same host works. The WS handler only
 carries bytes; the decoding is the stream route's.
 
 Measured on this host with a warm connection, the post-stop wait was ~0.35 s for
-a 6 s clip and ~0.9 s for a 30 s clip, versus ~0.7 s and ~1.6 s for the batch
-endpoint. Transcripts were identical in 24 paired runs on one clip. Live audio
-is capped at 120 s by AssemblyAI (the mic clients cap at 60 s). The live request
-has a 300 s deadline; `/api/transcribe/stream` caps the uploaded body at 25 MB.
+a 6 s clip and ~0.9 s for a 30 s clip. Transcripts were identical in 24 paired
+runs on one clip. Live audio is capped at 120 s by AssemblyAI (the mic clients
+cap at 60 s). The live request has a 300 s deadline; `/api/transcribe/stream`
+caps the uploaded body at 25 MB.
+
+**Deepgram streaming.** `DEEPGRAM_API_KEY` uses Deepgram's live WebSocket at
+`wss://api.deepgram.com/v1/listen` with `model=nova-3` and `language=en`.
+That is Deepgram's **Nova-3 Monolingual** tier: a specific language is cheaper
+than `language=multi` (Nova-3 Multilingual), and this project is English-only.
+The request asks for `smart_format=true`, `punctuate=true`,
+`encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=false`
+and `endpointing=300`. ai-service sends the ffmpeg-produced PCM as binary
+WebSocket frames, then sends `{"type":"CloseStream"}`. Deepgram emits `Results`
+at speech boundaries, so the handler joins every final (`is_final: true`)
+transcript and returns the usual `{"text": …}`.
+
+Measured end to end on 2026-10-27 through comart’s exact WebSocket transport
+(`GET /api/transcribe/ws`), with real WebM/Opus chunks fed at 1× real time. The
+timer starts when the client sends the text frame `stop` and stops when the
+final JSON transcript arrives. Deepgram is the median of six runs per clip;
+AssemblyAI is the median of three. Ranges are in parentheses.
+
+| Clip | AssemblyAI | Deepgram Nova-3 |
+| --- | --- | --- |
+| 6 s | 394 ms (390–394) | 309 ms (237–346) |
+| 12 s | 520 ms (515–523) | 396 ms (258–440) |
+| 20 s | 657 ms (657–659) | 297 ms (263–320) |
+| 30 s | 912 ms (904–935) | 287 ms (262–312) |
+
+Deepgram stays roughly flat as the clip grows and is about 1.3× faster at 6 s,
+rising to about 3.2× faster at 30 s. AssemblyAI’s post-stop time grows with
+duration.
+
+Every `/api/transcribe/stream` request now logs one line naming the provider,
+the HTTP status, the decoded audio duration, the total handler time and the
+post-stop time (from end of audio input to the final response), for example:
+
+```text
+transcribe[deepgram]: type=audio/webm status=200 audio=6.08s total=6.42s post-stop=380ms
+```
+
+The line never includes audio or transcript text.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
@@ -235,17 +277,18 @@ server at start; the service manager retries every 10 s and the error is in
 After an edit, restart the service. A missing API key is only a warning at
 start: `/api/transcribe-verbatim` answers 500, `/api/explain` sends an `error`
 event and `/api/memoir/check` answers 503, each naming the missing key, until it
-is set. `/api/transcribe` is the exception: without `ASSEMBLYAI_API_KEY` the
-service refuses to start.
+is set. `/api/transcribe/stream` is the exception: without either
+`ASSEMBLYAI_API_KEY` or `DEEPGRAM_API_KEY` the service refuses to start.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
 manager keeps retrying every 10 s) when a route has no usable provider:
 
-- `ASSEMBLYAI_API_KEY` is not set, so `/api/transcribe` has no provider;
+- neither `ASSEMBLYAI_API_KEY` nor `DEEPGRAM_API_KEY` is set, so
+  `/api/transcribe/stream` has no provider;
 - the retired `PARAKEET_URL` is still set (the local Parakeet integration was
   removed);
 - the retired `GROQ_API_KEY` or `GROQ_MODEL` is still set. Groq was removed when
-  `/api/transcribe` moved to AssemblyAI alone;
+  `/api/transcribe/stream` moved to AssemblyAI and Deepgram;
 - the retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
   `AZURE_SPEECH_ENDPOINT` is still set. MAI-Transcribe-2 now goes through
   OpenRouter, and `/api/transcribe-verbatim` reads
@@ -267,7 +310,7 @@ manager keeps retrying every 10 s) when a route has no usable provider:
 
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the route it chose, for example
-`transcribe route: AssemblyAI Sync, model universal-3-5-pro`,
+`transcribe route: AssemblyAI live, model universal-3-5-pro`,
 `explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
 same for `memoir route: …`, and every Claude request whose stream starts logs
 the model it asked for next to the model the API says answered (`llm[Claude/explain]`
@@ -278,12 +321,13 @@ re-route the call.
 ### Tray picker (multiple transcribe providers)
 
 The tray picker is part of the service and is kept for future providers. It
-appears when more than one `/api/transcribe` provider is configured: the macOS
-menu bar or the Linux status area (GNOME's AppIndicator extension, KDE, and
-anything else implementing StatusNotifierItem). Today AssemblyAI is the only
-transcribe provider, so the stock configuration shows no icon; adding a second
-provider to `config.Load`'s provider list brings the picker back without any
-client change, because comart keeps calling the same route.
+appears when more than one `/api/transcribe/stream` provider is configured: the
+macOS menu bar or the Linux status area (GNOME's AppIndicator extension, KDE,
+and anything else implementing StatusNotifierItem). With both AssemblyAI and
+Deepgram keys set, it shows **AssemblyAI Universal-3.5 Pro** and **Deepgram
+Nova-3**; with only one key there is no icon. Adding another provider brings the
+picker back without any client change, because comart keeps calling the same
+route.
 
 - The service starts on the first configured provider and remembers a pick in
   the SQLite cache (`data/cache.db`, key `transcribe:provider`), so a restart
@@ -331,7 +375,7 @@ The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
 - `application/json` on `/api/explain` and `/api/memoir/check`;
-- `audio/*` (or `video/*`) on `/api/transcribe` and as the `type` query on
+- `audio/*` (or `video/*`) on `/api/transcribe/stream` and as the `type` query on
   `/api/transcribe/ws`;
 - `multipart/form-data` on `/api/transcribe-verbatim`.
 
@@ -346,8 +390,6 @@ Request limits:
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe/stream`: 25 MiB streamed audio (413 `recording too long`).
   A 60 s MediaRecorder clip is well under 1 MiB.
-- `/api/transcribe`: 25 MiB audio (413 `recording too long`). The same ceiling
-  applies to the streamed route.
 - `/api/transcribe-verbatim`: 25 MiB audio (413 `audio too long`). This is
   OpenRouter's cap for the Azure-backed MAI-Transcribe-2 endpoint; base64 adds
   about a third on the wire.
@@ -355,7 +397,8 @@ Request limits:
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter, AssemblyAI, Claude and Cerebras quota.
+  route and spend the OpenRouter, AssemblyAI, Deepgram, Claude and Cerebras
+  quota.
   There is no rate limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
@@ -373,7 +416,8 @@ Request limits:
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
-| `/api/transcribe` | AssemblyAI Sync live, `ASSEMBLYAI_API_KEY` (required) | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
+| `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
+| `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
@@ -454,7 +498,7 @@ cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers
-internal/tray       the /api/transcribe provider picker (macOS menu bar, Linux status area; appears with more than one provider)
+internal/tray       the /api/transcribe/stream provider picker (macOS menu bar, Linux status area; appears with more than one provider)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
@@ -478,7 +522,7 @@ go test ./...
 On Linux the result is one static binary with no cgo; macOS links Cocoa for the
 menu-bar picker. At runtime it needs the SQLite
 file it creates on first run; credentials come from `ai-service.env`, and the
-AssemblyAI streaming path needs `ffmpeg` on `PATH`. After a build, restart the service to
+AssemblyAI and Deepgram streaming paths need `ffmpeg` on `PATH`. After a build, restart the service to
 run the new binary
 (`systemctl --user restart ai-service`, or
 `launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run

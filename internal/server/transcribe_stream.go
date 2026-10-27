@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -21,17 +22,92 @@ import (
 )
 
 const (
-	// maxStreamBytes bounds a streamed microphone recording. 25 MB matches the
-	// batch endpoint's cap; a 60 s WebM clip is well under 1 MB.
+	// maxStreamBytes bounds a streamed microphone recording. 25 MB is ample; a
+	// 60 s WebM clip is well under 1 MB.
 	maxStreamBytes = 25 << 20
 
 	// The clients record MediaRecorder audio; ffmpeg decodes it to the PCM the
-	// AssemblyAI live endpoint requires.
+	// live endpoints require.
 	streamSampleRate = 16000
 	streamChannels   = 1
 )
 
 var errStreamTooLarge = errors.New("stream too large")
+
+// statusWriter records the status a streamed transcription answers with, so the
+// request log names the provider and result without touching response bodies.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) Status() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+// streamMetrics is filled by the provider goroutines. audioBytes is the PCM
+// sent to the provider, so its duration is independent of the compressed input
+// format. audioDone is when the last input audio was decoded.
+type streamMetrics struct {
+	audioBytes atomic.Int64
+	audioDone  atomic.Int64
+}
+
+func (m *streamMetrics) addAudio(n int) {
+	if n > 0 {
+		m.audioBytes.Add(int64(n))
+	}
+}
+
+func (m *streamMetrics) markAudioDone() {
+	m.audioDone.Store(time.Now().UnixNano())
+}
+
+func (m *streamMetrics) audioDuration() time.Duration {
+	n := m.audioBytes.Load()
+	if n <= 0 {
+		return 0
+	}
+	seconds := float64(n) / float64(streamSampleRate*streamChannels*2)
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func (m *streamMetrics) postStop() (time.Duration, bool) {
+	done := m.audioDone.Load()
+	if done == 0 {
+		return 0, false
+	}
+	return time.Since(time.Unix(0, done)), true
+}
+
+// countingWriter counts the PCM bytes ffmpeg writes into the provider request.
+type countingWriter struct {
+	w io.Writer
+	m *streamMetrics
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.m.addAudio(n)
+	return n, err
+}
 
 // cappedReader records whether a streamed body exceeded its limit. The caller
 // is another goroutine (ffmpeg for the AssemblyAI path), so the flag is atomic.
@@ -52,11 +128,11 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// handleTranscribeStream reads one recording as it arrives. AssemblyAI gets a
-// native live request (ffmpeg decodes the WebM/Opus stream to PCM on the way);
-// any provider without a live path is buffered and handed to the batch route.
-// The HTTP body ending is the stop signal, so the client can use a plain
-// streaming fetch with no extra protocol.
+// handleTranscribeStream reads one recording as it arrives and pipes it through
+// ffmpeg into the selected provider's live request. The HTTP body ending is the
+// stop signal, so the client can use a plain streaming fetch with no extra
+// protocol. Every transcribe provider must implement a live path; there is no
+// batch fallback.
 func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "an audio type", func(mt string) bool {
 		return strings.HasPrefix(mt, "audio/") || strings.HasPrefix(mt, "video/")
@@ -65,15 +141,32 @@ func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) 
 	}
 	provider := s.TranscribeProvider()
 	if provider == "" {
-		jsonError(w, "server not configured: ASSEMBLYAI_API_KEY missing", http.StatusInternalServerError)
+		jsonError(w, "server not configured: neither ASSEMBLYAI_API_KEY nor DEEPGRAM_API_KEY is set", http.StatusInternalServerError)
 		return
 	}
+	start := time.Now()
+	contentType := r.Header.Get("Content-Type")
+	sw := &statusWriter{ResponseWriter: w}
+	metrics := &streamMetrics{}
+	defer func() {
+		postStop := "-"
+		if d, ok := metrics.postStop(); ok {
+			postStop = d.Round(time.Millisecond).String()
+		}
+		log.Printf("transcribe[%s]: type=%s status=%d audio=%s total=%s post-stop=%s",
+			provider, contentType, sw.Status(),
+			metrics.audioDuration().Round(10*time.Millisecond),
+			time.Since(start).Round(time.Millisecond), postStop)
+	}()
 	body := &cappedReader{r: r.Body, max: maxStreamBytes}
-	if provider == config.ProviderAssemblyAI {
-		s.streamAssemblyAI(w, r, body)
-		return
+	switch provider {
+	case config.ProviderAssemblyAI:
+		s.streamAssemblyAI(sw, r, body, metrics)
+	case config.ProviderDeepgram:
+		s.streamDeepgram(sw, r, body, metrics)
+	default:
+		jsonError(sw, "server not configured", http.StatusInternalServerError)
 	}
-	s.streamBuffered(w, r, body)
 }
 
 // handleTranscribeWS is the browser transport for the same streamed
@@ -162,49 +255,10 @@ func (s *Server) handleTranscribeWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// streamBuffered collects the compressed clip and calls the established
-// /api/transcribe handler over loopback. Providers without a live path stay on
-// that existing, tested batch path while still taking the upload off the
-// post-stop critical path.
-func (s *Server) streamBuffered(w http.ResponseWriter, r *http.Request, body *cappedReader) {
-	audio, err := io.ReadAll(body)
-	if body.tooLarge.Load() {
-		jsonError(w, "recording too long", http.StatusRequestEntityTooLarge)
-		return
-	}
-	if err != nil {
-		jsonError(w, "could not read body", http.StatusBadRequest)
-		return
-	}
-	if len(audio) < 1200 {
-		jsonError(w, "recording too short", http.StatusUnprocessableEntity)
-		return
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		"http://"+s.cfg.ListenAddr+"/api/transcribe", bytes.NewReader(audio))
-	if err != nil {
-		jsonError(w, "internal", http.StatusInternalServerError)
-		return
-	}
-	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	res, err := s.shortClient().Do(req)
-	if err != nil {
-		jsonErrorDetail(w, "could not reach the transcription service", http.StatusBadGateway, err.Error())
-		return
-	}
-	defer res.Body.Close()
-	if ct := res.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.WriteHeader(res.StatusCode)
-	_, _ = io.Copy(w, res.Body)
-}
-
 // streamAssemblyAI pipes the incoming recording through ffmpeg into one
 // persistent AssemblyAI /v1/transcribe/live request. The request body is
 // multipart with config first and audio second, exactly as AssemblyAI requires.
-func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *cappedReader) {
+func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *cappedReader, metrics *streamMetrics) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
@@ -253,13 +307,15 @@ func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *
 			"-f", "s16le", "-c:a", "pcm_s16le", "pipe:1",
 		)
 		cmd.Stdin = body
-		cmd.Stdout = part
+		cmd.Stdout = &countingWriter{w: part, m: metrics}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if e := cmd.Run(); e != nil {
+			metrics.markAudioDone()
 			err = fmt.Errorf("ffmpeg: %v: %s", e, strings.TrimSpace(stderr.String()))
 			return
 		}
+		metrics.markAudioDone()
 		err = mw.Close()
 	}()
 

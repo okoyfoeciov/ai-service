@@ -1,6 +1,6 @@
 // Package store is ai-service's cache: one on-disk SQLite file of key/value
 // rows, each with an optional expiry. internal/mw keeps Merriam-Webster lookups
-// under "mw:<word>" for 30 days; main keeps the tray's /api/transcribe provider
+// under "mw:<word>" for 30 days; main keeps the tray's /api/transcribe/stream provider
 // choice under "transcribe:provider" with no expiry. Pure-Go driver
 // (modernc.org/sqlite), so the binary needs no cgo.
 package store

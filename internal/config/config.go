@@ -9,13 +9,14 @@ import (
 	"strings"
 )
 
-// Providers that can serve /api/transcribe, /api/explain and /api/memoir/check.
-// /api/transcribe has one active provider at a time; the tray picker lists
+// Providers that can serve /api/transcribe/stream, /api/explain and /api/memoir/check.
+// /api/transcribe/stream has one active provider at a time; the tray picker lists
 // every configured one when there is more than one. The explain and Memoir
 // routes activate exactly one, picked by which environment variable is set
 // (Load refuses both).
 const (
 	ProviderAssemblyAI = "assemblyai"
+	ProviderDeepgram   = "deepgram"
 
 	ProviderOpenRouter = "openrouter"
 	ProviderCerebras   = "cerebras"
@@ -25,10 +26,11 @@ const (
 type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
-	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on
-	// AssemblyAI's Universal-3.5 Pro (Sync and live APIs). Its key is required:
-	// Load refuses to start without it.
-	AssemblyAIKey string
+	// Mic transcription (/api/transcribe/stream, comart's Exscriptor) runs on
+	// AssemblyAI's Universal-3.5 Pro or Deepgram Nova-3, both live APIs. At
+	// least one key is required: Load refuses to start without a provider.
+	AssemblyAIKey  string
+	DeepgramAPIKey string
 	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2,
 	// which serves /api/transcribe-verbatim (daily-dictation). It is
 	// deliberately not OPENROUTER_API_KEY: that one belongs to /api/explain,
@@ -39,7 +41,7 @@ type Config struct {
 	// has at least one entry after Load succeeds; the tray picker appears when
 	// there is more than one.
 	TranscribeProviders []string
-	// TranscribeProvider is the provider /api/transcribe starts on: the first
+	// TranscribeProvider is the provider /api/transcribe/stream starts on: the first
 	// entry of TranscribeProviders, unless main restores a selection saved by
 	// the tray picker.
 	TranscribeProvider string
@@ -105,16 +107,17 @@ const (
 // piece instead of the whole server failing.
 //
 // The error is for a configuration that must not run at all: more than one
-// variable of the explain or Memoir route set, ASSEMBLYAI_API_KEY missing, a
-// retired transcription variable still present (PARAKEET_URL,
-// MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_ENDPOINT,
-// GROQ_API_KEY, GROQ_MODEL), a Claude key with a model id that is not Claude's
-// or an effort not in low/medium/high/xhigh/max, or the retired
-// CEREBRAS_API_KEY still present. The caller exits on it.
+// variable of the explain or Memoir route set, neither ASSEMBLYAI_API_KEY nor
+// DEEPGRAM_API_KEY set, a retired transcription variable still present
+// (PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY,
+// AZURE_SPEECH_ENDPOINT, GROQ_API_KEY, GROQ_MODEL), a Claude key with a model id
+// that is not Claude's or an effort not in low/medium/high/xhigh/max, or the
+// retired CEREBRAS_API_KEY still present. The caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:                 env("LISTEN_ADDR", "127.0.0.1:8770"),
 		AssemblyAIKey:              os.Getenv("ASSEMBLYAI_API_KEY"),
+		DeepgramAPIKey:             os.Getenv("DEEPGRAM_API_KEY"),
 		OpenRouterTranscribeAPIKey: os.Getenv("OPENROUTER_TRANSCRIBE_API_KEY"),
 
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
@@ -131,14 +134,14 @@ func Load() (Config, []string, error) {
 	}
 
 	// Parakeet was removed. Ignoring a leftover URL silently would leave a
-	// setting in the file that does nothing while /api/transcribe uses
-	// AssemblyAI.
+	// setting in the file that does nothing while /api/transcribe/stream uses
+	// AssemblyAI or Deepgram.
 	if os.Getenv("PARAKEET_URL") != "" {
 		return c, nil, fmt.Errorf("PARAKEET_URL is no longer supported (the local Parakeet integration was removed). " +
-			"Delete the line from ai-service.env; /api/transcribe uses ASSEMBLYAI_API_KEY")
+			"Delete the line from ai-service.env; /api/transcribe/stream uses ASSEMBLYAI_API_KEY or DEEPGRAM_API_KEY")
 	}
-	// Groq was removed when /api/transcribe moved to AssemblyAI alone. A
-	// leftover key or model would sit in the file doing nothing.
+	// Groq was removed when /api/transcribe/stream moved to AssemblyAI and
+	// Deepgram. A leftover key or model would sit in the file doing nothing.
 	var retiredGroq []string
 	for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL"} {
 		if os.Getenv(k) != "" {
@@ -150,8 +153,8 @@ func Load() (Config, []string, error) {
 		if len(retiredGroq) > 1 {
 			verb = "are"
 		}
-		return c, nil, fmt.Errorf("%s %s no longer used: /api/transcribe now runs only on "+
-			"AssemblyAI. Delete the retired line(s) from ai-service.env",
+		return c, nil, fmt.Errorf("%s %s no longer used: /api/transcribe/stream now runs on "+
+			"AssemblyAI or Deepgram. Delete the retired line(s) from ai-service.env",
 			strings.Join(retiredGroq, ", "), verb)
 	}
 	// The Azure Speech path was replaced by OpenRouter. The old variables must
@@ -202,15 +205,18 @@ func Load() (Config, []string, error) {
 	return c, missing, nil
 }
 
-// resolveTranscribe collects the /api/transcribe providers. An empty variable
-// counts as unset, because .env.example ships empty lines.
+// resolveTranscribe collects the /api/transcribe/stream providers. An empty
+// variable counts as unset, because .env.example ships empty lines.
 func (c *Config) resolveTranscribe() error {
 	if c.AssemblyAIKey != "" {
 		c.TranscribeProviders = append(c.TranscribeProviders, ProviderAssemblyAI)
 	}
+	if c.DeepgramAPIKey != "" {
+		c.TranscribeProviders = append(c.TranscribeProviders, ProviderDeepgram)
+	}
 	if len(c.TranscribeProviders) == 0 {
-		return fmt.Errorf("ASSEMBLYAI_API_KEY is not set, so /api/transcribe has no provider. " +
-			"Set it in ai-service.env")
+		return fmt.Errorf("neither ASSEMBLYAI_API_KEY nor DEEPGRAM_API_KEY is set, so " +
+			"/api/transcribe/stream has no provider. Set at least one in ai-service.env")
 	}
 	c.TranscribeProvider = c.TranscribeProviders[0]
 	return nil
@@ -281,18 +287,20 @@ func (c *Config) resolveMemoir() error {
 	return nil
 }
 
-// TranscribeRoute is one line saying where /api/transcribe goes, for the startup log.
+// TranscribeRoute is one line saying where /api/transcribe/stream goes, for the startup log.
 func (c Config) TranscribeRoute() string {
 	var parts []string
 	for _, p := range c.TranscribeProviders {
 		switch p {
 		case ProviderAssemblyAI:
-			parts = append(parts, "AssemblyAI Sync, model universal-3-5-pro")
+			parts = append(parts, "AssemblyAI live, model universal-3-5-pro")
+		case ProviderDeepgram:
+			parts = append(parts, "Deepgram live, model nova-3")
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (ASSEMBLYAI_API_KEY is not set)"
+		return "none (neither ASSEMBLYAI_API_KEY nor DEEPGRAM_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
@@ -305,6 +313,8 @@ func transcribeProviderName(provider string) string {
 	switch provider {
 	case ProviderAssemblyAI:
 		return "AssemblyAI Universal-3.5 Pro"
+	case ProviderDeepgram:
+		return "Deepgram Nova-3"
 	}
 	return provider
 }

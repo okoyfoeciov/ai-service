@@ -67,8 +67,9 @@ func main() {
 	app := server.New(cfg, st)
 
 	// A saved tray choice wins over the config default, but only when that
-	// provider still has a key: removing a key must not leave /api/transcribe
-	// pointing at a service that is no longer configured.
+	// provider still has a key: removing a key must not leave
+	// /api/transcribe/stream pointing at a service that is no longer
+	// configured.
 	multiProvider := len(cfg.TranscribeProviders) > 1
 	if multiProvider {
 		if saved, ok := st.Get(savedTranscribeProviderKey); ok && app.SetTranscribeProvider(saved) {
@@ -83,7 +84,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second, // slowloris guard on headers only
 		// No WriteTimeout: it would cut off a long SSE stream or a slow Memoir
 		// answer. No ReadTimeout either: each handler caps its own body size
-		// (5 MiB JSON, 25 MiB /api/transcribe, 300 MiB verbatim) instead.
+		// (5 MiB JSON, 25 MiB /api/transcribe/stream, 300 MiB verbatim) instead.
 	}
 
 	// Graceful shutdown: drain in-flight requests, then close the store, which

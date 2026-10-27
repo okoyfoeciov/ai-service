@@ -14,7 +14,7 @@ import (
 // OpenRouter's speech-to-text endpoint. MAI-Transcribe-2 is routed to Azure by
 // OpenRouter, but the request and response are OpenRouter's JSON shape: base64
 // audio in, text plus verbose segments/words out. It serves
-// /api/transcribe-verbatim only; /api/transcribe runs on AssemblyAI.
+// /api/transcribe-verbatim only; /api/transcribe/stream runs on AssemblyAI.
 var openRouterSTTURL = "https://openrouter.ai/api/v1/audio/transcriptions"
 
 const (
