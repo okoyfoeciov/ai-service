@@ -1,6 +1,6 @@
 // Package tray is the /api/transcribe provider picker shown in the desktop's
-// menu bar / status area. It exists only when both Groq and OpenRouter's
-// MAI-Transcribe-2 are configured: with one provider there is nothing to pick.
+// menu bar / status area. It exists only when more than one transcription
+// provider is configured: with one provider there is nothing to pick.
 //
 // The tray is not part of the HTTP API. It runs in the service process and
 // flips the same provider field the transcribe handler reads, so comart keeps
@@ -31,10 +31,6 @@ type Controller interface {
 
 func providerLabel(provider string) string {
 	switch provider {
-	case config.ProviderGroq:
-		return "Groq Whisper"
-	case config.ProviderMAITranscribe:
-		return "MAI-Transcribe-2 (OpenRouter)"
 	case config.ProviderAssemblyAI:
 		return "AssemblyAI Universal-3.5 Pro"
 	}

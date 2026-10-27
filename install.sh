@@ -100,8 +100,8 @@ say "[b] go $(go env GOVERSION 2>/dev/null || echo missing)"
 # --- c. build ---------------------------------------------------------------
 # Linux's tray is pure D-Bus, so the binary stays static there. macOS needs
 # Cocoa through cgo for the menu-bar item, which needs the Xcode command-line
-# tools (clang). The tray is always compiled in; it only appears when both
-# transcription providers are configured.
+# tools (clang). The tray is always compiled in; it appears when more than one
+# transcription provider is configured.
 if [ "$DRY_RUN" = 1 ]; then
   say "[c] dry run — skipping go build"
 else
@@ -188,9 +188,9 @@ ask_key() {
   echo "saved $key"
 }
 
-# /api/transcribe takes GROQ_API_KEY, ASSEMBLYAI_API_KEY,
-# OPENROUTER_TRANSCRIBE_API_KEY or any combination; /api/explain takes
-# OPENROUTER_API_KEY or CLAUDE_API_KEY; Memoir takes MEMOIR_CLAUDE_API_KEY or
+# /api/transcribe runs on ASSEMBLYAI_API_KEY; /api/transcribe-verbatim uses
+# OPENROUTER_TRANSCRIBE_API_KEY. /api/explain takes OPENROUTER_API_KEY or
+# CLAUDE_API_KEY; Memoir takes MEMOIR_CLAUDE_API_KEY or
 # MEMOIR_CEREBRAS_API_KEY. The blocks below handle all three routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
@@ -205,17 +205,20 @@ else
     say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
-  # /api/transcribe may have any combination of its three providers. The
-  # explain and Memoir routes still refuse more than one, so stop before
-  # restarting the service into a configuration it would reject.
+  # /api/transcribe now has one provider, AssemblyAI. The explain and Memoir
+  # routes still refuse more than one, so stop before restarting the service
+  # into a configuration it would reject.
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
+  fi
+  if env_set GROQ_API_KEY || env_set GROQ_MODEL; then
+    die "ai-service.env still sets GROQ_API_KEY or GROQ_MODEL. Groq was removed: /api/transcribe now runs only on AssemblyAI, and the service would refuse to start. Delete the retired lines (or comment them out), then re-run."
   fi
   if env_set MAI_TRANSCRIBE_API_KEY; then
     die "ai-service.env still sets MAI_TRANSCRIBE_API_KEY, which was replaced by OPENROUTER_TRANSCRIBE_API_KEY: MAI-Transcribe-2 now runs through OpenRouter, and the old Azure key makes the service refuse to start. Rename it (or comment it out), then re-run."
   fi
   if env_set AZURE_SPEECH_KEY || env_set AZURE_SPEECH_ENDPOINT; then
-    die "ai-service.env still sets AZURE_SPEECH_KEY or AZURE_SPEECH_ENDPOINT. The direct Azure Speech path was removed; both transcription routes now use OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired lines (or comment them out), then re-run."
+    die "ai-service.env still sets AZURE_SPEECH_KEY or AZURE_SPEECH_ENDPOINT. The direct Azure Speech path was removed; /api/transcribe-verbatim now uses OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired lines (or comment them out), then re-run."
   fi
   if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
     die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
@@ -227,34 +230,25 @@ else
   if env_set CEREBRAS_API_KEY; then
     die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
   fi
-  # /api/transcribe needs at least one provider; any combination is allowed
-  # (the tray picker then chooses). Ask for OpenRouter MAI-Transcribe-2,
-  # AssemblyAI, then Groq last.
-  if ! env_set GROQ_API_KEY && ! env_set OPENROUTER_TRANSCRIBE_API_KEY && ! env_set ASSEMBLYAI_API_KEY; then
-    ask_key OPENROUTER_TRANSCRIBE_API_KEY "transcription via OpenRouter MAI-Transcribe-2. Leave it empty to use AssemblyAI or Groq instead" 1 ||
-      ask_key ASSEMBLYAI_API_KEY "transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to use a Groq key instead" 1 ||
-      ask_key GROQ_API_KEY "transcription via Groq Whisper"
+  # /api/transcribe needs AssemblyAI; /api/transcribe-verbatim uses OpenRouter's
+  # MAI-Transcribe-2. Ask for the required AssemblyAI key, then offer the
+  # optional verbatim key.
+  if ! env_set ASSEMBLYAI_API_KEY; then
+    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro"
   fi
-  if env_set OPENROUTER_TRANSCRIBE_API_KEY || env_set ASSEMBLYAI_API_KEY; then
-    # OpenRouter MAI re-encodes mic clips to WAV; AssemblyAI streaming decodes
-    # MediaRecorder WebM to PCM for /v1/transcribe/live.
-    if ! command -v ffmpeg >/dev/null 2>&1; then
-      die "ffmpeg is required to convert comart's WebM recordings for OpenRouter MAI and AssemblyAI streaming, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
-    fi
-    say "[d] ffmpeg: $(command -v ffmpeg) — converts comart's WebM recordings for OpenRouter/AssemblyAI"
+  if ! env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    ask_key OPENROUTER_TRANSCRIBE_API_KEY "verbatim transcription via OpenRouter MAI-Transcribe-2. Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY left empty — /api/transcribe-verbatim stays unconfigured"
   fi
-  transcribe_count=0
-  if env_set GROQ_API_KEY; then transcribe_count=$((transcribe_count + 1)); fi
-  if env_set OPENROUTER_TRANSCRIBE_API_KEY; then transcribe_count=$((transcribe_count + 1)); fi
-  if env_set ASSEMBLYAI_API_KEY; then transcribe_count=$((transcribe_count + 1)); fi
-  if [ "$transcribe_count" -gt 1 ]; then
-    say "[d] ai-service.env: $transcribe_count transcription providers are set — /api/transcribe uses the tray picker (starts on Groq)"
-  elif env_set ASSEMBLYAI_API_KEY; then
-    say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe runs on AssemblyAI Universal-3.5 Pro"
-  elif env_set OPENROUTER_TRANSCRIBE_API_KEY; then
-    say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe runs on OpenRouter MAI-Transcribe-2"
-  else
-    say "[d] ai-service.env: GROQ_API_KEY is set — /api/transcribe runs on Groq"
+  # AssemblyAI streaming decodes MediaRecorder WebM/MP4 to PCM for
+  # /v1/transcribe/live.
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    die "ffmpeg is required to decode comart's WebM/MP4 recordings for AssemblyAI streaming, but it is not on PATH. Install it (Debian/Ubuntu: sudo apt install ffmpeg; macOS: brew install ffmpeg), then re-run."
+  fi
+  say "[d] ffmpeg: $(command -v ffmpeg) — decodes comart's recordings for AssemblyAI"
+  say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe runs on AssemblyAI Universal-3.5 Pro"
+  if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
+    say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe-verbatim runs on OpenRouter MAI-Transcribe-2"
   fi
   if env_set OPENROUTER_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_API_KEY is set — /api/explain runs on OpenRouter"

@@ -4,7 +4,6 @@ package tray
 
 import (
 	"bytes"
-	"fmt"
 	"image"
 	_ "image/png"
 	"log"
@@ -119,10 +118,11 @@ func Run(c Controller, onPick func(string)) {
 		return
 	}
 
-	name := fmt.Sprintf("org.kde.StatusNotifierItem-%d-1", os.Getpid())
-	if _, err := conn.RequestName(name, dbus.NameFlagDoNotQueue); err != nil {
-		log.Printf("tray: request name %s: %v", name, err)
-	}
+	// Register by object path only. Requesting a well-known
+	// org.kde.StatusNotifierItem-<pid> name as well makes the GNOME AppIndicator
+	// watcher discover the same item twice (once by that name, once by the path
+	// registration below), which shows two identical tray icons after a shell
+	// restart.
 	go register(conn)
 	log.Printf("tray: provider picker ready")
 

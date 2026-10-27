@@ -6,25 +6,29 @@ daily-dictation (`~/daily-dictation`, which uses the streaming transcription
 routes and `/api/transcribe-verbatim`). `README.md` is the full guide: install, service
 management, configuration, security model and models.
 
-In short, `/api/transcribe` has three providers (Groq, AssemblyAI Universal-3.5
-Pro Sync, and OpenRouter's MAI-Transcribe-2) and may have any combination of
-keys at once: the tray picker (`internal/tray`) then switches between them. It
-refuses to start with none of the three. `/api/explain` and `/api/memoir/check`
-still have two each and refuse both. Every Memoir variable starts with `MEMOIR_`
-(plain `CLAUDE_API_KEY` is `/api/explain`'s); the transcription keys are
-`GROQ_API_KEY`, `ASSEMBLYAI_API_KEY` and `OPENROUTER_TRANSCRIBE_API_KEY` (plain
-`OPENROUTER_API_KEY` is `/api/explain`'s). OpenRouter MAI and AssemblyAI
-streaming need `ffmpeg` on `PATH`: MAI re-encodes clips to WAV in
-`internal/server/audio.go`, and `/api/transcribe/stream` decodes MediaRecorder
-WebM/Opus to 16 kHz PCM for AssemblyAI's `/v1/transcribe/live`. The browser
-clients use `/api/transcribe/ws` for the same stream: Chrome blocks a streaming
-`fetch` body to loopback from an extension page, so the WS handler forwards
-MediaRecorder frames to the stream route over loopback. Groq and OpenRouter MAI
-buffer the streamed body and use the batch route; AssemblyAI is native live. Verbatim also uses OpenRouter, with `verbose_json`, word timestamps
-and Azure's verbatim style. Linux's tray is a small in-repo D-Bus
+In short, `/api/transcribe` runs only on AssemblyAI Universal-3.5 Pro (Sync API
+and live endpoint); `ASSEMBLYAI_API_KEY` is required, and the service refuses to
+start without it. `/api/transcribe-verbatim` still uses OpenRouter's
+MAI-Transcribe-2, with `verbose_json`, word timestamps and Azure's verbatim
+style. `/api/explain` and `/api/memoir/check` still have two each and refuse
+both. Every Memoir variable starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is
+`/api/explain`'s); the transcription keys are `ASSEMBLYAI_API_KEY` and
+`OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
+`/api/explain`'s). AssemblyAI streaming needs `ffmpeg` on `PATH`:
+`/api/transcribe/stream` decodes MediaRecorder WebM/Opus to 16 kHz PCM for
+`/v1/transcribe/live`. The browser clients use `/api/transcribe/ws` for the same
+stream: Chrome blocks a streaming `fetch` body to loopback from an extension
+page, so the WS handler forwards MediaRecorder frames to the stream route over
+loopback. The tray picker (`internal/tray`) is retained for future providers and
+appears when more than one is configured. Linux's tray is a small in-repo D-Bus
 backend that intentionally omits `Activate`, because GNOME then opens the menu
 on the first click instead of waiting out the double-click interval; macOS
 links Cocoa, so its build needs cgo.
+
+To add a transcribe provider later, extend `resolveTranscribe` with its key,
+add its `providerLabel` in `internal/tray`, and add a case to the batch handler
+in `internal/server/transcribe.go`; the picker, saved selection and the
+streaming fallback (`streamBuffered`) are already generic.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -32,8 +36,9 @@ links Cocoa, so its build needs cgo.
   where a button sits or what a panel says belongs to a client: the comart
   extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
-  (`~/daily-dictation`). The one native UI is the tray picker that appears only
-  when more than one transcribe key is set (`internal/tray`).
+  (`~/daily-dictation`). The one native UI is the tray picker, kept for future
+  transcribe providers and shown only when more than one is configured
+  (`internal/tray`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one

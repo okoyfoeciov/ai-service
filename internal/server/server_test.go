@@ -489,59 +489,14 @@ func TestTranscribeUnconfiguredAndShortClip(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500", rec.Code)
 	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "GROQ_API_KEY") ||
-		!strings.Contains(errMsg, "OPENROUTER_TRANSCRIBE_API_KEY") ||
-		!strings.Contains(errMsg, "ASSEMBLYAI_API_KEY") {
-		t.Fatalf("error %q does not name all three variables", errMsg)
+	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "ASSEMBLYAI_API_KEY") {
+		t.Fatalf("error %q does not name ASSEMBLYAI_API_KEY", errMsg)
 	}
 
-	s = &Server{cfg: config.Config{TranscribeProvider: config.ProviderGroq}}
+	s = &Server{cfg: config.Config{AssemblyAIKey: "aai", TranscribeProvider: config.ProviderAssemblyAI}}
 	rec = postAudio(t, s, "audio/webm", strings.Repeat("a", 500))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("short clip: status %d, want 422", rec.Code)
-	}
-}
-
-func TestTranscribeGroqProvider(t *testing.T) {
-	var gotAuth, gotModel, gotFile string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		_ = r.ParseMultipartForm(4 << 20)
-		gotModel = r.FormValue("model")
-		if f, hdr, err := r.FormFile("file"); err == nil {
-			defer f.Close()
-			b, _ := io.ReadAll(f)
-			gotFile = hdr.Filename + ":" + string(b[:4])
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"  hello from groq  "}`))
-	}))
-	defer srv.Close()
-
-	oldURL := groqURL
-	groqURL = srv.URL
-	defer func() { groqURL = oldURL }()
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider: config.ProviderGroq,
-			GroqAPIKey:         "g-secret",
-			GroqModel:          "whisper-large-v3-turbo",
-		},
-		httpShort: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/mp4", strings.Repeat("abcd", 400))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	var out struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "hello from groq" {
-		t.Fatalf("got %+v, err %v", out, err)
-	}
-	if gotAuth != "Bearer g-secret" || gotModel != "whisper-large-v3-turbo" || gotFile != "audio.mp4:abcd" {
-		t.Errorf("upstream got auth=%q model=%q file=%q", gotAuth, gotModel, gotFile)
 	}
 }
 
@@ -583,6 +538,30 @@ func readOpenRouterRequest(t *testing.T, r *http.Request) openRouterTestRequest 
 	return req
 }
 
+func TestTranscribeProviderSelection(t *testing.T) {
+	s := New(config.Config{
+		TranscribeProviders: []string{config.ProviderAssemblyAI},
+		TranscribeProvider:  config.ProviderAssemblyAI,
+	}, nil)
+
+	got := s.TranscribeProviders()
+	if len(got) != 1 || got[0] != config.ProviderAssemblyAI {
+		t.Fatalf("providers %v, want [%s]", got, config.ProviderAssemblyAI)
+	}
+	if got := s.TranscribeProvider(); got != config.ProviderAssemblyAI {
+		t.Errorf("provider %q, want %q", got, config.ProviderAssemblyAI)
+	}
+	if !s.SetTranscribeProvider(config.ProviderAssemblyAI) {
+		t.Error("could not select the configured provider")
+	}
+	if s.SetTranscribeProvider("not-configured") {
+		t.Error("selected a provider that has no key")
+	}
+	if got := s.TranscribeProvider(); got != config.ProviderAssemblyAI {
+		t.Errorf("provider %q after the rejected switch, want %q", got, config.ProviderAssemblyAI)
+	}
+}
+
 func TestTranscribeAssemblyAIProvider(t *testing.T) {
 	oldURL := assemblyAIURL
 	defer func() { assemblyAIURL = oldURL }()
@@ -618,8 +597,8 @@ func TestTranscribeAssemblyAIProvider(t *testing.T) {
 
 			s := &Server{
 				cfg: config.Config{
-					TranscribeProvider: config.ProviderAssemblyAI,
 					AssemblyAIKey:      "aai-secret",
+					TranscribeProvider: config.ProviderAssemblyAI,
 				},
 				httpShort: srv.Client(),
 			}
@@ -657,8 +636,8 @@ func TestTranscribeAssemblyAIError(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider: config.ProviderAssemblyAI,
 			AssemblyAIKey:      "aai-secret",
+			TranscribeProvider: config.ProviderAssemblyAI,
 		},
 		httpShort: srv.Client(),
 	}
@@ -741,8 +720,8 @@ func TestTranscribeStreamAssemblyAI(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider: config.ProviderAssemblyAI,
 			AssemblyAIKey:      "aai-key",
+			TranscribeProvider: config.ProviderAssemblyAI,
 		},
 		httpShort: srv.Client(),
 	}
@@ -766,21 +745,43 @@ func TestTranscribeStreamAssemblyAI(t *testing.T) {
 }
 
 func TestTranscribeWebSocket(t *testing.T) {
-	var gotBody []byte
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	oldURL := assemblyAILiveURL
+	defer func() { assemblyAILiveURL = oldURL }()
+
+	var gotAudio int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Errorf("MultipartReader: %v", err)
+			return
+		}
+		for {
+			p, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Errorf("NextPart: %v", err)
+				return
+			}
+			b, _ := io.ReadAll(p)
+			if p.FormName() == "audio" {
+				gotAudio = len(b)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"text":"ws transcript"}`))
 	}))
 	defer upstream.Close()
-	oldGroq := groqURL
-	groqURL = upstream.URL
-	defer func() { groqURL = oldGroq }()
+	assemblyAILiveURL = upstream.URL
 
 	s := &Server{
 		cfg: config.Config{
-			TranscribeProvider: config.ProviderGroq,
-			GroqAPIKey:         "g",
+			AssemblyAIKey:      "aai",
+			TranscribeProvider: config.ProviderAssemblyAI,
 		},
 		httpShort: upstream.Client(),
 	}
@@ -793,15 +794,14 @@ func TestTranscribeWebSocket(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/transcribe/ws?type=audio/webm"
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/transcribe/ws?type=audio/wav"
 	c, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.CloseNow()
 
-	audio := bytes.Repeat([]byte("x"), 1500)
-	if err := c.Write(ctx, websocket.MessageBinary, audio); err != nil {
+	if err := c.Write(ctx, websocket.MessageBinary, testWAV()); err != nil {
 		t.Fatalf("write audio: %v", err)
 	}
 	if err := c.Write(ctx, websocket.MessageText, []byte("stop")); err != nil {
@@ -820,46 +820,13 @@ func TestTranscribeWebSocket(t *testing.T) {
 	if out.Text != "ws transcript" {
 		t.Errorf("text %q, want %q", out.Text, "ws transcript")
 	}
-	if !bytes.Contains(gotBody, audio) {
-		t.Errorf("upstream body (%d bytes) does not carry the %d-byte recording", len(gotBody), len(audio))
-	}
-}
-
-func TestTranscribeStreamBuffersForOtherProviders(t *testing.T) {
-	var gotType string
-	var gotBody []byte
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotType = r.Header.Get("Content-Type")
-		gotBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"buffered transcript"}`))
-	}))
-	defer upstream.Close()
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider: config.ProviderGroq,
-			GroqAPIKey:         "g",
-			ListenAddr:         strings.TrimPrefix(upstream.URL, "http://"),
-		},
-		httpShort: upstream.Client(),
-	}
-	body := bytes.Repeat([]byte("x"), 1500)
-	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", bytes.NewReader(body))
-	req.Host = "127.0.0.1:8770"
-	req.Header.Set("Content-Type", "audio/webm;codecs=opus")
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	if gotType != "audio/webm;codecs=opus" || !bytes.Equal(gotBody, body) {
-		t.Errorf("upstream got type=%q body=%d bytes", gotType, len(gotBody))
+	if gotAudio == 0 {
+		t.Error("AssemblyAI received no PCM audio")
 	}
 }
 
 func TestTranscribeStreamDemandsAudioType(t *testing.T) {
-	s := &Server{cfg: config.Config{TranscribeProvider: config.ProviderGroq}}
+	s := &Server{cfg: config.Config{AssemblyAIKey: "aai"}}
 	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", strings.NewReader("{}"))
 	req.Host = "127.0.0.1:8770"
 	req.Header.Set("Content-Type", "application/json")
@@ -867,75 +834,6 @@ func TestTranscribeStreamDemandsAudioType(t *testing.T) {
 	s.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("status %d, want 415", rec.Code)
-	}
-}
-
-// The tray picker flips the provider between requests, and a provider that has
-// no key cannot be selected.
-func TestTranscribeProviderSwitch(t *testing.T) {
-	oldGroq, oldOR := groqURL, openRouterSTTURL
-	defer func() { groqURL, openRouterSTTURL = oldGroq, oldOR }()
-	groqSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"from groq"}`))
-	}))
-	defer groqSrv.Close()
-	groqURL = groqSrv.URL
-
-	oldConvert := convertForOpenRouter
-	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-	var orReq openRouterTestRequest
-	orSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		orReq = readOpenRouterRequest(t, r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"from mai."}`))
-	}))
-	defer orSrv.Close()
-	openRouterSTTURL = orSrv.URL
-
-	s := New(config.Config{
-		TranscribeProviders:        []string{config.ProviderGroq, config.ProviderMAITranscribe},
-		TranscribeProvider:         config.ProviderGroq,
-		GroqAPIKey:                 "g",
-		OpenRouterTranscribeAPIKey: "or-key",
-	}, nil)
-	s.httpShort = groqSrv.Client()
-	s.httpOpenRouter = orSrv.Client()
-
-	text := func(rec *httptest.ResponseRecorder) string {
-		t.Helper()
-		var out struct {
-			Text string `json:"text"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("body %q: %v", rec.Body.String(), err)
-		}
-		return out.Text
-	}
-
-	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusOK || text(rec) != "from groq" {
-		t.Fatalf("groq: status %d text %q", rec.Code, text(rec))
-	}
-	if !s.SetTranscribeProvider(config.ProviderMAITranscribe) {
-		t.Fatal("could not select the configured MAI provider")
-	}
-	rec = postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusOK || text(rec) != "from mai." {
-		t.Fatalf("mai: status %d text %q", rec.Code, text(rec))
-	}
-	if orReq.Model != openRouterMAIModel || orReq.InputAudio.Format != "wav" {
-		t.Errorf("OpenRouter got model=%q format=%q", orReq.Model, orReq.InputAudio.Format)
-	}
-	if s.SetTranscribeProvider("not-configured") {
-		t.Error("selected a provider that has no key")
-	}
-	if got := s.TranscribeProvider(); got != config.ProviderMAITranscribe {
-		t.Errorf("provider %q after the rejected switch, want %q", got, config.ProviderMAITranscribe)
-	}
-	if got := s.TranscribeProviders(); len(got) != 2 {
-		t.Errorf("providers %v, want two", got)
 	}
 }
 
@@ -1004,196 +902,6 @@ func TestTranscribeVerbatimProvider(t *testing.T) {
 	}
 }
 
-func TestTranscribeMAIProvider(t *testing.T) {
-	oldURL := openRouterSTTURL
-	defer func() { openRouterSTTURL = oldURL }()
-	oldConvert := convertForOpenRouter
-	converted := false
-	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) {
-		converted = true
-		return audio, nil
-	}
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-
-	var got openRouterTestRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = readOpenRouterRequest(t, r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"Hello world."}`))
-	}))
-	defer srv.Close()
-	openRouterSTTURL = srv.URL
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider:         config.ProviderMAITranscribe,
-			OpenRouterTranscribeAPIKey: "or-key",
-		},
-		httpOpenRouter: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	var out struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "Hello world." {
-		t.Fatalf("got %+v, err %v", out, err)
-	}
-	if !converted {
-		t.Error("WAV input was not passed through the converter")
-	}
-	if got.Model != openRouterMAIModel || got.InputAudio.Format != "wav" {
-		t.Errorf("got model=%q format=%q", got.Model, got.InputAudio.Format)
-	}
-	if got.ResponseFormat != "" || got.Provider.Options.Azure.EnhancedMode.ModelOptions.TranscribeStyle != "" {
-		t.Errorf("plain mic transcription asked for verbose/verbatim output: %+v", got)
-	}
-}
-
-func TestTranscribeMAIConvertsWebM(t *testing.T) {
-	oldURL := openRouterSTTURL
-	defer func() { openRouterSTTURL = oldURL }()
-	oldConvert := convertForOpenRouter
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-
-	var convertedInput string
-	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) {
-		convertedInput = string(audio)
-		return []byte("converted-wav"), nil
-	}
-
-	var got openRouterTestRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = readOpenRouterRequest(t, r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"converted."}`))
-	}))
-	defer srv.Close()
-	openRouterSTTURL = srv.URL
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider:         config.ProviderMAITranscribe,
-			OpenRouterTranscribeAPIKey: "or-key",
-		},
-		httpOpenRouter: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/webm;codecs=opus", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	if convertedInput != strings.Repeat("z", 1500) {
-		t.Errorf("converter saw %d input bytes, want 1500", len(convertedInput))
-	}
-	if got.InputAudio.Format != "wav" || string(got.InputAudio.Data) != "converted-wav" {
-		t.Errorf("OpenRouter got format=%q audio=%q", got.InputAudio.Format, got.InputAudio.Data)
-	}
-}
-
-func TestTranscribeMAIConversionFailure(t *testing.T) {
-	oldConvert := convertForOpenRouter
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-	convertForOpenRouter = func(context.Context, []byte) ([]byte, error) {
-		return nil, errors.New("ffmpeg exploded")
-	}
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider:         config.ProviderMAITranscribe,
-			OpenRouterTranscribeAPIKey: "or-key",
-		},
-	}
-	rec := postAudio(t, s, "audio/webm", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status %d, want 502", rec.Code)
-	}
-	if errMsg := decodeError(t, rec); !strings.Contains(errMsg, "could not convert") {
-		t.Errorf("error %q does not mention conversion", errMsg)
-	}
-}
-
-func TestTranscribeMAIRetriesTransient(t *testing.T) {
-	oldBase, oldURL := openRouterRetryBase, openRouterSTTURL
-	openRouterRetryBase = 0
-	defer func() { openRouterRetryBase, openRouterSTTURL = oldBase, oldURL }()
-	oldConvert := convertForOpenRouter
-	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&calls, 1) == 1 {
-			http.Error(w, `{"error":{"code":503,"message":"transient"}}`, http.StatusServiceUnavailable)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"retried."}`))
-	}))
-	defer srv.Close()
-	openRouterSTTURL = srv.URL
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider:         config.ProviderMAITranscribe,
-			OpenRouterTranscribeAPIKey: "or-key",
-		},
-		httpOpenRouter: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Errorf("OpenRouter calls = %d, want 2 (one retry)", got)
-	}
-}
-
-func TestTranscribeMAIDoesNotRetryBadRequest(t *testing.T) {
-	oldURL := openRouterSTTURL
-	defer func() { openRouterSTTURL = oldURL }()
-	oldConvert := convertForOpenRouter
-	convertForOpenRouter = func(_ context.Context, audio []byte) ([]byte, error) { return audio, nil }
-	t.Cleanup(func() { convertForOpenRouter = oldConvert })
-
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		http.Error(w, `{"error":{"code":400,"message":"invalid audio"}}`, http.StatusBadRequest)
-	}))
-	defer srv.Close()
-	openRouterSTTURL = srv.URL
-
-	s := &Server{
-		cfg: config.Config{
-			TranscribeProvider:         config.ProviderMAITranscribe,
-			OpenRouterTranscribeAPIKey: "or-key",
-		},
-		httpOpenRouter: srv.Client(),
-	}
-	rec := postAudio(t, s, "audio/wav", strings.Repeat("z", 1500))
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status %d, want 502", rec.Code)
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("OpenRouter calls = %d, want 1 (4xx must not be retried)", got)
-	}
-	var body struct {
-		Error            string `json:"error"`
-		OpenRouterStatus int    `json:"openRouterStatus"`
-		Detail           string `json:"detail"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
-	}
-	if body.OpenRouterStatus != 400 || !strings.Contains(body.Detail, "invalid audio") {
-		t.Errorf("got %+v, want openRouterStatus 400 and the invalid audio detail", body)
-	}
-}
-
-// daily-dictation still reads azureStatus to tell a permanent 4xx from a
-// retryable failure, so the verbatim error body keeps it alongside the new name.
 func TestTranscribeVerbatimErrorKeepsClientCompatibility(t *testing.T) {
 	oldURL := openRouterSTTURL
 	defer func() { openRouterSTTURL = oldURL }()

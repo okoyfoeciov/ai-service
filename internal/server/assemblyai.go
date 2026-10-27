@@ -11,14 +11,10 @@ import (
 )
 
 // AssemblyAI's Sync API: one multipart request, one finished transcript. The
-// model is Universal-3.5 Pro; the X-AAI-Model header selects it. Unlike the
-// OpenRouter MAI path, AssemblyAI accepts compressed comart recordings
-// directly, so this provider does not need ffmpeg.
-//
-// Potential improvement (not implemented): AssemblyAI's /v1/transcribe/live
-// accepts audio while it is still being recorded, up to 120 seconds. Streaming
-// chunks from comart would overlap upload and inference with the recording and
-// remove most of the post-stop wait, but it needs a chunked client protocol.
+// model is Universal-3.5 Pro; the X-AAI-Model header selects it. AssemblyAI
+// accepts compressed comart recordings directly, so the batch route does not
+// need ffmpeg. The live route in transcribe_stream.go does need it, because
+// /v1/transcribe/live takes raw PCM.
 var (
 	assemblyAIURL     = "https://sync.assemblyai.com/v1/transcribe"
 	assemblyAILiveURL = "https://sync.assemblyai.com/v1/transcribe/live"

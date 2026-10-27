@@ -54,9 +54,9 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 
 // handleTranscribeStream reads one recording as it arrives. AssemblyAI gets a
 // native live request (ffmpeg decodes the WebM/Opus stream to PCM on the way);
-// every other provider is buffered and handed to the existing batch route. The
-// HTTP body ending is the stop signal, so the client can use a plain streaming
-// fetch with no extra protocol.
+// any provider without a live path is buffered and handed to the batch route.
+// The HTTP body ending is the stop signal, so the client can use a plain
+// streaming fetch with no extra protocol.
 func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) {
 	if !requireType(w, r, "an audio type", func(mt string) bool {
 		return strings.HasPrefix(mt, "audio/") || strings.HasPrefix(mt, "video/")
@@ -65,7 +65,7 @@ func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) 
 	}
 	provider := s.TranscribeProvider()
 	if provider == "" {
-		jsonError(w, "server not configured: none of GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY or ASSEMBLYAI_API_KEY is set", http.StatusInternalServerError)
+		jsonError(w, "server not configured: ASSEMBLYAI_API_KEY missing", http.StatusInternalServerError)
 		return
 	}
 	body := &cappedReader{r: r.Body, max: maxStreamBytes}
@@ -163,8 +163,8 @@ func (s *Server) handleTranscribeWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // streamBuffered collects the compressed clip and calls the established
-// /api/transcribe handler over loopback. That keeps every non-AssemblyAI
-// provider on its existing, tested path while still taking the upload off the
+// /api/transcribe handler over loopback. Providers without a live path stay on
+// that existing, tested batch path while still taking the upload off the
 // post-stop critical path.
 func (s *Server) streamBuffered(w http.ResponseWriter, r *http.Request, body *cappedReader) {
 	audio, err := io.ReadAll(body)

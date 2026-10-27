@@ -33,12 +33,12 @@ type Server struct {
 	explainLLM llm.Streamer
 	memoirLLM  llm.Streamer
 
-	httpShort      *http.Client // /api/transcribe: Groq (2 min)
-	httpOpenRouter *http.Client // OpenRouter MAI: transcribe and verbatim (10 min backstop)
+	httpShort      *http.Client // /api/transcribe and AssemblyAI streaming (2 min)
+	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
 
-	// transcribeProviders is every provider config.Load found (Groq first),
-	// and transcribeProvider is the one /api/transcribe uses now. The tray
-	// picker may change it while requests are running, hence atomic.
+	// transcribeProviders is every provider config.Load found, and
+	// transcribeProvider is the one /api/transcribe uses now. The tray picker
+	// may change it while requests are running, hence atomic.
 	transcribeProviders []string
 	transcribeProvider  atomic.Value // string
 
@@ -185,7 +185,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // loopbackOnly is the guard ServeHTTP runs before every route. Binding
 // 127.0.0.1 keeps other machines out, but not pages open in this machine's
 // browser: DNS rebinding could read responses, and any site can fire blind
-// cross-site POSTs that bill the OpenRouter, Claude, Cerebras or Groq
+// cross-site POSTs that bill the OpenRouter, Claude, Cerebras or AssemblyAI
 // accounts. The Host and any http(s) Origin must name loopback; an absent or
 // "null" Origin, or a non-web one (chrome-extension:// for comart, file:// for
 // Cairn's Electron renderer), passes: loopback stays the trust boundary.

@@ -4,19 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
 // OpenRouter's speech-to-text endpoint. MAI-Transcribe-2 is routed to Azure by
-// OpenRouter, but the request and response are OpenRouter's JSON shape:
-// base64 audio in, text plus optional verbose segments/words out. Both
-// transcription routes use it, with the same OPENROUTER_TRANSCRIBE_API_KEY.
+// OpenRouter, but the request and response are OpenRouter's JSON shape: base64
+// audio in, text plus verbose segments/words out. It serves
+// /api/transcribe-verbatim only; /api/transcribe runs on AssemblyAI.
 var openRouterSTTURL = "https://openrouter.ai/api/v1/audio/transcriptions"
 
 const (
@@ -27,20 +25,10 @@ const (
 	// JSON; base64 itself adds ~33% on the wire.
 	openRouterSTTMaxBytes = 25 * 1024 * 1024
 
-	// OpenRouter's upstream provider deadline is 60 seconds. These are local
-	// backstops: the short one for a mic clip, the longer one for a verbatim
-	// import that may have a slower upload.
-	openRouterTranscribeTimeout = 3 * time.Minute
-	openRouterVerbatimTimeout   = 3 * time.Minute
-
-	// The endpoint answers 429 while it autoscales and 5xx for transient
-	// provider failures. Retry those twice with 1 s and 2 s backoff, like the
-	// old Azure path did. A Retry-After over 5 s is not worth blocking an
-	// interactive recording on.
-	openRouterMaxAttempts = 3
+	// openRouterVerbatimTimeout is a local backstop; OpenRouter's upstream
+	// provider deadline is 60 seconds.
+	openRouterVerbatimTimeout = 3 * time.Minute
 )
-
-var openRouterRetryBase = time.Second // a variable so tests need not sleep
 
 // openRouterSTTRequest is the JSON body of POST /api/v1/audio/transcriptions.
 // []byte marshals as base64, which is exactly what input_audio.data wants.
@@ -62,8 +50,8 @@ type openRouterProvider struct {
 	Options map[string]any `json:"options"`
 }
 
-// openRouterSTTResponse covers both the plain {text, usage} answer and the
-// verbose_json shape used by /api/transcribe-verbatim.
+// openRouterSTTResponse is the verbose_json shape used by
+// /api/transcribe-verbatim.
 type openRouterSTTResponse struct {
 	Text     string              `json:"text"`
 	Duration float64             `json:"duration"`
@@ -103,39 +91,29 @@ type transcriptWord struct {
 	End   float64 `json:"end"`
 }
 
-// openRouterError is OpenRouter's error envelope, used only to make logs useful.
-type openRouterError struct {
-	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// newOpenRouterSTTBody builds one request. verbose turns on segment and word
-// timestamps and asks Azure for the verbatim transcript style, which is what
-// daily-dictation scores against.
-func newOpenRouterSTTBody(audio []byte, format string, verbose bool) ([]byte, error) {
+// newOpenRouterSTTBody builds the verbose_json request used by
+// /api/transcribe-verbatim: segment and word timestamps plus Azure's verbatim
+// transcript style, which is what daily-dictation scores against.
+func newOpenRouterSTTBody(audio []byte, format string) ([]byte, error) {
 	req := openRouterSTTRequest{
-		Model:      openRouterMAIModel,
-		InputAudio: openRouterInput{Data: audio, Format: format},
-		Language:   "en",
-	}
-	if verbose {
-		req.ResponseFormat = "verbose_json"
-		req.TimestampGranularities = []string{"segment", "word"}
-		req.Provider = &openRouterProvider{Options: map[string]any{
+		Model:                  openRouterMAIModel,
+		InputAudio:             openRouterInput{Data: audio, Format: format},
+		Language:               "en",
+		ResponseFormat:         "verbose_json",
+		TimestampGranularities: []string{"segment", "word"},
+		Provider: &openRouterProvider{Options: map[string]any{
 			"azure": map[string]any{
 				"enhancedMode": map[string]any{
 					"modelOptions": map[string]any{"transcribeStyle": "verbatim"},
 				},
 			},
-		}}
+		}},
 	}
 	return json.Marshal(req)
 }
 
 // openRouterSTTClient is the bounded HTTP client for OpenRouter transcription.
-// Handlers add their own contexts, so the client timeout is only a backstop.
+// The handler adds its own context, so the client timeout is only a backstop.
 func (s *Server) openRouterSTTClient() *http.Client {
 	if s.httpOpenRouter != nil {
 		return s.httpOpenRouter
@@ -152,79 +130,6 @@ func (s *Server) postOpenRouterSTT(ctx context.Context, body []byte) (*http.Resp
 	req.Header.Set("Authorization", "Bearer "+s.cfg.OpenRouterTranscribeAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	return s.openRouterSTTClient().Do(req)
-}
-
-// openRouterRetryable reports the statuses worth repeating: rate limiting and
-// transient gateway/provider failures, including OpenRouter's 504 and 524
-// deadlines.
-func openRouterRetryable(status int) bool {
-	switch status {
-	case http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout,
-		524, // edge-network timeout (Cloudflare)
-		529: // provider overloaded
-		return true
-	}
-	return false
-}
-
-func openRouterBackoff(attempt int) time.Duration {
-	if openRouterRetryBase <= 0 {
-		return 0
-	}
-	return time.Duration(1<<(attempt-1)) * openRouterRetryBase
-}
-
-// openRouterRetryWait is the delay before the next attempt: 1 s, then 2 s, or
-// the provider's Retry-After when it gives one. A Retry-After over 5 s is not
-// worth blocking an interactive recording on, so ok is false.
-func openRouterRetryWait(res *http.Response, attempt int) (d time.Duration, ok bool) {
-	d = openRouterBackoff(attempt)
-	if ra := strings.TrimSpace(res.Header.Get("Retry-After")); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
-			d = time.Duration(secs) * time.Second
-			if d > 5*time.Second {
-				return 0, false
-			}
-		}
-	}
-	return d, true
-}
-
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}
-
-// logTail bounds an upstream error body before it reaches the log.
-func logTail(b []byte) string {
-	const max = 600
-	s := strings.TrimSpace(string(b))
-	if len(s) > max {
-		s = s[:max] + "…"
-	}
-	return s
-}
-
-// openRouterErrorDetail is the human part of an OpenRouter error body.
-func openRouterErrorDetail(raw []byte) string {
-	var e openRouterError
-	if json.Unmarshal(raw, &e) == nil && e.Error.Message != "" {
-		return fmt.Sprintf("openrouter error %d: %s", e.Error.Code, e.Error.Message)
-	}
-	return logTail(raw)
 }
 
 // openRouterAudioFormat maps a filename to the format field OpenRouter expects.

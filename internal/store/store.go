@@ -2,7 +2,7 @@
 // rows, each with an optional expiry. internal/mw keeps Merriam-Webster lookups
 // under "mw:<word>" for 30 days; main keeps the tray's /api/transcribe provider
 // choice under "transcribe:provider" with no expiry. Pure-Go driver
-// (modernc.org/sqlite), so Linux's binary is static (CGO disabled).
+// (modernc.org/sqlite), so the binary needs no cgo.
 package store
 
 import (

@@ -10,13 +10,12 @@ import (
 )
 
 // Providers that can serve /api/transcribe, /api/explain and /api/memoir/check.
-// The explain and Memoir routes activate exactly one, picked by which
-// environment variable is set (Load refuses both). /api/transcribe may have
-// both of its providers at once; the tray picker selects the active one.
+// /api/transcribe has one active provider at a time; the tray picker lists
+// every configured one when there is more than one. The explain and Memoir
+// routes activate exactly one, picked by which environment variable is set
+// (Load refuses both).
 const (
-	ProviderGroq          = "groq"
-	ProviderMAITranscribe = "mai-transcribe-2"
-	ProviderAssemblyAI    = "assemblyai"
+	ProviderAssemblyAI = "assemblyai"
 
 	ProviderOpenRouter = "openrouter"
 	ProviderCerebras   = "cerebras"
@@ -26,22 +25,19 @@ const (
 type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
-	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on Groq
-	// Whisper, AssemblyAI's Universal-3.5 Pro (Sync API), and/or OpenRouter's
-	// MAI-Transcribe-2. Any combination may be enabled at once; the tray
-	// picker then chooses which one answers. At least one key is required, and
-	// having none is a startup error.
-	GroqAPIKey    string
-	GroqModel     string
+	// Mic transcription (/api/transcribe, comart's Exscriptor) runs on
+	// AssemblyAI's Universal-3.5 Pro (Sync and live APIs). Its key is required:
+	// Load refuses to start without it.
 	AssemblyAIKey string
-	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2. It
-	// serves both /api/transcribe's MAI option and /api/transcribe-verbatim.
-	// It is deliberately not OPENROUTER_API_KEY: that one belongs to
-	// /api/explain, whose one-key rule would otherwise collide, and the two
-	// routes may use different keys.
+	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2,
+	// which serves /api/transcribe-verbatim (daily-dictation). It is
+	// deliberately not OPENROUTER_API_KEY: that one belongs to /api/explain,
+	// whose one-key rule would otherwise collide, and the two routes may use
+	// different keys.
 	OpenRouterTranscribeAPIKey string
-	// TranscribeProviders lists every configured provider in a fixed order
-	// (Groq, MAI, AssemblyAI). It has one to three entries after Load succeeds.
+	// TranscribeProviders lists every configured provider in a fixed order. It
+	// has at least one entry after Load succeeds; the tray picker appears when
+	// there is more than one.
 	TranscribeProviders []string
 	// TranscribeProvider is the provider /api/transcribe starts on: the first
 	// entry of TranscribeProviders, unless main restores a selection saved by
@@ -109,17 +105,15 @@ const (
 // piece instead of the whole server failing.
 //
 // The error is for a configuration that must not run at all: more than one
-// variable of the explain or Memoir route set, neither transcription key set,
-// a retired transcription variable still present (PARAKEET_URL,
-// MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_ENDPOINT), a Claude
-// key with a model id that is not Claude's or an effort not in
-// low/medium/high/xhigh/max, or the retired CEREBRAS_API_KEY still present. The
-// caller exits on it.
+// variable of the explain or Memoir route set, ASSEMBLYAI_API_KEY missing, a
+// retired transcription variable still present (PARAKEET_URL,
+// MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_ENDPOINT,
+// GROQ_API_KEY, GROQ_MODEL), a Claude key with a model id that is not Claude's
+// or an effort not in low/medium/high/xhigh/max, or the retired
+// CEREBRAS_API_KEY still present. The caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:                 env("LISTEN_ADDR", "127.0.0.1:8770"),
-		GroqAPIKey:                 os.Getenv("GROQ_API_KEY"),
-		GroqModel:                  env("GROQ_MODEL", "whisper-large-v3-turbo"),
 		AssemblyAIKey:              os.Getenv("ASSEMBLYAI_API_KEY"),
 		OpenRouterTranscribeAPIKey: os.Getenv("OPENROUTER_TRANSCRIBE_API_KEY"),
 
@@ -136,19 +130,33 @@ func Load() (Config, []string, error) {
 		MemoirEffort:          strings.ToLower(os.Getenv("MEMOIR_EFFORT")),
 	}
 
-	if err := c.resolveTranscribe(); err != nil {
-		return c, nil, err
-	}
 	// Parakeet was removed. Ignoring a leftover URL silently would leave a
-	// setting in the file that does nothing while /api/transcribe uses Groq or
-	// OpenRouter.
+	// setting in the file that does nothing while /api/transcribe uses
+	// AssemblyAI.
 	if os.Getenv("PARAKEET_URL") != "" {
 		return c, nil, fmt.Errorf("PARAKEET_URL is no longer supported (the local Parakeet integration was removed). " +
-			"Delete the line from ai-service.env; /api/transcribe uses GROQ_API_KEY or OPENROUTER_TRANSCRIBE_API_KEY")
+			"Delete the line from ai-service.env; /api/transcribe uses ASSEMBLYAI_API_KEY")
+	}
+	// Groq was removed when /api/transcribe moved to AssemblyAI alone. A
+	// leftover key or model would sit in the file doing nothing.
+	var retiredGroq []string
+	for _, k := range []string{"GROQ_API_KEY", "GROQ_MODEL"} {
+		if os.Getenv(k) != "" {
+			retiredGroq = append(retiredGroq, k)
+		}
+	}
+	if len(retiredGroq) > 0 {
+		verb := "is"
+		if len(retiredGroq) > 1 {
+			verb = "are"
+		}
+		return c, nil, fmt.Errorf("%s %s no longer used: /api/transcribe now runs only on "+
+			"AssemblyAI. Delete the retired line(s) from ai-service.env",
+			strings.Join(retiredGroq, ", "), verb)
 	}
 	// The Azure Speech path was replaced by OpenRouter. The old variables must
-	// not stay behind doing nothing: every transcription call now uses the
-	// OpenRouter key, including verbatim.
+	// not stay behind doing nothing: verbatim transcription now uses the
+	// OpenRouter key.
 	var retired []string
 	for _, k := range []string{"MAI_TRANSCRIBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT"} {
 		if os.Getenv(k) != "" {
@@ -161,9 +169,12 @@ func Load() (Config, []string, error) {
 			verb = "are"
 		}
 		return c, nil, fmt.Errorf("%s %s no longer used: MAI-Transcribe-2 now runs through "+
-			"OpenRouter, and both /api/transcribe and /api/transcribe-verbatim read "+
-			"OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired line(s) from ai-service.env",
+			"OpenRouter, and /api/transcribe-verbatim reads OPENROUTER_TRANSCRIBE_API_KEY. "+
+			"Delete the retired line(s) from ai-service.env",
 			strings.Join(retired, ", "), verb)
+	}
+	if err := c.resolveTranscribe(); err != nil {
+		return c, nil, err
 	}
 	if err := c.resolveExplain(); err != nil {
 		return c, nil, err
@@ -191,22 +202,15 @@ func Load() (Config, []string, error) {
 	return c, missing, nil
 }
 
-// resolveTranscribe collects the /api/transcribe providers. Both may be set;
-// the tray picker then switches between them. An empty variable counts as
-// unset, because .env.example ships empty lines.
+// resolveTranscribe collects the /api/transcribe providers. An empty variable
+// counts as unset, because .env.example ships empty lines.
 func (c *Config) resolveTranscribe() error {
-	if c.GroqAPIKey != "" {
-		c.TranscribeProviders = append(c.TranscribeProviders, ProviderGroq)
-	}
-	if c.OpenRouterTranscribeAPIKey != "" {
-		c.TranscribeProviders = append(c.TranscribeProviders, ProviderMAITranscribe)
-	}
 	if c.AssemblyAIKey != "" {
 		c.TranscribeProviders = append(c.TranscribeProviders, ProviderAssemblyAI)
 	}
 	if len(c.TranscribeProviders) == 0 {
-		return fmt.Errorf("none of GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY or ASSEMBLYAI_API_KEY is set, " +
-			"so /api/transcribe has no provider. Set at least one in ai-service.env")
+		return fmt.Errorf("ASSEMBLYAI_API_KEY is not set, so /api/transcribe has no provider. " +
+			"Set it in ai-service.env")
 	}
 	c.TranscribeProvider = c.TranscribeProviders[0]
 	return nil
@@ -282,17 +286,13 @@ func (c Config) TranscribeRoute() string {
 	var parts []string
 	for _, p := range c.TranscribeProviders {
 		switch p {
-		case ProviderGroq:
-			parts = append(parts, fmt.Sprintf("Groq, model %s", c.GroqModel))
-		case ProviderMAITranscribe:
-			parts = append(parts, "OpenRouter, model microsoft/mai-transcribe-2")
 		case ProviderAssemblyAI:
 			parts = append(parts, "AssemblyAI Sync, model universal-3-5-pro")
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (neither GROQ_API_KEY, OPENROUTER_TRANSCRIBE_API_KEY nor ASSEMBLYAI_API_KEY is set)"
+		return "none (ASSEMBLYAI_API_KEY is not set)"
 	case 1:
 		return parts[0]
 	}
@@ -303,10 +303,6 @@ func (c Config) TranscribeRoute() string {
 // transcribeProviderName is the short human name used in the startup log.
 func transcribeProviderName(provider string) string {
 	switch provider {
-	case ProviderGroq:
-		return "Groq"
-	case ProviderMAITranscribe:
-		return "OpenRouter MAI-Transcribe-2"
 	case ProviderAssemblyAI:
 		return "AssemblyAI Universal-3.5 Pro"
 	}
