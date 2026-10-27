@@ -24,9 +24,12 @@ import (
 	"ai-service/internal/tray"
 )
 
-// savedTranscribeProviderKey is the cache row the tray picker writes, so the
-// chosen provider survives a restart. It never expires.
-const savedTranscribeProviderKey = "transcribe:provider"
+// The cache rows the tray pickers write, so each chosen provider survives a
+// restart. They never expire.
+const (
+	savedTranscribeProviderKey = "transcribe:provider"
+	savedExplainProviderKey    = "explain:provider"
+)
 
 func main() {
 	cfg, missing, err := config.Load()
@@ -67,14 +70,21 @@ func main() {
 	app := server.New(cfg, st)
 
 	// A saved tray choice wins over the config default, but only when that
-	// provider still has a key: removing a key must not leave
-	// /api/transcribe/stream pointing at a service that is no longer
-	// configured.
-	multiProvider := len(cfg.TranscribeProviders) > 1
-	if multiProvider {
+	// provider still has a key: removing a key must not leave a route pointing
+	// at a service that is no longer configured.
+	multiTranscribe := len(cfg.TranscribeProviders) > 1
+	multiExplain := len(cfg.ExplainProviders) > 1
+	picker := multiTranscribe || multiExplain
+	if multiTranscribe {
 		if saved, ok := st.Get(savedTranscribeProviderKey); ok && app.SetTranscribeProvider(saved) {
 			cfg.TranscribeProvider = saved
 			log.Printf("transcribe provider: %s (saved by the tray picker)", saved)
+		}
+	}
+	if multiExplain {
+		if saved, ok := st.Get(savedExplainProviderKey); ok && app.SetExplainProvider(saved) {
+			cfg.ExplainProvider = saved
+			log.Printf("explain provider: %s (saved by the tray picker)", saved)
 		}
 	}
 
@@ -126,18 +136,23 @@ func main() {
 
 	// ListenAndServe blocks, so it runs beside the tray event loop. On macOS
 	// systray.Run must own the main goroutine (Cocoa); on Linux it waits on
-	// D-Bus. When only one provider is configured there is nothing to pick, so
-	// the process simply waits for the signal above.
+	// D-Bus. When neither route has more than one provider there is nothing to
+	// pick, so the process simply waits for the signal above.
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
 	}()
-	if multiProvider {
-		log.Printf("tray: multiple transcription providers are configured; the picker is in the menu bar")
+	if picker {
+		log.Printf("tray: multiple providers are configured; the pickers are in the menu bar")
 		trayActive.Store(true)
-		tray.Run(app, func(provider string) {
-			st.Set(savedTranscribeProviderKey, provider, 0)
+		tray.Run(app, func(kind, provider string) {
+			switch kind {
+			case tray.PickTranscribe:
+				st.Set(savedTranscribeProviderKey, provider, 0)
+			case tray.PickExplain:
+				st.Set(savedExplainProviderKey, provider, 0)
+			}
 		})
 		trayActive.Store(false)
 	}

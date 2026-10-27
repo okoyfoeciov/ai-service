@@ -25,13 +25,15 @@ import (
 type Server struct {
 	cfg config.Config
 	mw  *mw.Client
-	// explainLLM is /api/explain's model (OpenRouter or Claude), memoirLLM is
-	// Memoir's (Cerebras or Claude). Whichever key config.Load found picks the
-	// provider, and it refuses both keys of the explain or Memoir route. Each is nil
-	// when its API key is missing; the handler then reports that instead of the
-	// whole server refusing to start.
-	explainLLM llm.Streamer
-	memoirLLM  llm.Streamer
+	// explainLLMs holds /api/explain's clients, one per configured provider;
+	// explainProviders is every provider config.Load found, and
+	// explainProvider is the one /api/explain uses now. The tray picker may
+	// change it while requests are running, hence atomic. memoirLLM is
+	// Memoir's one client (Cerebras or Claude).
+	explainLLMs      map[string]llm.Streamer
+	explainProviders []string
+	explainProvider  atomic.Value // string
+	memoirLLM        llm.Streamer
 
 	httpShort      *http.Client // streaming transcription and the WS transport (2 min)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
@@ -59,20 +61,24 @@ const (
 )
 
 func New(cfg config.Config, st *store.Store) *Server {
+	// Model calls have no overall timeout: a stream can run for minutes and
+	// the request context cancels it.
+	hc := &http.Client{}
 	s := &Server{
 		cfg:                 cfg,
 		mw:                  mw.New(st),
 		httpShort:           &http.Client{Timeout: 120 * time.Second},
 		httpOpenRouter:      &http.Client{Timeout: 10 * time.Minute},
 		transcribeProviders: append([]string(nil), cfg.TranscribeProviders...),
+		explainProviders:    append([]string(nil), cfg.ExplainProviders...),
+		explainLLMs:         newExplainLLMs(cfg, hc),
 	}
 	if cfg.TranscribeProvider != "" {
 		s.transcribeProvider.Store(cfg.TranscribeProvider)
 	}
-	// Model calls have no overall timeout: a stream can run for minutes and
-	// the request context cancels it.
-	hc := &http.Client{}
-	s.explainLLM = newExplainLLM(cfg, hc)
+	if cfg.ExplainProvider != "" {
+		s.explainProvider.Store(cfg.ExplainProvider)
+	}
 	s.memoirLLM = newMemoirLLM(cfg, hc)
 	return s
 }
@@ -88,24 +94,27 @@ func newClaude(key, model, effort, route string, hc *http.Client) llm.Streamer {
 	}, hc)
 }
 
-func newExplainLLM(cfg config.Config, hc *http.Client) llm.Streamer {
-	switch cfg.ExplainProvider {
-	case config.ProviderClaude:
-		return newClaude(cfg.ClaudeAPIKey, cfg.ExplainModel, cfg.ExplainEffort, "explain", hc)
-	case config.ProviderOpenRouter:
-		return llm.New(llm.Config{
-			Provider: "OpenRouter",
-			URL:      openRouterURL,
-			APIKey:   cfg.OpenRouterAPIKey,
-			Model:    cfg.ExplainModel,
-			Params: map[string]any{
-				"max_tokens": maxAnswerTokens,
-				// exclude: the thinking still happens but is not streamed back.
-				"reasoning": map[string]any{"max_tokens": cfg.ExplainReasoningTokens, "exclude": true},
-			},
-		}, hc)
+func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
+	clients := make(map[string]llm.Streamer, len(cfg.ExplainProviders))
+	for _, provider := range cfg.ExplainProviders {
+		switch provider {
+		case config.ProviderClaude:
+			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), cfg.ExplainEffort, "explain", hc)
+		case config.ProviderOpenRouter:
+			clients[provider] = llm.New(llm.Config{
+				Provider: "OpenRouter",
+				URL:      openRouterURL,
+				APIKey:   cfg.OpenRouterAPIKey,
+				Model:    cfg.ExplainModelFor(provider),
+				Params: map[string]any{
+					"max_tokens": maxAnswerTokens,
+					// exclude: the thinking still happens but is not streamed back.
+					"reasoning": map[string]any{"max_tokens": cfg.ExplainReasoningTokens, "exclude": true},
+				},
+			}, hc)
+		}
 	}
-	return nil
+	return clients
 }
 
 func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {

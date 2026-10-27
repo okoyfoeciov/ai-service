@@ -71,17 +71,18 @@ the build, the env file and the restart):
    `ASSEMBLYAI_API_KEY` and/or `DEEPGRAM_API_KEY` for `/api/transcribe/stream`
    (at least one is required),
    `OPENROUTER_TRANSCRIBE_API_KEY` for `/api/transcribe-verbatim` (optional),
-   one of `OPENROUTER_API_KEY` or `CLAUDE_API_KEY`; and one of
+   one or both of `OPENROUTER_API_KEY` and `CLAUDE_API_KEY`; and one of
    `MEMOIR_CLAUDE_API_KEY` or `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS
    dialog; on Linux a zenity dialog, or a hidden terminal prompt without a
    display. For the transcribe providers it asks for AssemblyAI first; an empty
    answer there moves on to Deepgram, and an empty answer for either optional
    provider just leaves it out. An empty
    answer for `OPENROUTER_TRANSCRIBE_API_KEY` leaves verbatim unconfigured. For
-   the explain key it asks for OpenRouter first; an
-   empty answer there moves on to Claude. For the Memoir key it asks for Claude
+   explain, OpenRouter is asked first; an empty answer there moves on to Claude.
+   If only one explain key is present, the other can be added by hand to enable
+   the explain picker. For the Memoir key it asks for Claude
    first; an empty answer there moves on to Cerebras. It stops if more than one
-   variable of the explain or Memoir route is already set, if `PARAKEET_URL` is
+   variable of the Memoir route is already set, if `PARAKEET_URL` is
    still there, if the retired `GROQ_API_KEY` or `GROQ_MODEL` is there, if the
    retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
    `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
@@ -185,10 +186,9 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | --- | --- | --- |
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
-| `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so the explain one-key rule stays intact and the two routes may use different keys. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain` only. Set this **or** `CLAUDE_API_KEY`, never both. |
-| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this **or** `OPENROUTER_API_KEY`, never both. |
-| `EXPLAIN_MODEL` | `google/gemini-3.8-flash` on OpenRouter, `claude-opus-5-5` on Claude | Model id for `/api/explain`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
+| `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this and/or `CLAUDE_API_KEY`; with both, the tray picker chooses. |
+| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
 | `EXPLAIN_REASONING_TOKENS` | `1024` | OpenRouter only: thinking budget (`reasoning.max_tokens`). Claude ignores it. |
 | `EXPLAIN_EFFORT` | `medium` | Claude only: `low`, `medium`, `high`, `xhigh` or `max` (`output_config.effort`). Claude models take no separate thinking-token budget, so this is the thinking control (`max_tokens` still caps the answer). OpenRouter ignores it. |
 | `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
@@ -263,6 +263,16 @@ transcribe[deepgram]: type=audio/webm status=200 audio=6.08s total=6.42s post-st
 
 The line never includes audio or transcript text.
 
+Every `/api/explain` request logs the selected provider and model, HTTP status,
+outcome, item count, pronunciation lookups and duration:
+
+```text
+explain[claude]: model=claude-opus-5-5 status=200 outcome=ok items=3 prons=2 duration=1.24s
+```
+
+Tray switches are logged separately as `transcribe provider: … (tray)` and
+`explain provider: … (tray)`.
+
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
 `ProtectSystem=strict` and `ProtectHome=read-only`, with only `data/` and
@@ -293,13 +303,7 @@ manager keeps retrying every 10 s) when a route has no usable provider:
   `AZURE_SPEECH_ENDPOINT` is still set. MAI-Transcribe-2 now goes through
   OpenRouter, and `/api/transcribe-verbatim` reads
   `OPENROUTER_TRANSCRIBE_API_KEY`;
-- both `OPENROUTER_API_KEY` and `CLAUDE_API_KEY` are set. An empty value counts
-  as unset, so leave the unused key as an empty `KEY=` line (that also beats
-  a copy of the variable in your login environment, because `run.sh` sources the
-  file over it);
-- `CLAUDE_API_KEY` is set and `EXPLAIN_MODEL` is not a `claude-…` id (for
-  example a leftover `google/gemini-3.8-flash`), or `EXPLAIN_EFFORT` is not one
-  of the five levels;
+- `CLAUDE_API_KEY` is set and `EXPLAIN_EFFORT` is not one of the five levels;
 - both `MEMOIR_CEREBRAS_API_KEY` and `MEMOIR_CLAUDE_API_KEY` are set (same rule:
   leave the unused one empty or commented out);
 - `MEMOIR_CLAUDE_API_KEY` is set and `MEMOIR_MODEL` is not a `claude-…` id (for
@@ -309,30 +313,35 @@ manager keeps retrying every 10 s) when a route has no usable provider:
   now; the old name would otherwise sit in the file doing nothing.
 
 Why: with multiple possible providers it is easy to believe one model answers while
-another does. Every start logs the route it chose, for example
+another does. Every start logs the routes it chose, for example
 `transcribe route: AssemblyAI live, model universal-3-5-pro`,
-`explain route: Claude Platform, model claude-opus-5-5, effort medium` and the
+`explain route: Claude Platform, model claude-opus-5-5, effort medium` (or both
+explain providers with `2 providers; tray picker, starting on …`) and the
 same for `memoir route: …`, and every Claude request whose stream starts logs
 the model it asked for next to the model the API says answered (`llm[Claude/explain]`
 or `llm[Claude/memoir]`). The Anthropic SDK's own `ANTHROPIC_*` environment variables are
 switched off, so a stray `ANTHROPIC_BASE_URL` or `ANTHROPIC_AUTH_TOKEN` cannot
 re-route the call.
 
-### Tray picker (multiple transcribe providers)
+### Tray pickers
 
-The tray picker is part of the service and is kept for future providers. It
-appears when more than one `/api/transcribe/stream` provider is configured: the
+The tray has one picker section per route with more than one configured
+provider. It appears when either `/api/transcribe/stream` or `/api/explain` has
+at least two providers:
+
+- **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
+- **Explain with** — Claude Platform and OpenRouter.
+
+With only one provider on both routes there is no icon. The tray lives in the
 macOS menu bar or the Linux status area (GNOME's AppIndicator extension, KDE,
-and anything else implementing StatusNotifierItem). With both AssemblyAI and
-Deepgram keys set, it shows **AssemblyAI Universal-3.5 Pro** and **Deepgram
-Nova-3**; with only one key there is no icon. Adding another provider brings the
-picker back without any client change, because comart keeps calling the same
-route.
+and anything else implementing StatusNotifierItem). Adding another provider
+brings its section back without any client change, because comart keeps calling
+the same routes.
 
-- The service starts on the first configured provider and remembers a pick in
-  the SQLite cache (`data/cache.db`, key `transcribe:provider`), so a restart
-  keeps it.
-- If a saved pick's key is later removed, the service falls back to the first
+- Each route starts on its first configured provider and remembers a pick in
+  the SQLite cache (`data/cache.db`, keys `transcribe:provider` and
+  `explain:provider`), so a restart keeps it.
+- If a saved pick's key is later removed, that route falls back to its first
   configured provider instead of routing to a service with no credentials.
 - Linux needs the service to have the session D-Bus address; the systemd user
   manager imports it at login. Without a desktop session the service still
@@ -349,7 +358,7 @@ route.
   discover the same item twice after a shell restart, which shows two identical
   tray icons.
 - The tray is part of the service process, not an HTTP route. It writes only the
-  cache row above; no new listening socket, no extra file.
+  two cache rows above; no new listening socket, no extra file.
 
 ## Security model
 
@@ -420,6 +429,9 @@ Request limits:
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
+When both `/api/explain` keys are set, its tray section chooses between the
+Claude and OpenRouter rows; each provider uses its own `EXPLAIN_*_MODEL`.
+
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
 (`internal/llm`'s `Client`) serves both. The only difference is the request fields for
 the token budget and reasoning, which `server.New` sets per provider:
@@ -436,9 +448,9 @@ nothing else. Thinking text is dropped, never streamed. Effort is the only
 thinking-depth control: Opus 5.5
 rejects a separate thinking-token budget, while `max_tokens` still caps the
 answer. No refusal fallback is enabled: it would answer from another model
-after a refusal, which is the silent re-routing the one-key rule exists to
-prevent. A refusal reaches the client as an `error` event on explain, and as a
-502 on Memoir. Retries,
+after a refusal, which is the silent re-routing the explicit provider choice
+exists to prevent. A refusal reaches the client as an `error` event on explain,
+and as a 502 on Memoir. Retries,
 error codes and the "judge the answer at the end" rule below apply to Claude
 too; Claude's stream is complete once its stop reason has arrived.
 
@@ -498,7 +510,7 @@ cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers
-internal/tray       the /api/transcribe/stream provider picker (macOS menu bar, Linux status area; appears with more than one provider)
+internal/tray       the provider pickers for /api/transcribe/stream and /api/explain (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing

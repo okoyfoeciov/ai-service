@@ -267,7 +267,14 @@ func testLLM(transport http.RoundTripper) *llm.Client {
 // network and whose MW client answers from cache.
 func explainServer(t *testing.T, cache mw.Cache) *Server {
 	t.Helper()
-	return &Server{explainLLM: testLLM(failingTransport{}), mw: mw.New(cache)}
+	return &Server{
+		cfg:              config.Config{ExplainProvider: config.ProviderOpenRouter},
+		explainProviders: []string{config.ProviderOpenRouter},
+		explainLLMs: map[string]llm.Streamer{
+			config.ProviderOpenRouter: testLLM(failingTransport{}),
+		},
+		mw: mw.New(cache),
+	}
 }
 
 func explainRequest(ctx context.Context, words int) *http.Request {
@@ -444,6 +451,39 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 				t.Fatalf("got %d issues, want %d", len(body.Issues), tc.want)
 			}
 		})
+	}
+}
+
+func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
+	s := New(config.Config{
+		OpenRouterAPIKey:       "or",
+		ClaudeAPIKey:           "cl",
+		ExplainProviders:       []string{config.ProviderClaude, config.ProviderOpenRouter},
+		ExplainProvider:        config.ProviderClaude,
+		ExplainEffort:          "medium",
+		ExplainReasoningTokens: 1024,
+	}, nil)
+
+	if got := s.ExplainProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter {
+		t.Fatalf("providers %v", got)
+	}
+	if got := s.ExplainProvider(); got != config.ProviderClaude {
+		t.Fatalf("provider %q, want %q", got, config.ProviderClaude)
+	}
+	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderClaude]); got != "*llm.Claude" {
+		t.Errorf("claude client is %s", got)
+	}
+	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderOpenRouter]); got != "*llm.Client" {
+		t.Errorf("openrouter client is %s", got)
+	}
+	if !s.SetExplainProvider(config.ProviderOpenRouter) {
+		t.Error("could not select the configured OpenRouter provider")
+	}
+	if got := s.ExplainProvider(); got != config.ProviderOpenRouter {
+		t.Errorf("provider %q after switch, want %q", got, config.ProviderOpenRouter)
+	}
+	if s.SetExplainProvider("not-configured") {
+		t.Error("selected a provider that has no key")
 	}
 }
 

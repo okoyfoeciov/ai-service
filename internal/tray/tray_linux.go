@@ -51,13 +51,13 @@ type tooltip struct {
 }
 
 type statusNotifier struct {
-	icon pixmap
+	icons []pixmap
 }
 
 // Run exports a StatusNotifierItem and its dbusmenu, then blocks until Quit.
-func Run(c Controller, onPick func(string)) {
+func Run(c Controller, onPick func(kind, provider string)) {
 	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
-		log.Printf("tray: no session D-Bus available — provider picker needs a desktop session")
+		log.Printf("tray: no session D-Bus available — provider pickers need a desktop session")
 		return
 	}
 	conn, err := dbus.SessionBus()
@@ -67,19 +67,21 @@ func Run(c Controller, onPick func(string)) {
 	}
 	defer conn.Close()
 
-	sni := &statusNotifier{icon: decodePixmap(iconRegular)}
+	sni := &statusNotifier{icons: []pixmap{
+		decodePixmap(icon16),
+		decodePixmap(icon22),
+		decodePixmap(icon24),
+		decodePixmap(icon32),
+		decodePixmap(icon44),
+		decodePixmap(icon48),
+		decodePixmap(iconRegular),
+	}}
 	if _, err := prop.Export(conn, sniPath, sni.spec()); err != nil {
 		log.Printf("tray: export status item: %v", err)
 		return
 	}
 
-	m := &menu{
-		providers:  c.TranscribeProviders(),
-		current:    c.TranscribeProvider(),
-		controller: c,
-		onPick:     onPick,
-		revision:   1,
-	}
+	m := newMenu(c, onPick)
 	menuProps, err := prop.Export(conn, menuPath, m.spec())
 	if err != nil {
 		log.Printf("tray: export menu properties: %v", err)
@@ -124,7 +126,7 @@ func Run(c Controller, onPick func(string)) {
 	// registration below), which shows two identical tray icons after a shell
 	// restart.
 	go register(conn)
-	log.Printf("tray: provider picker ready")
+	log.Printf("tray: provider pickers ready")
 
 	<-quitCh
 }
@@ -143,13 +145,13 @@ func (s *statusNotifier) spec() map[string]map[string]*prop.Prop {
 			"Status":              {Value: "Active", Emit: prop.EmitTrue},
 			"WindowId":            {Value: int32(0), Emit: prop.EmitTrue},
 			"IconName":            {Value: "", Emit: prop.EmitTrue},
-			"IconPixmap":          {Value: []pixmap{s.icon}, Writable: true, Emit: prop.EmitTrue},
+			"IconPixmap":          {Value: s.icons, Writable: true, Emit: prop.EmitTrue},
 			"OverlayIconName":     {Value: "", Emit: prop.EmitTrue},
 			"OverlayIconPixmap":   {Value: []pixmap{}, Emit: prop.EmitTrue},
 			"AttentionIconName":   {Value: "", Emit: prop.EmitTrue},
 			"AttentionIconPixmap": {Value: []pixmap{}, Emit: prop.EmitTrue},
 			"AttentionMovieName":  {Value: "", Emit: prop.EmitTrue},
-			"ToolTip":             {Value: tooltip{V2: "ai-service — transcription provider"}, Emit: prop.EmitTrue},
+			"ToolTip":             {Value: tooltip{V2: "ai-service — AI provider pickers"}, Emit: prop.EmitTrue},
 			"ItemIsMenu":          {Value: true, Emit: prop.EmitTrue},
 			"Menu":                {Value: dbus.ObjectPath(menuPath), Writable: true, Emit: prop.EmitTrue},
 			"IconThemePath":       {Value: "", Emit: prop.EmitTrue},
@@ -194,12 +196,33 @@ type layout struct {
 
 type menu struct {
 	mu         sync.Mutex
-	providers  []string
-	current    string
+	sections   []section
+	targets    map[int32]struct{ kind, provider string }
 	controller Controller
-	onPick     func(string)
+	onPick     func(kind, provider string)
 	revision   uint32
 	props      *prop.Properties
+}
+
+// newMenu assigns stable dbusmenu ids. Header ids are skipped; targets maps a
+// provider item id to the pick it performs.
+func newMenu(c Controller, onPick func(kind, provider string)) *menu {
+	m := &menu{
+		sections:   pickerSections(c),
+		targets:    map[int32]struct{ kind, provider string }{},
+		controller: c,
+		onPick:     onPick,
+		revision:   1,
+	}
+	id := int32(1)
+	for _, sec := range m.sections {
+		id++ // header
+		for _, provider := range sec.providers {
+			m.targets[id] = struct{ kind, provider string }{sec.kind, provider}
+			id++
+		}
+	}
+	return m
 }
 
 func (m *menu) spec() map[string]map[string]*prop.Prop {
@@ -273,35 +296,40 @@ var menuInterface = introspect.Interface{
 
 func (m *menu) buildLocked() layout {
 	root := layout{V0: 0, V1: map[string]dbus.Variant{}, V2: []dbus.Variant{}}
-	header := layout{
-		V0: 1,
-		V1: map[string]dbus.Variant{
-			"label":   dbus.MakeVariant("Transcribe with"),
-			"enabled": dbus.MakeVariant(false),
-			"visible": dbus.MakeVariant(true),
-			"type":    dbus.MakeVariant("standard"),
-		},
-		V2: []dbus.Variant{},
-	}
-	root.V2 = append(root.V2, dbus.MakeVariant(header))
-	for i, p := range m.providers {
-		state := int32(0)
-		if p == m.current {
-			state = 1
-		}
-		item := layout{
-			V0: int32(i + 2),
+	id := int32(1)
+	for _, sec := range m.sections {
+		header := layout{
+			V0: id,
 			V1: map[string]dbus.Variant{
-				"label":        dbus.MakeVariant(providerLabel(p)),
-				"enabled":      dbus.MakeVariant(true),
-				"visible":      dbus.MakeVariant(true),
-				"type":         dbus.MakeVariant("standard"),
-				"toggle-type":  dbus.MakeVariant("checkmark"),
-				"toggle-state": dbus.MakeVariant(state),
+				"label":   dbus.MakeVariant(sec.title),
+				"enabled": dbus.MakeVariant(false),
+				"visible": dbus.MakeVariant(true),
+				"type":    dbus.MakeVariant("standard"),
 			},
 			V2: []dbus.Variant{},
 		}
-		root.V2 = append(root.V2, dbus.MakeVariant(item))
+		root.V2 = append(root.V2, dbus.MakeVariant(header))
+		id++
+		for _, provider := range sec.providers {
+			state := int32(0)
+			if provider == sec.current {
+				state = 1
+			}
+			item := layout{
+				V0: id,
+				V1: map[string]dbus.Variant{
+					"label":        dbus.MakeVariant(providerLabel(sec.kind, provider)),
+					"enabled":      dbus.MakeVariant(true),
+					"visible":      dbus.MakeVariant(true),
+					"type":         dbus.MakeVariant("standard"),
+					"toggle-type":  dbus.MakeVariant("checkmark"),
+					"toggle-state": dbus.MakeVariant(state),
+				},
+				V2: []dbus.Variant{},
+			}
+			root.V2 = append(root.V2, dbus.MakeVariant(item))
+			id++
+		}
 	}
 	return root
 }
@@ -397,18 +425,24 @@ func (m *menu) AboutToShowGroup(ids []int32) ([]int32, []int32, *dbus.Error) {
 }
 
 func (m *menu) pick(id int32) {
-	idx := int(id - 2)
+	target, ok := m.targets[id]
+	if !ok {
+		return
+	}
 	m.mu.Lock()
-	if id < 2 || idx >= len(m.providers) {
+	sectionIndex := -1
+	for i := range m.sections {
+		if m.sections[i].kind == target.kind {
+			sectionIndex = i
+			break
+		}
+	}
+	if sectionIndex < 0 || m.sections[sectionIndex].current == target.provider ||
+		!setProvider(m.controller, target.kind, target.provider) {
 		m.mu.Unlock()
 		return
 	}
-	p := m.providers[idx]
-	if p == m.current || !m.controller.SetTranscribeProvider(p) {
-		m.mu.Unlock()
-		return
-	}
-	m.current = p
+	m.sections[sectionIndex].current = target.provider
 	m.revision++
 	revision, props := m.revision, m.props
 	m.mu.Unlock()
@@ -418,9 +452,9 @@ func (m *menu) pick(id int32) {
 			log.Printf("tray: update menu version: %v", err)
 		}
 	}
-	log.Printf("transcribe provider: %s (tray)", providerLabel(p))
+	log.Printf("%s provider: %s (tray)", target.kind, providerLabel(target.kind, target.provider))
 	if m.onPick != nil {
-		m.onPick(p)
+		m.onPick(target.kind, target.provider)
 	}
 }
 

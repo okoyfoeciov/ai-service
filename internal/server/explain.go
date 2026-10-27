@@ -11,15 +11,81 @@ import (
 	"sync"
 	"time"
 
+	"ai-service/internal/llm"
 	"ai-service/internal/mw"
 	"ai-service/internal/prompt"
 )
+
+// ExplainProviders returns the configured explain providers, in the order the
+// tray menu shows them. The slice is a copy.
+func (s *Server) ExplainProviders() []string {
+	return append([]string(nil), s.explainProviders...)
+}
+
+// ExplainProvider returns the provider /api/explain is using now.
+func (s *Server) ExplainProvider() string {
+	if v, ok := s.explainProvider.Load().(string); ok && v != "" {
+		return v
+	}
+	// A Server built by hand in a test has no atomic value; fall back to the
+	// configuration it was given.
+	return s.cfg.ExplainProvider
+}
+
+// SetExplainProvider switches /api/explain to provider. It reports false for a
+// provider that is not configured, so a stale saved selection or a bogus menu
+// click cannot route an explanation to a service without a key.
+func (s *Server) SetExplainProvider(provider string) bool {
+	for _, enabled := range s.explainProviders {
+		if provider == enabled {
+			s.explainProvider.Store(provider)
+			return true
+		}
+	}
+	return false
+}
+
+// explainStreamer is the client for the currently selected provider.
+func (s *Server) explainStreamer() llm.Streamer {
+	return s.explainLLMs[s.ExplainProvider()]
+}
 
 // handleExplain streams a plain-English explanation of the chosen words as SSE.
 // Errors after the stream opens ride as an in-stream `error` event (HTTP status
 // stays 200); `done` is always last.
 func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	provider := s.ExplainProvider()
+	model := s.cfg.ExplainModelFor(provider)
+	sw := &statusWriter{ResponseWriter: w}
+	w = sw
+	outcome := "ok"
+	errMsg := ""
+	items := 0
+	prons := 0
+	defer func() {
+		providerName, modelName := provider, model
+		if providerName == "" {
+			providerName = "none"
+		}
+		if modelName == "" {
+			modelName = "-"
+		}
+		suffix := ""
+		if errMsg != "" {
+			errMsg = strings.ReplaceAll(errMsg, "\n", " ")
+			if len(errMsg) > 240 {
+				errMsg = errMsg[:240] + "…"
+			}
+			suffix = fmt.Sprintf(" error=%q", errMsg)
+		}
+		log.Printf("explain[%s]: model=%s status=%d outcome=%s items=%d prons=%d duration=%s%s",
+			providerName, modelName, sw.Status(), outcome, items, prons,
+			time.Since(start).Round(time.Millisecond), suffix)
+	}()
+
 	if !requireType(w, r, "application/json", isJSON) {
+		outcome = "bad_content_type"
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
@@ -31,12 +97,15 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
+			outcome = "too_large"
 			jsonError(w, "Request too large.", http.StatusRequestEntityTooLarge)
 			return
 		}
+		outcome = "invalid_json"
 		jsonError(w, "Invalid JSON.", http.StatusBadRequest)
 		return
 	}
+	items = len(body.Items)
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -60,12 +129,17 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	if s.explainLLM == nil {
-		send("error", map[string]any{"message": "Neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set."})
+	streamer := s.explainStreamer()
+	if streamer == nil {
+		outcome = "no_provider"
+		errMsg = "Neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set."
+		send("error", map[string]any{"message": errMsg})
 		return
 	}
 	if len(body.Items) == 0 {
-		send("error", map[string]any{"message": "No words selected."})
+		outcome = "no_items"
+		errMsg = "No words selected."
+		send("error", map[string]any{"message": errMsg})
 		return
 	}
 
@@ -88,19 +162,27 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	if len(wordsToFetch) > 0 {
 		var ok bool
 		if pronBundle, ok = s.prefetchPron(ctx, wordsToFetch); !ok {
+			outcome = "client_gone"
 			return // client gone; the deferred done event is all that is left
 		}
+		prons = len(pronBundle)
 		if len(pronBundle) > 0 {
 			send("pron-data", map[string]any{"prons": pronBundle})
 		}
 	}
 
 	p := prompt.Build(body.Text, body.Items, body.History, pronBundle)
-	result := s.explainLLM.Stream(ctx, p, func(t string) {
+	result := streamer.Stream(ctx, p, func(t string) {
 		send("chunk", map[string]any{"text": t})
 	})
-	if !result.OK && ctx.Err() == nil {
-		send("error", map[string]any{"message": result.UserMessage()})
+	if !result.OK {
+		if ctx.Err() != nil {
+			outcome = "client_gone"
+			return
+		}
+		outcome = "error"
+		errMsg = result.UserMessage()
+		send("error", map[string]any{"message": errMsg})
 	}
 }
 

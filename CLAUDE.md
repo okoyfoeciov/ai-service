@@ -10,8 +10,9 @@ In short, `/api/transcribe/stream` runs on AssemblyAI Universal-3.5 Pro or
 Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
-`verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` and
-`/api/memoir/check` still have two each and refuse both. Every Memoir variable
+`verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
+use Claude Platform or OpenRouter, both at once with a tray picker;
+`/api/memoir/check` still has two and refuses both. Every Memoir variable
 starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the
 transcription keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
@@ -22,8 +23,9 @@ sends it to AssemblyAI's `/v1/transcribe/live` or Deepgram's
 Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
 `/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body
 to loopback from an extension page, so the WS handler forwards MediaRecorder
-frames to the stream route over loopback. The tray picker (`internal/tray`)
-lists both providers when both keys are configured. Linux's tray is a small
+frames to the stream route over loopback. The tray (`internal/tray`) has a
+**Transcribe with** section and an **Explain with** section, each shown only
+when that route has more than one configured provider. Linux's tray is a small
 in-repo D-Bus backend that intentionally omits `Activate`, because GNOME then
 opens the menu on the first click instead of waiting out the double-click
 interval; macOS links Cocoa, so its build needs cgo.
@@ -31,7 +33,12 @@ interval; macOS links Cocoa, so its build needs cgo.
 To add a transcribe provider later, extend `resolveTranscribe` with its key,
 add its `providerLabel` in `internal/tray`, and add a live case to
 `handleTranscribeStream` in `internal/server/transcribe_stream.go`. There is no
-batch fallback: a provider must implement streaming.
+batch fallback: a provider must implement streaming. To add an explain provider,
+extend `resolveExplain` and `newExplainLLMs` and add its `providerLabel`.
+
+Every `/api/explain` request logs provider, model, status, outcome, item count,
+pronunciation lookups and duration; tray switches log
+`transcribe provider: … (tray)` / `explain provider: … (tray)`.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -39,9 +46,9 @@ batch fallback: a provider must implement streaming.
   where a button sits or what a panel says belongs to a client: the comart
   extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
-  (`~/daily-dictation`). The one native UI is the tray picker, kept for future
-  transcribe providers and shown only when more than one is configured
-  (`internal/tray`).
+  (`~/daily-dictation`). The one native UI is the provider pickers, kept for
+  future transcribe and explain providers and shown only when a route has more
+  than one configured (`internal/tray`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one

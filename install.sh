@@ -100,8 +100,8 @@ say "[b] go $(go env GOVERSION 2>/dev/null || echo missing)"
 # --- c. build ---------------------------------------------------------------
 # Linux's tray is pure D-Bus, so the binary stays static there. macOS needs
 # Cocoa through cgo for the menu-bar item, which needs the Xcode command-line
-# tools (clang). The tray is always compiled in; it appears when more than one
-# transcription provider is configured.
+# tools (clang). The tray is always compiled in; it appears when either route
+# has more than one provider configured.
 if [ "$DRY_RUN" = 1 ]; then
   say "[c] dry run — skipping go build"
 else
@@ -190,7 +190,7 @@ ask_key() {
 
 # /api/transcribe/stream runs on ASSEMBLYAI_API_KEY and/or DEEPGRAM_API_KEY;
 # /api/transcribe-verbatim uses OPENROUTER_TRANSCRIBE_API_KEY. /api/explain
-# takes OPENROUTER_API_KEY or CLAUDE_API_KEY; Memoir takes
+# takes OPENROUTER_API_KEY and/or CLAUDE_API_KEY; Memoir takes
 # MEMOIR_CLAUDE_API_KEY or MEMOIR_CEREBRAS_API_KEY. The blocks below handle all
 # three routes.
 if [ "$DRY_RUN" = 1 ]; then
@@ -206,9 +206,10 @@ else
     say "[d] created ai-service.env from .env.example"
   fi
   chmod 600 "$ENVFILE"
-  # /api/transcribe/stream now has two providers, AssemblyAI and Deepgram.
-  # The explain and Memoir routes still refuse more than one, so stop before
-  # restarting the service into a configuration it would reject.
+  # /api/transcribe/stream has two providers, AssemblyAI and Deepgram.
+  # /api/explain has two, Claude and OpenRouter. Memoir still refuses more than
+  # one, so stop before restarting the service into a configuration it would
+  # reject.
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
   fi
@@ -220,9 +221,6 @@ else
   fi
   if env_set AZURE_SPEECH_KEY || env_set AZURE_SPEECH_ENDPOINT; then
     die "ai-service.env still sets AZURE_SPEECH_KEY or AZURE_SPEECH_ENDPOINT. The direct Azure Speech path was removed; /api/transcribe-verbatim now uses OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired lines (or comment them out), then re-run."
-  fi
-  if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
-    die "ai-service.env sets both OPENROUTER_API_KEY and CLAUDE_API_KEY, so it is unclear which provider answers /api/explain and the service would refuse to start. Keep one and set the other to empty (KEY=), then re-run."
   fi
   if env_set MEMOIR_CEREBRAS_API_KEY && env_set MEMOIR_CLAUDE_API_KEY; then
     die "ai-service.env sets both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY, so it is unclear which provider answers /api/memoir/check and the service would refuse to start. Keep one and set the other to empty (KEY=) or comment it out, then re-run."
@@ -265,10 +263,14 @@ else
   if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe-verbatim runs on OpenRouter MAI-Transcribe-2"
   fi
-  if env_set OPENROUTER_API_KEY; then
+  if env_set OPENROUTER_API_KEY && env_set CLAUDE_API_KEY; then
+    say "[d] ai-service.env: OPENROUTER_API_KEY and CLAUDE_API_KEY are set — /api/explain uses the tray picker (starts on the Claude Platform)"
+  elif env_set OPENROUTER_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_API_KEY is set — /api/explain runs on OpenRouter"
+    say "[d] add CLAUDE_API_KEY by hand to enable the explain picker"
   elif env_set CLAUDE_API_KEY; then
     say "[d] ai-service.env: CLAUDE_API_KEY is set — /api/explain runs on the Claude Platform"
+    say "[d] add OPENROUTER_API_KEY by hand to enable the explain picker"
   else
     # Neither: ask for OpenRouter first, and an empty answer there means Claude.
     ask_key OPENROUTER_API_KEY "word explanations via OpenRouter. Leave it empty to use a Claude key instead" 1 ||

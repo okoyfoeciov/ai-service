@@ -10,10 +10,10 @@ import (
 )
 
 // Providers that can serve /api/transcribe/stream, /api/explain and /api/memoir/check.
-// /api/transcribe/stream has one active provider at a time; the tray picker lists
-// every configured one when there is more than one. The explain and Memoir
-// routes activate exactly one, picked by which environment variable is set
-// (Load refuses both).
+// /api/transcribe/stream and /api/explain may each have every configured
+// provider enabled at once; the tray picker selects the active one. Memoir
+// activates exactly one, picked by which environment variable is set (Load
+// refuses both).
 const (
 	ProviderAssemblyAI = "assemblyai"
 	ProviderDeepgram   = "deepgram"
@@ -34,8 +34,7 @@ type Config struct {
 	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2,
 	// which serves /api/transcribe-verbatim (daily-dictation). It is
 	// deliberately not OPENROUTER_API_KEY: that one belongs to /api/explain,
-	// whose one-key rule would otherwise collide, and the two routes may use
-	// different keys.
+	// and the two routes may use different keys.
 	OpenRouterTranscribeAPIKey string
 	// TranscribeProviders lists every configured provider in a fixed order. It
 	// has at least one entry after Load succeeds; the tray picker appears when
@@ -46,19 +45,19 @@ type Config struct {
 	// the tray picker.
 	TranscribeProvider string
 
-	// Word explanations (/api/explain) run on OpenRouter or on the Claude
-	// Platform (api.anthropic.com), whichever key is set. Setting both is a
-	// startup error: with two providers for one route it would be too easy to
-	// believe one model answers while the other does.
+	// Word explanations (/api/explain) run on Claude Platform or OpenRouter.
+	// Both may be configured at once; the tray picker then chooses which one
+	// answers. At least one key is needed for the feature, but a missing key
+	// only makes the handler report it at request time.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
-	// ExplainProvider is ProviderOpenRouter or ProviderClaude, or "" when
-	// neither key is set (the explain handler then reports the missing key).
+	// ExplainProviders lists every configured explain provider in a fixed
+	// order (Claude, OpenRouter). It is empty when neither key is set.
+	ExplainProviders []string
+	// ExplainProvider is the provider /api/explain starts on: the first entry
+	// of ExplainProviders, unless main restores a selection saved by the tray
+	// picker.
 	ExplainProvider string
-	// ExplainModel is the model id sent to the active provider: an OpenRouter id
-	// (google/gemini-3.8-flash) or a Claude id (claude-opus-5-5). When
-	// EXPLAIN_MODEL is unset it defaults per provider.
-	ExplainModel string
 	// ExplainReasoningTokens is the thinking budget, sent as OpenRouter's
 	// reasoning.max_tokens (Gemini's thinkingBudget). Thinking is never shown.
 	// Claude ignores it: its depth is ExplainEffort.
@@ -93,8 +92,8 @@ type Config struct {
 	MemoirEffort string
 }
 
-// Defaults for the model and effort when EXPLAIN_MODEL / MEMOIR_MODEL (and the
-// effort) are unset.
+// Defaults for the fixed explain models and the Memoir model/effort when
+// MEMOIR_MODEL (and the effort) are unset.
 const (
 	defaultOpenRouterModel = "google/gemini-3.8-flash"
 	defaultCerebrasModel   = "qwen-3.8-27b"
@@ -107,7 +106,7 @@ const (
 // piece instead of the whole server failing.
 //
 // The error is for a configuration that must not run at all: more than one
-// variable of the explain or Memoir route set, neither ASSEMBLYAI_API_KEY nor
+// variable of the Memoir route set, neither ASSEMBLYAI_API_KEY nor
 // DEEPGRAM_API_KEY set, a retired transcription variable still present
 // (PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY,
 // AZURE_SPEECH_ENDPOINT, GROQ_API_KEY, GROQ_MODEL), a Claude key with a model id
@@ -122,7 +121,6 @@ func Load() (Config, []string, error) {
 
 		OpenRouterAPIKey:       os.Getenv("OPENROUTER_API_KEY"),
 		ClaudeAPIKey:           os.Getenv("CLAUDE_API_KEY"),
-		ExplainModel:           os.Getenv("EXPLAIN_MODEL"),
 		ExplainReasoningTokens: envInt("EXPLAIN_REASONING_TOKENS", 1024),
 		ExplainEffort:          strings.ToLower(os.Getenv("EXPLAIN_EFFORT")),
 
@@ -222,25 +220,37 @@ func (c *Config) resolveTranscribe() error {
 	return nil
 }
 
-// resolveExplain picks the explain provider from the keys and settles the
-// model. An empty key counts as unset, because .env.example ships empty lines.
+// resolveExplain collects the /api/explain providers. Both keys may be set; the
+// tray picker then switches between them. An empty key counts as unset, because
+// .env.example ships empty lines. Models are fixed per provider.
 func (c *Config) resolveExplain() error {
-	switch {
-	case c.OpenRouterAPIKey != "" && c.ClaudeAPIKey != "":
-		return fmt.Errorf("both OPENROUTER_API_KEY and CLAUDE_API_KEY are set, so it is unclear which " +
-			"provider answers /api/explain. Keep one, and set the other to empty (KEY=) in ai-service.env")
-	case c.ClaudeAPIKey != "":
-		c.ExplainProvider = ProviderClaude
-		return settleClaude(&c.ExplainModel, &c.ExplainEffort, "CLAUDE_API_KEY",
-			"EXPLAIN_MODEL", "EXPLAIN_EFFORT",
-			"An OpenRouter id such as google/gemini-3.8-flash only works with OPENROUTER_API_KEY")
-	case c.OpenRouterAPIKey != "":
-		c.ExplainProvider = ProviderOpenRouter
-		if c.ExplainModel == "" {
-			c.ExplainModel = defaultOpenRouterModel
+	if c.ClaudeAPIKey != "" {
+		c.ExplainProviders = append(c.ExplainProviders, ProviderClaude)
+	}
+	if c.OpenRouterAPIKey != "" {
+		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter)
+	}
+	if len(c.ExplainProviders) == 0 {
+		return nil
+	}
+	c.ExplainProvider = c.ExplainProviders[0]
+	if c.ClaudeAPIKey != "" {
+		if err := settleEffort(&c.ExplainEffort, "EXPLAIN_EFFORT"); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// ExplainModelFor returns the fixed model id for provider.
+func (c Config) ExplainModelFor(provider string) string {
+	switch provider {
+	case ProviderClaude:
+		return defaultClaudeModel
+	case ProviderOpenRouter:
+		return defaultOpenRouterModel
+	}
+	return ""
 }
 
 // settleClaude applies the defaults and checks shared by the two Claude routes.
@@ -255,6 +265,11 @@ func settleClaude(model, effort *string, keyVar, modelVar, effortVar, otherProvi
 			"(they start with \"claude-\", for example %s). %s. Delete the %s "+
 			"line to use the default", keyVar, modelVar, *model, defaultClaudeModel, otherProvider, modelVar)
 	}
+	return settleEffort(effort, effortVar)
+}
+
+// settleEffort defaults and validates a Claude effort level.
+func settleEffort(effort *string, effortVar string) error {
 	if *effort == "" {
 		*effort = defaultClaudeEffort
 	}
@@ -321,13 +336,34 @@ func transcribeProviderName(provider string) string {
 
 // ExplainRoute is one line saying where /api/explain goes, for the startup log.
 func (c Config) ExplainRoute() string {
-	switch c.ExplainProvider {
-	case ProviderClaude:
-		return fmt.Sprintf("Claude Platform, model %s, effort %s", c.ExplainModel, c.ExplainEffort)
-	case ProviderOpenRouter:
-		return fmt.Sprintf("OpenRouter, model %s, %d thinking tokens", c.ExplainModel, c.ExplainReasoningTokens)
+	var parts []string
+	for _, p := range c.ExplainProviders {
+		switch p {
+		case ProviderClaude:
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.ExplainModelFor(p), c.ExplainEffort))
+		case ProviderOpenRouter:
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, %d thinking tokens", c.ExplainModelFor(p), c.ExplainReasoningTokens))
+		}
 	}
-	return "none (neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set)"
+	switch len(parts) {
+	case 0:
+		return "none (neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set)"
+	case 1:
+		return parts[0]
+	}
+	return strings.Join(parts, " and ") +
+		fmt.Sprintf(" (%d providers; tray picker, starting on %s)", len(parts), explainProviderName(c.ExplainProvider))
+}
+
+// explainProviderName is the short human name used in the startup log.
+func explainProviderName(provider string) string {
+	switch provider {
+	case ProviderClaude:
+		return "Claude Platform"
+	case ProviderOpenRouter:
+		return "OpenRouter"
+	}
+	return provider
 }
 
 // MemoirRoute is one line saying where /api/memoir/check goes, for the startup log.

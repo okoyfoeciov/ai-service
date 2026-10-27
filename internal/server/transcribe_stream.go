@@ -55,6 +55,13 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Flush keeps SSE handlers streaming when they write through this wrapper.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (w *statusWriter) Status() int {
 	if w.status == 0 {
 		return http.StatusOK

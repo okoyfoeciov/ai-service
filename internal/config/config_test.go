@@ -27,7 +27,10 @@ func clearTranscribeEnv(t *testing.T) {
 // machine's own environment cannot leak into a case.
 func clearExplainEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"OPENROUTER_API_KEY", "CLAUDE_API_KEY", "EXPLAIN_MODEL", "EXPLAIN_EFFORT", "EXPLAIN_REASONING_TOKENS"} {
+	for _, k := range []string{
+		"OPENROUTER_API_KEY", "CLAUDE_API_KEY",
+		"EXPLAIN_EFFORT", "EXPLAIN_REASONING_TOKENS",
+	} {
 		t.Setenv(k, "")
 	}
 }
@@ -41,34 +44,24 @@ func clearMemoirEnv(t *testing.T) {
 	}
 }
 
-func TestLoadRefusesBothExplainKeys(t *testing.T) {
-	clearTranscribeEnv(t)
-	clearExplainEnv(t)
-	clearMemoirEnv(t)
-	t.Setenv("OPENROUTER_API_KEY", "or")
-	t.Setenv("CLAUDE_API_KEY", "cl")
-	_, _, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") || !strings.Contains(err.Error(), "CLAUDE_API_KEY") {
-		t.Fatalf("err %v, want one naming both keys", err)
-	}
-}
-
 func TestLoadExplainProvider(t *testing.T) {
 	cases := []struct {
-		name                       string
-		env                        map[string]string
-		wantProvider, wantModel    string
-		wantEffort                 string
-		wantMissingExplain, wantOK bool
+		name               string
+		env                map[string]string
+		wantProviders      []string
+		wantProvider       string
+		wantModel          string
+		wantEffort         string
+		wantMissingExplain bool
+		wantOK             bool
 	}{
-		{"neither key", nil, "", "", "", true, true},
-		{"openrouter default model", map[string]string{"OPENROUTER_API_KEY": "or"}, ProviderOpenRouter, "google/gemini-3.8-flash", "", false, true},
-		{"openrouter custom model", map[string]string{"OPENROUTER_API_KEY": "or", "EXPLAIN_MODEL": "anthropic/claude-opus-5-5"}, ProviderOpenRouter, "anthropic/claude-opus-5-5", "", false, true},
-		{"claude defaults", map[string]string{"CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
-		{"claude custom", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_MODEL": "claude-sonnet-5-5", "EXPLAIN_EFFORT": "High"}, ProviderClaude, "claude-sonnet-5-5", "high", false, true},
-		{"claude with an openrouter model id", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_MODEL": "google/gemini-3.8-flash"}, "", "", "", false, false},
-		{"claude with anthropic/ prefix", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_MODEL": "anthropic/claude-opus-5-5"}, "", "", "", false, false},
-		{"claude with bad effort", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "turbo"}, "", "", "", false, false},
+		{"neither key", nil, nil, "", "", "", true, true},
+		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", "", false, true},
+		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
+		{"claude high effort", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "High"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", "high", false, true},
+		{"claude bad effort", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "turbo"}, nil, "", "", "", false, false},
+		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
+		{"both bad effort", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "turbo"}, nil, "", "", "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,8 +78,19 @@ func TestLoadExplainProvider(t *testing.T) {
 			if !tc.wantOK {
 				return
 			}
-			if c.ExplainProvider != tc.wantProvider || c.ExplainModel != tc.wantModel || c.ExplainEffort != tc.wantEffort {
-				t.Errorf("got %q %q %q, want %q %q %q", c.ExplainProvider, c.ExplainModel, c.ExplainEffort, tc.wantProvider, tc.wantModel, tc.wantEffort)
+			if len(c.ExplainProviders) != len(tc.wantProviders) {
+				t.Fatalf("providers %v, want %v", c.ExplainProviders, tc.wantProviders)
+			}
+			for i := range tc.wantProviders {
+				if c.ExplainProviders[i] != tc.wantProviders[i] {
+					t.Fatalf("providers %v, want %v", c.ExplainProviders, tc.wantProviders)
+				}
+			}
+			if c.ExplainProvider != tc.wantProvider || c.ExplainModelFor(c.ExplainProvider) != tc.wantModel ||
+				c.ExplainEffort != tc.wantEffort {
+				t.Errorf("got provider=%q model=%q effort=%q; want %q %q %q",
+					c.ExplainProvider, c.ExplainModelFor(c.ExplainProvider), c.ExplainEffort,
+					tc.wantProvider, tc.wantModel, tc.wantEffort)
 			}
 			gotMissing := false
 			for _, m := range missing {
@@ -112,6 +116,18 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 	}
 	if got := c.ExplainRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") || !strings.Contains(got, "medium") {
 		t.Errorf("route %q", got)
+	}
+
+	t.Setenv("OPENROUTER_API_KEY", "or")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.ExplainRoute()
+	for _, want := range []string{"Claude", "OpenRouter", "2 providers", "tray picker", "starting on Claude Platform"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("route %q missing %q", got, want)
+		}
 	}
 }
 
