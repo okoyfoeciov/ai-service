@@ -641,7 +641,9 @@ func TestTranscribeStreamAssemblyAI(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"streamed transcript"}`))
+		_, _ = w.Write([]byte(`{"text":"streamed transcript","words":[
+			{"text":"streamed","start":1200,"end":1500},
+			{"text":"transcript","start":1510,"end":1900}]}`))
 	}))
 	defer srv.Close()
 	assemblyAILiveURL = srv.URL
@@ -662,12 +664,21 @@ func TestTranscribeStreamAssemblyAI(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Text string `json:"text"`
+		Text        string `json:"text"`
+		FirstWordMS *int   `json:"first_word_ms"`
+		LastWordMS  *int   `json:"last_word_ms"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Text != "streamed transcript" {
 		t.Fatalf("got %+v, err %v", out, err)
 	}
-	if parts != 2 || !strings.Contains(gotConfig, `"sample_rate":16000`) || len(gotAudio) == 0 {
+	if out.FirstWordMS == nil || *out.FirstWordMS != 1200 {
+		t.Errorf("first_word_ms = %v, want 1200", out.FirstWordMS)
+	}
+	if out.LastWordMS == nil || *out.LastWordMS != 1900 {
+		t.Errorf("last_word_ms = %v, want 1900", out.LastWordMS)
+	}
+	if parts != 2 || !strings.Contains(gotConfig, `"sample_rate":16000`) ||
+		!strings.Contains(gotConfig, `"timestamps":true`) || len(gotAudio) == 0 {
 		t.Errorf("parts=%d config=%q audio=%d bytes", parts, gotConfig, len(gotAudio))
 	}
 }

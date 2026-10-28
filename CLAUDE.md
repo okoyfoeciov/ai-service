@@ -18,7 +18,10 @@ transcription keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
 `/api/explain`'s). Both streaming providers need `ffmpeg` on `PATH`:
 `/api/transcribe/stream` decodes MediaRecorder WebM/Opus to 16 kHz PCM, then
-sends it to AssemblyAI's `/v1/transcribe/live` or Deepgram's
+sends it to AssemblyAI's `/v1/transcribe/live` (asking for word timestamps and
+returning `first_word_ms` / `last_word_ms`, which comart trims the microphone
+clip's lead-in and lead-out to)
+or Deepgram's
 `wss://api.deepgram.com/v1/listen` (`model=nova-3`, `language=en`, which is
 Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
 `/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body

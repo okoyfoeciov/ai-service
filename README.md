@@ -29,8 +29,8 @@ it.
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`. |
-| `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` or `{"error": …}`. |
+| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. |
+| `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` (and `first_word_ms` when it is known) or `{"error": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -214,7 +214,12 @@ universal-3-5-pro`. The clients send their MediaRecorder WebM/MP4 stream to
 to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
 part second, and closes the AssemblyAI request when the client body ends. That
 close is the finish signal; AssemblyAI returns one final JSON transcript, not
-per-chunk results. The browser clients reach this route through
+per-chunk results. The config part asks for `timestamps: true`, so each word
+carries millisecond `start`/`end`; `first_word_ms` and
+`last_word_ms` are the first aligned word's start and the last aligned word's
+end, which comart uses to trim the silence before and after speech. Timestamps are exact
+or absent (AssemblyAI never estimates one), so the field is omitted when no word
+could be aligned; they add roughly 0.1–0.3 s to the post-stop wait. The browser clients reach this route through
 `/api/transcribe/ws`: Chrome blocks a streaming `fetch` body to loopback from an
 extension page, while a WebSocket to the same host works. The WS handler only
 carries bytes; the decoding is the stream route's.

@@ -292,7 +292,12 @@ func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *
 			err = e
 			return
 		}
-		if _, e = fmt.Fprintf(part, `{"sample_rate":%d,"channels":%d}`, streamSampleRate, streamChannels); e != nil {
+		// timestamps: each word carries start/end in milliseconds. comart's
+		// microphone card trims the leading silence to the first word's start,
+		// which is the only honest T1 in a room with a fan and a clock in it
+		// (measured, 2026-10-28: energy-only onset detection anchored on the
+		// noise in 2 of 8 real recordings and left 2.4s and 4.9s of silence).
+		if _, e = fmt.Fprintf(part, `{"sample_rate":%d,"channels":%d,"timestamps":true}`, streamSampleRate, streamChannels); e != nil {
 			err = e
 			return
 		}
@@ -371,7 +376,14 @@ func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *
 		jsonErrorDetail(w, "assemblyai returned unparseable JSON", http.StatusBadGateway, string(raw))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(out.Text)})
+	answer := map[string]any{"text": strings.TrimSpace(out.Text)}
+	if ms, ok := out.firstWordMS(); ok {
+		answer["first_word_ms"] = ms
+	}
+	if ms, ok := out.lastWordMS(); ok {
+		answer["last_word_ms"] = ms
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // stderrTail keeps an ffmpeg error readable; the full stderr can be long.
