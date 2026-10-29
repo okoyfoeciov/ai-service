@@ -26,7 +26,7 @@ func TestLinuxMenuHasTwoSections(t *testing.T) {
 	}
 	wantLabels := []string{
 		"Transcribe with", "AssemblyAI Universal-3.5 Pro", "Deepgram Nova-3",
-		"Explain with", "Claude Platform", "OpenRouter",
+		"Explain with", "Claude Platform Opus 5.5", "OpenRouter Gemini 3.8 Flash",
 	}
 	for i, want := range wantLabels {
 		child := root.V2[i].Value().(layout)

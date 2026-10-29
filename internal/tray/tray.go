@@ -87,6 +87,8 @@ func pickerSections(c Controller) []section {
 	return sections
 }
 
+// providerLabel is the menu text for one entry: the provider plus the model it
+// will use, so the picker says which model answers, not just which company.
 func providerLabel(kind, provider string) string {
 	switch kind {
 	case PickTranscribe:
@@ -99,9 +101,9 @@ func providerLabel(kind, provider string) string {
 	case PickExplain:
 		switch provider {
 		case config.ProviderClaude:
-			return "Claude Platform"
+			return "Claude Platform Opus 5.5"
 		case config.ProviderOpenRouter:
-			return "OpenRouter"
+			return "OpenRouter Gemini 3.8 Flash"
 		}
 	}
 	return provider

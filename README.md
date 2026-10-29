@@ -335,7 +335,7 @@ provider. It appears when either `/api/transcribe/stream` or `/api/explain` has
 at least two providers:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform and OpenRouter.
+- **Explain with** — Claude Platform Opus 5.5 and OpenRouter Gemini 3.8 Flash.
 
 With only one provider on both routes there is no icon. The tray lives in the
 macOS menu bar or the Linux status area (GNOME's AppIndicator extension, KDE,

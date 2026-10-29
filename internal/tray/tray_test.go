@@ -72,8 +72,8 @@ func TestProviderLabels(t *testing.T) {
 	cases := []struct{ kind, provider, want string }{
 		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.5 Pro"},
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
-		{PickExplain, config.ProviderClaude, "Claude Platform"},
-		{PickExplain, config.ProviderOpenRouter, "OpenRouter"},
+		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
+		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {
