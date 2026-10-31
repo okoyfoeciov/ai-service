@@ -35,7 +35,7 @@ type Server struct {
 	explainProvider  atomic.Value // string
 	memoirLLM        llm.Streamer
 
-	httpShort      *http.Client // streaming transcription and the WS transport (2 min)
+	httpShort      *http.Client // streaming transcription and the WS transport (10 min backstop)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
 
 	// transcribeProviders is every provider config.Load found, and
@@ -65,9 +65,14 @@ func New(cfg config.Config, st *store.Store) *Server {
 	// the request context cancels it.
 	hc := &http.Client{}
 	s := &Server{
-		cfg:                 cfg,
-		mw:                  mw.New(st),
-		httpShort:           &http.Client{Timeout: 120 * time.Second},
+		cfg: cfg,
+		mw:  mw.New(st),
+		// The mic cap is two minutes and the Sync provider's hard limit is 120s.
+		// This client must outlive the whole recording PLUS the provider's final
+		// answer, so the old 120s timeout would cut a two-minute clip at the
+		// finish line. The handlers' own contexts are the real deadline; this is
+		// only a hung-connection backstop.
+		httpShort:           &http.Client{Timeout: 10 * time.Minute},
 		httpOpenRouter:      &http.Client{Timeout: 10 * time.Minute},
 		transcribeProviders: append([]string(nil), cfg.TranscribeProviders...),
 		explainProviders:    append([]string(nil), cfg.ExplainProviders...),

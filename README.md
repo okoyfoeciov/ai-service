@@ -226,9 +226,12 @@ carries bytes; the decoding is the stream route's.
 
 Measured on this host with a warm connection, the post-stop wait was ~0.35 s for
 a 6 s clip and ~0.9 s for a 30 s clip. Transcripts were identical in 24 paired
-runs on one clip. Live audio is capped at 120 s by AssemblyAI (the mic clients
-cap at 60 s). The live request has a 300 s deadline; `/api/transcribe/stream`
-caps the uploaded body at 25 MB.
+runs on one clip. Live audio is capped at 120 s by AssemblyAI; the mic clients
+stop at 119 s so the 200ms cap poll and encoder chunking cannot push a clip
+over the provider's hard edge. The live request has a 300 s deadline, but the
+HTTP client that carries it has a 10-minute backstop — a two-minute recording
+plus the final answer must not be cut off by the old 120 s client timeout.
+`/api/transcribe/stream` caps the uploaded body at 25 MB.
 
 **Deepgram streaming.** `DEEPGRAM_API_KEY` uses Deepgram's live WebSocket at
 `wss://api.deepgram.com/v1/listen` with `model=nova-3` and `language=en`.
@@ -403,7 +406,7 @@ Request limits:
 - `/api/memoir/check`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe/stream`: 25 MiB streamed audio (413 `recording too long`).
-  A 60 s MediaRecorder clip is well under 1 MiB.
+  A 60 s MediaRecorder clip is well under 1 MiB; a two-minute clip is roughly 2 MiB.
 - `/api/transcribe-verbatim`: 25 MiB audio (413 `audio too long`). This is
   OpenRouter's cap for the Azure-backed MAI-Transcribe-2 endpoint; base64 adds
   about a third on the wire.
