@@ -23,6 +23,7 @@ func TestBuildAskCarriesQuestionSelectionAndContext(t *testing.T) {
 		"The user is not a native English speaker.",
 		"Always answer in English",
 		"Do not switch to Spanish, Japanese, or any other language.",
+		"When the answer is naturally a list, use a Markdown numbered or bulleted list with one item per line.",
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("ask prompt missing %q", want)
