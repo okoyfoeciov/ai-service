@@ -95,7 +95,7 @@ func TestLoopbackGuard(t *testing.T) {
 // handler that would spend an account.
 func TestLoopbackGuardCoversPosts(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"/api/transcribe/stream", "/api/transcribe-verbatim", "/api/explain", "/api/memoir/check"} {
+	for _, path := range []string{"/api/transcribe/stream", "/api/transcribe-verbatim", "/api/explain", "/api/ask", "/api/memoir/check"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Origin", "https://evil.example")
@@ -257,6 +257,19 @@ func (f fakeModel) RoundTrip(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+// captureModel answers like fakeModel and keeps the request body, so a test
+// can read the prompt the handler actually assembled.
+type captureModel struct {
+	reply string
+	body  atomic.Value
+}
+
+func (m *captureModel) RoundTrip(req *http.Request) (*http.Response, error) {
+	b, _ := io.ReadAll(req.Body)
+	m.body.Store(string(b))
+	return fakeModel{reply: m.reply}.RoundTrip(req)
+}
+
 // testLLM builds a model client over transport.
 func testLLM(transport http.RoundTripper) *llm.Client {
 	return llm.New(llm.Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", Model: "test"},
@@ -356,6 +369,43 @@ func TestExplainPrefetchStopsOnCancel(t *testing.T) {
 	}
 }
 
+// /api/ask streams the model's answer and puts the spoken question plus the
+// picked passage into the prompt. It must not reuse /api/explain's vocabulary
+// skeleton: the question is the instruction, the page is data.
+func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
+	m := &captureModel{reply: "It means the officer formally accuses the suspect."}
+	s := &Server{
+		cfg:              config.Config{ExplainProvider: config.ProviderOpenRouter},
+		explainProviders: []string{config.ProviderOpenRouter},
+		explainLLMs: map[string]llm.Streamer{
+			config.ProviderOpenRouter: testLLM(m),
+		},
+	}
+	body := `{"question":"What does charge mean here?","items":[{"phrase":"charge","words":["charge"]}],"contexts":[{"phrase":"charge","text":"The officer will charge the suspect at noon."}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `event: chunk`) || !strings.Contains(out, "formally accuses") {
+		t.Fatalf("answer not streamed: %q", out)
+	}
+	if !strings.HasSuffix(out, "event: done\ndata: {}\n\n") {
+		t.Fatalf("stream does not end with done: %q", out)
+	}
+	promptReq, _ := m.body.Load().(string)
+	for _, want := range []string{"What does charge mean here?", "The officer will charge the suspect at noon."} {
+		if !strings.Contains(promptReq, want) {
+			t.Errorf("model request missing %q", want)
+		}
+	}
+}
+
 // A web page can POST cross-site without a preflight only with text/plain or a
 // form type, and a sandboxed iframe's Origin is "null", which the guard lets
 // through. The billed routes therefore demand the type the clients really send.
@@ -364,6 +414,8 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 	for _, tc := range []struct{ path, ctype string }{
 		{"/api/explain", "text/plain;charset=UTF-8"},
 		{"/api/explain", ""},
+		{"/api/ask", "text/plain;charset=UTF-8"},
+		{"/api/ask", ""},
 		{"/api/memoir/check", "application/x-www-form-urlencoded"},
 		{"/api/transcribe/stream", "text/plain"},
 		{"/api/transcribe/stream", ""},

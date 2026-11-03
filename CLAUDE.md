@@ -60,8 +60,9 @@ pronunciation lookups and duration; tray switches log
   served copy of a client would have to be kept in step with the real one by
   hand. The tray's two icons are embedded in the binary and never served over
   HTTP, which is not an exception to this rule.
-- **Keep the comart client API stable.** comart uses its seven routes with no
-  CORS and no auth. Memoir's `/api/memoir/check`, daily-dictation's
+- **Keep the comart client API stable.** comart uses its eight routes with no
+  CORS and no auth. Its `/api/ask` answers a spoken question over passages the
+  reader picked; Memoir's `/api/memoir/check`, daily-dictation's
   `/api/transcribe-verbatim` and the clients' streaming transcription routes
   (`POST /api/transcribe/stream` and its `GET /api/transcribe/ws` transport;
   AssemblyAI live, buffered for others) are the deliberate additions. Change a

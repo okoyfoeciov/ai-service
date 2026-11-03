@@ -180,6 +180,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleTranscribeVerbatim(w, r)
 	case p == "/api/explain" && r.Method == http.MethodPost:
 		s.handleExplain(w, r)
+	case p == "/api/ask" && r.Method == http.MethodPost:
+		s.handleAsk(w, r)
 	case p == "/api/pron" && r.Method == http.MethodGet:
 		s.handlePron(w, r)
 	case p == "/api/credits" && r.Method == http.MethodGet:
@@ -264,7 +266,8 @@ func writeRoot(w http.ResponseWriter) {
 		"Chrome extension, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 
-// maxJSONBody caps the JSON request bodies of /api/explain and /api/memoir/check.
+// maxJSONBody caps the JSON request bodies of /api/explain, /api/ask and
+// /api/memoir/check.
 const maxJSONBody = 5 * 1024 * 1024
 
 // writeJSON serialises v as JSON with Cache-Control: no-store.

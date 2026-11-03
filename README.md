@@ -15,11 +15,11 @@ answers one line of plain text and nothing else. Do not add a template, a
 static directory or an `embed` back: a served copy of a client would have to be
 kept in step with the real one by hand.
 
-The comart API is deliberately stable: the extension was built against it as it
-is, with no CORS, no auth and no route of its own added since. Memoir's
-`/api/memoir/check` and daily-dictation's `/api/transcribe-verbatim` are the
-deliberate additions. Change a route only together with the client that calls
-it.
+The comart API is deliberately stable: no CORS, no auth, and only the routes
+the clients actually call. `/api/ask` is comart's one recent addition (a spoken
+question over picked page passages); Memoir's `/api/memoir/check` and
+daily-dictation's `/api/transcribe-verbatim` are the other deliberate
+additions. Change a route only together with the client that calls it.
 
 ## Routes
 
@@ -27,6 +27,7 @@ it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
+| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}]}`. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch. It uses the selected explain provider/model. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
 | `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. |
@@ -391,7 +392,7 @@ The comart extension (`chrome-extension://` pages) and Cairn (Electron,
 The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
-- `application/json` on `/api/explain` and `/api/memoir/check`;
+- `application/json` on `/api/explain`, `/api/ask` and `/api/memoir/check`;
 - `audio/*` (or `video/*`) on `/api/transcribe/stream` and as the `type` query on
   `/api/transcribe/ws`;
 - `multipart/form-data` on `/api/transcribe-verbatim`.
@@ -402,7 +403,7 @@ guard. The Content-Type rule closes that gap.
 
 Request limits:
 
-- `/api/explain`: 5 MiB JSON body (413 `Request too large.`).
+- `/api/explain` and `/api/ask`: 5 MiB JSON body (413 `Request too large.`).
 - `/api/memoir/check`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe/stream`: 25 MiB streamed audio (413 `recording too long`).
