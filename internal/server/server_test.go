@@ -375,10 +375,10 @@ func TestExplainPrefetchStopsOnCancel(t *testing.T) {
 func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 	m := &captureModel{reply: "It means the officer formally accuses the suspect."}
 	s := &Server{
-		cfg:              config.Config{ExplainProvider: config.ProviderOpenRouter},
-		explainProviders: []string{config.ProviderOpenRouter},
-		explainLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouter: testLLM(m),
+		cfg:          config.Config{AskProvider: config.ProviderCerebras},
+		askProviders: []string{config.ProviderCerebras},
+		askLLMs: map[string]llm.Streamer{
+			config.ProviderCerebras: testLLM(m),
 		},
 	}
 	body := `{"question":"What does charge mean here?","items":[{"phrase":"charge","words":["charge"]}],"contexts":[{"phrase":"charge","text":"The officer will charge the suspect at noon."}]}`
@@ -508,12 +508,10 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 
 func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	s := New(config.Config{
-		OpenRouterAPIKey:       "or",
-		ClaudeAPIKey:           "cl",
-		ExplainProviders:       []string{config.ProviderClaude, config.ProviderOpenRouter},
-		ExplainProvider:        config.ProviderClaude,
-		ExplainEffort:          "medium",
-		ExplainReasoningTokens: 1024,
+		OpenRouterAPIKey: "or",
+		ClaudeAPIKey:     "cl",
+		ExplainProviders: []string{config.ProviderClaude, config.ProviderOpenRouter},
+		ExplainProvider:  config.ProviderClaude,
 	}, nil)
 
 	if got := s.ExplainProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter {
@@ -539,6 +537,37 @@ func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	}
 }
 
+func TestNewBuildsAskClientsPerProvider(t *testing.T) {
+	s := New(config.Config{
+		AskClaudeAPIKey:   "cl",
+		AskCerebrasAPIKey: "ce",
+		AskProviders:      []string{config.ProviderClaude, config.ProviderCerebras},
+		AskProvider:       config.ProviderClaude,
+	}, nil)
+
+	if got := s.AskProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderCerebras {
+		t.Fatalf("providers %v", got)
+	}
+	if got := s.AskProvider(); got != config.ProviderClaude {
+		t.Fatalf("provider %q, want %q", got, config.ProviderClaude)
+	}
+	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaude]); got != "*llm.Claude" {
+		t.Errorf("claude client is %s", got)
+	}
+	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderCerebras]); got != "*llm.Client" {
+		t.Errorf("cerebras client is %s", got)
+	}
+	if !s.SetAskProvider(config.ProviderCerebras) {
+		t.Error("could not select the configured Cerebras provider")
+	}
+	if got := s.AskProvider(); got != config.ProviderCerebras {
+		t.Errorf("provider %q after switch, want %q", got, config.ProviderCerebras)
+	}
+	if s.SetAskProvider("not-configured") {
+		t.Error("selected a provider that has no key")
+	}
+}
+
 // New builds Memoir's client from the provider config.Load picked, and leaves
 // it nil (so the handlers report the missing key) when neither key is set.
 func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
@@ -549,8 +578,8 @@ func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 		wantTyp string
 	}{
 		{"no key", config.Config{}, true, ""},
-		{"cerebras", config.Config{MemoirProvider: config.ProviderCerebras, MemoirCerebrasAPIKey: "k", MemoirModel: "qwen-3.8-27b", MemoirReasoningEffort: "medium"}, false, "*llm.Client"},
-		{"claude", config.Config{MemoirProvider: config.ProviderClaude, MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5", MemoirEffort: "medium"}, false, "*llm.Claude"},
+		{"cerebras", config.Config{MemoirProvider: config.ProviderCerebras, MemoirCerebrasAPIKey: "k", MemoirModel: "qwen-3.8-27b"}, false, "*llm.Client"},
+		{"claude", config.Config{MemoirProvider: config.ProviderClaude, MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5"}, false, "*llm.Claude"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

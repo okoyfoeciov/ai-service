@@ -9,21 +9,57 @@ import (
 	"strings"
 	"time"
 
+	"ai-service/internal/llm"
 	"ai-service/internal/prompt"
 )
+
+// AskProviders returns the configured ask providers, in the order the tray
+// menu shows them. The slice is a copy.
+func (s *Server) AskProviders() []string {
+	return append([]string(nil), s.askProviders...)
+}
+
+// AskProvider returns the provider /api/ask is using now.
+func (s *Server) AskProvider() string {
+	if v, ok := s.askProvider.Load().(string); ok && v != "" {
+		return v
+	}
+	// A Server built by hand in a test has no atomic value; fall back to the
+	// configuration it was given.
+	return s.cfg.AskProvider
+}
+
+// SetAskProvider switches /api/ask to provider. It reports false for a
+// provider that is not configured, so a stale saved selection or a bogus menu
+// click cannot route a question to a service without a key.
+func (s *Server) SetAskProvider(provider string) bool {
+	for _, enabled := range s.askProviders {
+		if provider == enabled {
+			s.askProvider.Store(provider)
+			return true
+		}
+	}
+	return false
+}
+
+// askStreamer is the client for the currently selected provider.
+func (s *Server) askStreamer() llm.Streamer {
+	return s.askLLMs[s.AskProvider()]
+}
 
 // handleAsk streams the answer to a spoken question about text the reader
 // picked during the recording. It is deliberately not /api/explain: there is
 // no vocabulary target and no Merriam-Webster work, only the question, the
-// picked phrases and the surrounding passages.
+// picked phrases and the surrounding passages. It also has its own provider
+// selection, so an answer can run on a different model from an explanation.
 //
 // The SSE contract is /api/explain's: `chunk` events carry answer fragments,
 // an optional `error` event carries a user-readable message, and `done` is
 // always the last event. HTTP status stays 200 after the stream opens.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	provider := s.ExplainProvider()
-	model := s.cfg.ExplainModelFor(provider)
+	provider := s.AskProvider()
+	model := s.cfg.AskModelFor(provider)
 	sw := &statusWriter{ResponseWriter: w}
 	w = sw
 	outcome := "ok"
@@ -96,10 +132,10 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	defer send("done", map[string]any{})
 
 	ctx := r.Context()
-	streamer := s.explainStreamer()
+	streamer := s.askStreamer()
 	if streamer == nil {
 		outcome = "no_provider"
-		errMsg = "Neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set."
+		errMsg = "Neither ASK_CLAUDE_API_KEY nor ASK_CEREBRAS_API_KEY is set."
 		send("error", map[string]any{"message": errMsg})
 		return
 	}

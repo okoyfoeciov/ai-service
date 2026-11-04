@@ -11,10 +11,12 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
-use Claude Platform or OpenRouter, both at once with a tray picker;
+use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform or
+Cerebras, each at once with its own tray picker;
 `/api/memoir/check` still has two and refuses both. Every Memoir variable
-starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the
-transcription keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
+starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
+keys are `ASK_CLAUDE_API_KEY` and `ASK_CEREBRAS_API_KEY`; the transcription
+keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
 `/api/explain`'s). Both streaming providers need `ffmpeg` on `PATH`:
 `/api/transcribe/stream` decodes MediaRecorder WebM/Opus to 16 kHz PCM, then
@@ -26,9 +28,9 @@ or Deepgram's
 Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
 `/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body
 to loopback from an extension page, so the WS handler forwards MediaRecorder
-frames to the stream route over loopback. The tray (`internal/tray`) has a
-**Transcribe with** section and an **Explain with** section, each shown only
-when that route has more than one configured provider. Linux's tray is a small
+frames to the stream route over loopback. The tray (`internal/tray`) has
+**Transcribe with**, **Explain with** and **Ask with** sections, each shown
+only when that route has more than one configured provider. Linux's tray is a small
 in-repo D-Bus backend that intentionally omits `Activate`, because GNOME then
 opens the menu on the first click instead of waiting out the double-click
 interval; macOS links Cocoa, so its build needs cgo.
@@ -37,11 +39,14 @@ To add a transcribe provider later, extend `resolveTranscribe` with its key,
 add its `providerLabel` in `internal/tray`, and add a live case to
 `handleTranscribeStream` in `internal/server/transcribe_stream.go`. There is no
 batch fallback: a provider must implement streaming. To add an explain provider,
-extend `resolveExplain` and `newExplainLLMs` and add its `providerLabel`.
+extend `resolveExplain` and `newExplainLLMs` and add its `providerLabel`; the
+ask route follows the same pattern in `resolveAsk` and `newAskLLMs`.
 
 Every `/api/explain` request logs provider, model, status, outcome, item count,
-pronunciation lookups and duration; tray switches log
-`transcribe provider: … (tray)` / `explain provider: … (tray)`.
+pronunciation lookups and duration; `/api/ask` logs provider, model, status,
+outcome, item and context counts. Tray switches log
+`transcribe provider: … (tray)` / `explain provider: … (tray)` /
+`ask provider: … (tray)`.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -50,8 +55,8 @@ pronunciation lookups and duration; tray switches log
   extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
   (`~/daily-dictation`). The one native UI is the provider pickers, kept for
-  future transcribe and explain providers and shown only when a route has more
-  than one configured (`internal/tray`).
+  future transcribe, explain and ask providers and shown only when a route has
+  more than one configured (`internal/tray`).
 - **`GET /` is one line of `text/plain`**, on purpose. `install.sh`'s health
   check and comart's README use `http://127.0.0.1:8770/`, and a 404 at the
   root of a host that is plainly answering reads as a broken deploy. Keep it one
@@ -84,9 +89,10 @@ pronunciation lookups and duration; tray switches log
   no auth by design. The Host/Origin guard (`loopbackOnly` in
   `internal/server/server.go`) and the Content-Type rule on the billed routes
   keep web pages out. Do not weaken them.
-- On Cerebras, keep Memoir's reasoning on (`MEMOIR_REASONING_EFFORT` not
-  `none`): without it Qwen breaks the JSON contract and edits text it must
-  leave alone.
+- Models and thinking depth are fixed in `internal/config`, not environment
+  settings: Claude effort `medium`, OpenRouter 1024 thinking tokens, and
+  Cerebras `reasoning_effort: medium`. Keep Cerebras reasoning on: without it
+  Qwen breaks Memoir's JSON contract and edits text it must leave alone.
 - `internal/prompt/part1.txt`, `part2.txt` and `internal/memoir/check.txt` are
   product prompts. `TestPromptParity` pins `check.txt` by hash. Do not edit it
   in passing.

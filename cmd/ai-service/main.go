@@ -29,6 +29,7 @@ import (
 const (
 	savedTranscribeProviderKey = "transcribe:provider"
 	savedExplainProviderKey    = "explain:provider"
+	savedAskProviderKey        = "ask:provider"
 )
 
 func main() {
@@ -74,7 +75,8 @@ func main() {
 	// at a service that is no longer configured.
 	multiTranscribe := len(cfg.TranscribeProviders) > 1
 	multiExplain := len(cfg.ExplainProviders) > 1
-	picker := multiTranscribe || multiExplain
+	multiAsk := len(cfg.AskProviders) > 1
+	picker := multiTranscribe || multiExplain || multiAsk
 	if multiTranscribe {
 		if saved, ok := st.Get(savedTranscribeProviderKey); ok && app.SetTranscribeProvider(saved) {
 			cfg.TranscribeProvider = saved
@@ -85,6 +87,12 @@ func main() {
 		if saved, ok := st.Get(savedExplainProviderKey); ok && app.SetExplainProvider(saved) {
 			cfg.ExplainProvider = saved
 			log.Printf("explain provider: %s (saved by the tray picker)", saved)
+		}
+	}
+	if multiAsk {
+		if saved, ok := st.Get(savedAskProviderKey); ok && app.SetAskProvider(saved) {
+			cfg.AskProvider = saved
+			log.Printf("ask provider: %s (saved by the tray picker)", saved)
 		}
 	}
 
@@ -131,6 +139,7 @@ func main() {
 
 	log.Printf("transcribe route: %s", cfg.TranscribeRoute())
 	log.Printf("explain route: %s", cfg.ExplainRoute())
+	log.Printf("ask route: %s", cfg.AskRoute())
 	log.Printf("memoir route: %s", cfg.MemoirRoute())
 	log.Printf("ai-service listening on http://%s  (cache: %s)", cfg.ListenAddr, dbPath)
 
@@ -152,6 +161,8 @@ func main() {
 				st.Set(savedTranscribeProviderKey, provider, 0)
 			case tray.PickExplain:
 				st.Set(savedExplainProviderKey, provider, 0)
+			case tray.PickAsk:
+				st.Set(savedAskProviderKey, provider, 0)
 			}
 		})
 		trayActive.Store(false)

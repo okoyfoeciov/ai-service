@@ -35,6 +35,18 @@ func clearExplainEnv(t *testing.T) {
 	}
 }
 
+// clearAskEnv blanks every variable that decides the ask route, so the
+// machine's own environment cannot leak into a case.
+func clearAskEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"ASK_CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY",
+		"ASK_EFFORT", "ASK_REASONING_EFFORT",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
 // clearMemoirEnv does the same for the variables that decide the Memoir route.
 // The retired CEREBRAS_API_KEY is in the list too: it would make Load refuse.
 func clearMemoirEnv(t *testing.T) {
@@ -51,23 +63,20 @@ func TestLoadExplainProvider(t *testing.T) {
 		wantProviders      []string
 		wantProvider       string
 		wantModel          string
-		wantEffort         string
 		wantMissingExplain bool
 		wantOK             bool
 	}{
-		{"neither key", nil, nil, "", "", "", true, true},
-		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", "", false, true},
-		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
-		{"claude high effort", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "High"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", "high", false, true},
-		{"claude bad effort", map[string]string{"CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "turbo"}, nil, "", "", "", false, false},
-		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
-		{"both bad effort", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl", "EXPLAIN_EFFORT": "turbo"}, nil, "", "", "", false, false},
+		{"neither key", nil, nil, "", "", true, true},
+		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
+		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearTranscribeEnv(t)
 			clearExplainEnv(t)
 			clearMemoirEnv(t)
+			clearAskEnv(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -86,11 +95,10 @@ func TestLoadExplainProvider(t *testing.T) {
 					t.Fatalf("providers %v, want %v", c.ExplainProviders, tc.wantProviders)
 				}
 			}
-			if c.ExplainProvider != tc.wantProvider || c.ExplainModelFor(c.ExplainProvider) != tc.wantModel ||
-				c.ExplainEffort != tc.wantEffort {
-				t.Errorf("got provider=%q model=%q effort=%q; want %q %q %q",
-					c.ExplainProvider, c.ExplainModelFor(c.ExplainProvider), c.ExplainEffort,
-					tc.wantProvider, tc.wantModel, tc.wantEffort)
+			if c.ExplainProvider != tc.wantProvider || c.ExplainModelFor(c.ExplainProvider) != tc.wantModel {
+				t.Errorf("got provider=%q model=%q; want %q %q",
+					c.ExplainProvider, c.ExplainModelFor(c.ExplainProvider),
+					tc.wantProvider, tc.wantModel)
 			}
 			gotMissing := false
 			for _, m := range missing {
@@ -109,6 +117,7 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("CLAUDE_API_KEY", "cl")
 	c, _, err := Load()
 	if err != nil {
@@ -131,10 +140,155 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 	}
 }
 
+// Thinking depth is fixed in code, like the models. Leftover tuning variables
+// from older installs must be ignored rather than change a route or stop the
+// service.
+func TestThinkingControlsAreFixed(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearAskEnv(t)
+	clearMemoirEnv(t)
+	for k, v := range map[string]string{
+		"EXPLAIN_REASONING_TOKENS": "999999",
+		"EXPLAIN_EFFORT":           "turbo",
+		"ASK_EFFORT":               "low",
+		"ASK_REASONING_EFFORT":     "none",
+		"MEMOIR_EFFORT":            "max",
+		"MEMOIR_REASONING_EFFORT":  "low",
+		"OPENROUTER_API_KEY":       "or",
+		"CLAUDE_API_KEY":           "cl",
+		"ASK_CLAUDE_API_KEY":       "cl",
+		"ASK_CEREBRAS_API_KEY":     "ce",
+		"MEMOIR_CLAUDE_API_KEY":    "cl",
+	} {
+		t.Setenv(k, v)
+	}
+	c, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") {
+		t.Errorf("explain route %q does not use the fixed thinking controls", got)
+	}
+	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") {
+		t.Errorf("ask route %q does not use the fixed thinking controls", got)
+	}
+	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") {
+		t.Errorf("memoir route %q does not use the fixed thinking controls", got)
+	}
+}
+
+func TestLoadAskProvider(t *testing.T) {
+	cases := []struct {
+		name           string
+		env            map[string]string
+		wantProviders  []string
+		wantProvider   string
+		wantModel      string
+		wantMissingAsk bool
+		wantOK         bool
+	}{
+		{"neither key", nil, nil, "", "", true, true},
+		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"cerebras", map[string]string{"ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderCerebras}, ProviderCerebras, "qwen-3.8-27b", false, true},
+		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearTranscribeEnv(t)
+			clearExplainEnv(t)
+			clearAskEnv(t)
+			clearMemoirEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			c, missing, err := Load()
+			if (err == nil) != tc.wantOK {
+				t.Fatalf("err %v, want ok=%v", err, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if len(c.AskProviders) != len(tc.wantProviders) {
+				t.Fatalf("providers %v, want %v", c.AskProviders, tc.wantProviders)
+			}
+			for i := range tc.wantProviders {
+				if c.AskProviders[i] != tc.wantProviders[i] {
+					t.Fatalf("providers %v, want %v", c.AskProviders, tc.wantProviders)
+				}
+			}
+			if c.AskProvider != tc.wantProvider || c.AskModelFor(c.AskProvider) != tc.wantModel {
+				t.Errorf("got provider=%q model=%q; want %q %q",
+					c.AskProvider, c.AskModelFor(c.AskProvider),
+					tc.wantProvider, tc.wantModel)
+			}
+			gotMissing := false
+			for _, m := range missing {
+				if strings.HasPrefix(m, "ASK_CLAUDE_API_KEY or") {
+					gotMissing = true
+				}
+			}
+			if gotMissing != tc.wantMissingAsk {
+				t.Errorf("missing %v, want ask missing=%v", missing, tc.wantMissingAsk)
+			}
+		})
+	}
+}
+
+func TestAskKeysAreIndependentOfExplainKeys(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearAskEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("CLAUDE_API_KEY", "explain-claude")
+	c, _, err := Load()
+	if err != nil || c.ExplainProvider != ProviderClaude || c.AskProvider != "" {
+		t.Fatalf("explain %q ask %q err %v", c.ExplainProvider, c.AskProvider, err)
+	}
+	t.Setenv("ASK_CEREBRAS_API_KEY", "ask-cerebras")
+	c, _, err = Load()
+	if err != nil || c.AskProvider != ProviderCerebras || c.AskProviders[0] != ProviderCerebras {
+		t.Fatalf("ask %q providers %v err %v", c.AskProvider, c.AskProviders, err)
+	}
+}
+
+func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearAskEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("ASK_CLAUDE_API_KEY", "cl")
+	c, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.AskRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") || !strings.Contains(got, "medium") {
+		t.Errorf("route %q", got)
+	}
+
+	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.AskRoute()
+	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "2 providers", "tray picker", "starting on Claude Platform"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("route %q missing %q", got, want)
+		}
+	}
+
+	if got := (Config{}).AskRoute(); !strings.Contains(got, "ASK_CLAUDE_API_KEY") ||
+		!strings.Contains(got, "ASK_CEREBRAS_API_KEY") {
+		t.Errorf("unconfigured route %q does not name both keys", got)
+	}
+}
+
 func TestLoadRefusesBothMemoirKeys(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("MEMOIR_CEREBRAS_API_KEY", "ce")
 	t.Setenv("MEMOIR_CLAUDE_API_KEY", "cl")
 	_, _, err := Load()
@@ -148,23 +302,22 @@ func TestLoadMemoirProvider(t *testing.T) {
 		name                      string
 		env                       map[string]string
 		wantProvider, wantModel   string
-		wantEffort                string
 		wantMissingMemoir, wantOK bool
 	}{
-		{"neither key", nil, "", "", "", true, true},
-		{"cerebras default model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce"}, ProviderCerebras, "qwen-3.8-27b", "", false, true},
-		{"cerebras custom model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce", "MEMOIR_MODEL": "llama-9"}, ProviderCerebras, "llama-9", "", false, true},
-		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", "medium", false, true},
-		{"claude custom", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "claude-sonnet-5-5", "MEMOIR_EFFORT": "High"}, ProviderClaude, "claude-sonnet-5-5", "high", false, true},
-		{"claude with a cerebras model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "qwen-3.8-27b"}, "", "", "", false, false},
-		{"claude with bad effort", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_EFFORT": "none"}, "", "", "", false, false},
-		{"the retired CEREBRAS_API_KEY", map[string]string{"CEREBRAS_API_KEY": "ce", "MEMOIR_CLAUDE_API_KEY": "cl"}, "", "", "", false, false},
+		{"neither key", nil, "", "", true, true},
+		{"cerebras default model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce"}, ProviderCerebras, "qwen-3.8-27b", false, true},
+		{"cerebras custom model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce", "MEMOIR_MODEL": "llama-9"}, ProviderCerebras, "llama-9", false, true},
+		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"claude custom", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "claude-sonnet-5-5"}, ProviderClaude, "claude-sonnet-5-5", false, true},
+		{"claude with a cerebras model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "qwen-3.8-27b"}, "", "", false, false},
+		{"the retired CEREBRAS_API_KEY", map[string]string{"CEREBRAS_API_KEY": "ce", "MEMOIR_CLAUDE_API_KEY": "cl"}, "", "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clearTranscribeEnv(t)
 			clearExplainEnv(t)
 			clearMemoirEnv(t)
+			clearAskEnv(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -175,8 +328,8 @@ func TestLoadMemoirProvider(t *testing.T) {
 			if !tc.wantOK {
 				return
 			}
-			if c.MemoirProvider != tc.wantProvider || c.MemoirModel != tc.wantModel || c.MemoirEffort != tc.wantEffort {
-				t.Errorf("got %q %q %q, want %q %q %q", c.MemoirProvider, c.MemoirModel, c.MemoirEffort, tc.wantProvider, tc.wantModel, tc.wantEffort)
+			if c.MemoirProvider != tc.wantProvider || c.MemoirModel != tc.wantModel {
+				t.Errorf("got %q %q, want %q %q", c.MemoirProvider, c.MemoirModel, tc.wantProvider, tc.wantModel)
 			}
 			gotMissing := false
 			for _, m := range missing {
@@ -197,6 +350,7 @@ func TestMemoirKeysAreIndependentOfExplainKeys(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("CLAUDE_API_KEY", "cl")
 	c, _, err := Load()
 	if err != nil || c.MemoirProvider != "" || c.ExplainProvider != ProviderClaude {
@@ -214,6 +368,7 @@ func TestMemoirRouteNamesTheProviderAndModel(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("MEMOIR_CLAUDE_API_KEY", "cl")
 	c, _, err := Load()
 	if err != nil {
@@ -228,6 +383,7 @@ func TestLoadKeepsVerbatimKeyAlongsideAssemblyAI(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("ASSEMBLYAI_API_KEY", "aai")
 	t.Setenv("OPENROUTER_TRANSCRIBE_API_KEY", "or")
 	c, _, err := Load()
@@ -261,6 +417,7 @@ func TestLoadRequiresTranscribeProvider(t *testing.T) {
 			clearTranscribeEnv(t)
 			clearExplainEnv(t)
 			clearMemoirEnv(t)
+			clearAskEnv(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -294,6 +451,7 @@ func TestLoadRefusesRetiredParakeetURL(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("PARAKEET_URL", "http://127.0.0.1:8790")
 	_, _, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "PARAKEET_URL") || !strings.Contains(err.Error(), "no longer supported") {
@@ -307,6 +465,7 @@ func TestLoadRefusesRetiredGroqVariables(t *testing.T) {
 			clearTranscribeEnv(t)
 			clearExplainEnv(t)
 			clearMemoirEnv(t)
+			clearAskEnv(t)
 			t.Setenv(key, "old-value")
 			_, _, err := Load()
 			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "no longer used") {
@@ -322,6 +481,7 @@ func TestLoadRefusesRetiredAzureVariables(t *testing.T) {
 			clearTranscribeEnv(t)
 			clearExplainEnv(t)
 			clearMemoirEnv(t)
+			clearAskEnv(t)
 			t.Setenv(key, "old-value")
 			_, _, err := Load()
 			if err == nil || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "no longer used") {
@@ -337,6 +497,7 @@ func TestOpenRouterKeysAreIndependent(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	t.Setenv("OPENROUTER_API_KEY", "explain-key")
 	c, _, err := Load()
 	if err != nil || c.AssemblyAIKey != "test-assemblyai" || c.OpenRouterTranscribeAPIKey != "" {
@@ -356,6 +517,7 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 	clearTranscribeEnv(t)
 	clearExplainEnv(t)
 	clearMemoirEnv(t)
+	clearAskEnv(t)
 	c, _, err := Load()
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 // Package tray is the provider picker shown in the desktop's menu bar / status
 // area. It has one section per route with more than one provider; with one
-// provider on both routes there is nothing to pick and the tray does not run.
+// provider on every route there is nothing to pick and the tray does not run.
 //
 // The tray is not part of the HTTP API. It runs in the service process and
 // flips the same provider fields the handlers read, so clients keep calling the
@@ -41,6 +41,7 @@ var (
 const (
 	PickTranscribe = "transcribe"
 	PickExplain    = "explain"
+	PickAsk        = "ask"
 )
 
 // Controller is the part of *server.Server the pickers need.
@@ -51,6 +52,9 @@ type Controller interface {
 	ExplainProviders() []string
 	ExplainProvider() string
 	SetExplainProvider(string) bool
+	AskProviders() []string
+	AskProvider() string
+	SetAskProvider(string) bool
 }
 
 // section is one picker group in the menu.
@@ -84,6 +88,15 @@ func pickerSections(c Controller) []section {
 			current:   c.ExplainProvider(),
 		})
 	}
+	if providers := c.AskProviders(); len(providers) > 1 {
+		sections = append(sections, section{
+			kind:      PickAsk,
+			title:     "Ask with",
+			tip:       "The provider /api/ask uses",
+			providers: providers,
+			current:   c.AskProvider(),
+		})
+	}
 	return sections
 }
 
@@ -105,6 +118,13 @@ func providerLabel(kind, provider string) string {
 		case config.ProviderOpenRouter:
 			return "OpenRouter Gemini 3.8 Flash"
 		}
+	case PickAsk:
+		switch provider {
+		case config.ProviderClaude:
+			return "Claude Platform Opus 5.5"
+		case config.ProviderCerebras:
+			return "Cerebras Qwen 3.8 27B"
+		}
 	}
 	return provider
 }
@@ -115,6 +135,8 @@ func setProvider(c Controller, kind, provider string) bool {
 		return c.SetTranscribeProvider(provider)
 	case PickExplain:
 		return c.SetExplainProvider(provider)
+	case PickAsk:
+		return c.SetAskProvider(provider)
 	}
 	return false
 }

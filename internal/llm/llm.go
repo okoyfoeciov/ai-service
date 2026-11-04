@@ -1,8 +1,9 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
 // endpoints: OpenRouter (Google Gemini 3.8 Flash) for /api/explain and Cerebras
-// (Qwen 3.8 27B) for Memoir. Either route can instead run on Claude, which has
-// its own type (see claude.go) because the Messages API streams differently.
+// (Qwen 3.8 27B) for /api/ask and Memoir. Any route can instead run on Claude,
+// which has its own type (see claude.go) because the Messages API streams
+// differently.
 //
 // Both chat-completions providers speak the same streaming shape: SSE `data:`
 // lines holding chunk objects, `: comment` keep-alives, and `data: [DONE]` at

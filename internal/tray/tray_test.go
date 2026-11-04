@@ -7,8 +7,8 @@ import (
 )
 
 type fakeController struct {
-	transcribe, explain []string
-	currentT, currentE  string
+	transcribe, explain, ask     []string
+	currentT, currentE, currentA string
 }
 
 func (f *fakeController) TranscribeProviders() []string { return f.transcribe }
@@ -33,27 +33,43 @@ func (f *fakeController) SetExplainProvider(p string) bool {
 	}
 	return false
 }
+func (f *fakeController) AskProviders() []string { return f.ask }
+func (f *fakeController) AskProvider() string    { return f.currentA }
+func (f *fakeController) SetAskProvider(p string) bool {
+	for _, v := range f.ask {
+		if v == p {
+			f.currentA = p
+			return true
+		}
+	}
+	return false
+}
 
 func TestPickerSectionsAreConditional(t *testing.T) {
 	cases := []struct {
 		name       string
 		transcribe []string
 		explain    []string
+		ask        []string
 		want       []string
 	}{
-		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, nil},
-		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{PickTranscribe}},
-		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickExplain}},
-		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickTranscribe, PickExplain}},
+		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil},
+		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{PickTranscribe}},
+		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, []string{PickExplain}},
+		{"two ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderCerebras}, []string{PickAsk}},
+		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderCerebras}, []string{PickTranscribe, PickExplain, PickAsk}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &fakeController{transcribe: tc.transcribe, explain: tc.explain}
+			c := &fakeController{transcribe: tc.transcribe, explain: tc.explain, ask: tc.ask}
 			if len(tc.transcribe) > 0 {
 				c.currentT = tc.transcribe[0]
 			}
 			if len(tc.explain) > 0 {
 				c.currentE = tc.explain[0]
+			}
+			if len(tc.ask) > 0 {
+				c.currentA = tc.ask[0]
 			}
 			sections := pickerSections(c)
 			if len(sections) != len(tc.want) {
@@ -74,6 +90,8 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
+		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5"},
+		{PickAsk, config.ProviderCerebras, "Cerebras Qwen 3.8 27B"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {

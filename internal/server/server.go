@@ -28,11 +28,15 @@ type Server struct {
 	// explainLLMs holds /api/explain's clients, one per configured provider;
 	// explainProviders is every provider config.Load found, and
 	// explainProvider is the one /api/explain uses now. The tray picker may
-	// change it while requests are running, hence atomic. memoirLLM is
+	// change it while requests are running, hence atomic. askLLMs,
+	// askProviders and askProvider do the same for /api/ask. memoirLLM is
 	// Memoir's one client (Cerebras or Claude).
 	explainLLMs      map[string]llm.Streamer
 	explainProviders []string
 	explainProvider  atomic.Value // string
+	askLLMs          map[string]llm.Streamer
+	askProviders     []string
+	askProvider      atomic.Value // string
 	memoirLLM        llm.Streamer
 
 	httpShort      *http.Client // streaming transcription and the WS transport (10 min backstop)
@@ -77,6 +81,8 @@ func New(cfg config.Config, st *store.Store) *Server {
 		transcribeProviders: append([]string(nil), cfg.TranscribeProviders...),
 		explainProviders:    append([]string(nil), cfg.ExplainProviders...),
 		explainLLMs:         newExplainLLMs(cfg, hc),
+		askProviders:        append([]string(nil), cfg.AskProviders...),
+		askLLMs:             newAskLLMs(cfg, hc),
 	}
 	if cfg.TranscribeProvider != "" {
 		s.transcribeProvider.Store(cfg.TranscribeProvider)
@@ -84,17 +90,20 @@ func New(cfg config.Config, st *store.Store) *Server {
 	if cfg.ExplainProvider != "" {
 		s.explainProvider.Store(cfg.ExplainProvider)
 	}
+	if cfg.AskProvider != "" {
+		s.askProvider.Store(cfg.AskProvider)
+	}
 	s.memoirLLM = newMemoirLLM(cfg, hc)
 	return s
 }
 
-func newClaude(key, model, effort, route string, hc *http.Client) llm.Streamer {
+func newClaude(key, model, route string, hc *http.Client) llm.Streamer {
 	return llm.NewClaude(llm.ClaudeConfig{
 		APIKey:    key,
 		BaseURL:   claudeURL,
 		Model:     model,
 		MaxTokens: maxAnswerTokens,
-		Effort:    effort,
+		Effort:    config.ClaudeEffort,
 		Route:     route,
 	}, hc)
 }
@@ -104,7 +113,7 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 	for _, provider := range cfg.ExplainProviders {
 		switch provider {
 		case config.ProviderClaude:
-			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), cfg.ExplainEffort, "explain", hc)
+			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", hc)
 		case config.ProviderOpenRouter:
 			clients[provider] = llm.New(llm.Config{
 				Provider: "OpenRouter",
@@ -114,7 +123,7 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 				Params: map[string]any{
 					"max_tokens": maxAnswerTokens,
 					// exclude: the thinking still happens but is not streamed back.
-					"reasoning": map[string]any{"max_tokens": cfg.ExplainReasoningTokens, "exclude": true},
+					"reasoning": map[string]any{"max_tokens": config.OpenRouterReasoningTokens, "exclude": true},
 				},
 			}, hc)
 		}
@@ -122,24 +131,38 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 	return clients
 }
 
+func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
+	clients := make(map[string]llm.Streamer, len(cfg.AskProviders))
+	for _, provider := range cfg.AskProviders {
+		switch provider {
+		case config.ProviderClaude:
+			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", hc)
+		case config.ProviderCerebras:
+			clients[provider] = newCerebras(cfg.AskCerebrasAPIKey, cfg.AskModelFor(provider), hc)
+		}
+	}
+	return clients
+}
+
+func newCerebras(key, model string, hc *http.Client) llm.Streamer {
+	return llm.New(llm.Config{
+		Provider: "Cerebras",
+		URL:      cerebrasURL,
+		APIKey:   key,
+		Model:    model,
+		Params: map[string]any{
+			"max_completion_tokens": maxAnswerTokens,
+			"reasoning_effort":      config.CerebrasReasoningEffort,
+		},
+	}, hc)
+}
+
 func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {
 	switch cfg.MemoirProvider {
 	case config.ProviderClaude:
-		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, cfg.MemoirEffort, "memoir", hc)
+		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, "memoir", hc)
 	case config.ProviderCerebras:
-		params := map[string]any{"max_completion_tokens": maxAnswerTokens}
-		if cfg.MemoirReasoningEffort == "none" {
-			params["disable_reasoning"] = true
-		} else {
-			params["reasoning_effort"] = cfg.MemoirReasoningEffort
-		}
-		return llm.New(llm.Config{
-			Provider: "Cerebras",
-			URL:      cerebrasURL,
-			APIKey:   cfg.MemoirCerebrasAPIKey,
-			Model:    cfg.MemoirModel,
-			Params:   params,
-		}, hc)
+		return newCerebras(cfg.MemoirCerebrasAPIKey, cfg.MemoirModel, hc)
 	}
 	return nil
 }

@@ -23,8 +23,8 @@ type ClaudeConfig struct {
 	// Effort is output_config.effort (low … max), how much the model thinks.
 	// Empty leaves the model's own default, which differs between models.
 	Effort string
-	// Route says which route this client serves ("explain", "memoir"), for the
-	// log only: two Claude clients with the same model would otherwise log
+	// Route says which route this client serves ("explain", "ask", "memoir"),
+	// for the log only: Claude clients with the same model would otherwise log
 	// identical lines.
 	Route string
 }
