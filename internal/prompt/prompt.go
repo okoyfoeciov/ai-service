@@ -39,11 +39,20 @@ func Build(text string, items []Item, priorReplies []string, pronBundle map[stri
 	return part1 + itemsList(items) + part2 + text + "\n" + earlierSection(priorReplies) + pronSection(items, pronBundle)
 }
 
+// AskRound is one earlier question and the answer the model gave for it. A
+// follow-up in the same Ask card sends every earlier round so the model sees
+// the conversation the reader is looking at.
+type AskRound struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
 // BuildAsk assembles the microphone's question prompt. Unlike Build, this is
 // not a vocabulary explanation: the user spoke a question and optionally
 // pointed at passages on the page. The page is data, not instruction — a page
 // can contain text that looks like a command, and the model must not obey it.
-func BuildAsk(question string, items []Item, contexts []Context) string {
+// `history` is the earlier rounds of the same Ask card, oldest first.
+func BuildAsk(question string, items []Item, contexts []Context, history []AskRound) string {
 	var b strings.Builder
 	b.WriteString(`You are comart, a reading companion. The user is reading a page, has spoken a question, and may have pointed at text on the page. Answer the question directly and helpfully.
 
@@ -53,9 +62,16 @@ The user is not a native English speaker. Write simple, clear English that is ea
 
 Be concise but complete. When the answer is naturally a list, use a Markdown numbered or bulleted list with one item per line. Do not add pronunciation notes, vocabulary coaching, headings, tables, or a copy of the question unless the question asks for one of those. Do not mention that the text came from a page or that it was selected.
 
-# THE USER'S SPOKEN QUESTION
-
 `)
+	if len(history) > 0 {
+		b.WriteString("# EARLIER CONVERSATION\n\n")
+		b.WriteString("The user already asked the questions below in this same conversation, and you gave the answers shown. They are still visible above the new question. Use them to resolve references in the new question (such as \"it\", \"that\" or \"the second one\") and do not repeat an answer already given unless the new question asks you to.\n\n")
+		for i, r := range history {
+			fmt.Fprintf(&b, "## Earlier question %d\n\n%s\n\n", i+1, strings.TrimSpace(r.Question))
+			fmt.Fprintf(&b, "### Your earlier answer %d\n\n%s\n\n", i+1, strings.TrimSpace(r.Answer))
+		}
+	}
+	b.WriteString("# THE USER'S SPOKEN QUESTION\n\n")
 	q := strings.TrimSpace(question)
 	if q == "" {
 		b.WriteString("(No spoken question.)")

@@ -66,6 +66,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	errMsg := ""
 	items := 0
 	contexts := 0
+	history := 0
 	defer func() {
 		providerName, modelName := provider, model
 		if providerName == "" {
@@ -82,8 +83,8 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			suffix = fmt.Sprintf(" error=%q", errMsg)
 		}
-		log.Printf("ask[%s]: model=%s status=%d outcome=%s items=%d contexts=%d duration=%s%s",
-			providerName, modelName, sw.Status(), outcome, items, contexts,
+		log.Printf("ask[%s]: model=%s status=%d outcome=%s items=%d contexts=%d history=%d duration=%s%s",
+			providerName, modelName, sw.Status(), outcome, items, contexts, history,
 			time.Since(start).Round(time.Millisecond), suffix)
 	}()
 
@@ -93,9 +94,10 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	var body struct {
-		Question string           `json:"question"`
-		Items    []prompt.Item    `json:"items"`
-		Contexts []prompt.Context `json:"contexts"`
+		Question string            `json:"question"`
+		Items    []prompt.Item     `json:"items"`
+		Contexts []prompt.Context  `json:"contexts"`
+		History  []prompt.AskRound `json:"history"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var mbe *http.MaxBytesError
@@ -110,6 +112,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	items = len(body.Items)
 	contexts = len(body.Contexts)
+	history = len(body.History)
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -146,7 +149,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := prompt.BuildAsk(body.Question, body.Items, body.Contexts)
+	p := prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History)
 	result := streamer.Stream(ctx, p, func(t string) {
 		send("chunk", map[string]any{"text": t})
 	})

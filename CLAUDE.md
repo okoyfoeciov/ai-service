@@ -44,7 +44,7 @@ ask route follows the same pattern in `resolveAsk` and `newAskLLMs`.
 
 Every `/api/explain` request logs provider, model, status, outcome, item count,
 pronunciation lookups and duration; `/api/ask` logs provider, model, status,
-outcome, item and context counts. Tray switches log
+outcome, item, context and earlier-round counts. Tray switches log
 `transcribe provider: … (tray)` / `explain provider: … (tray)` /
 `ask provider: … (tray)`.
 
@@ -67,7 +67,9 @@ outcome, item and context counts. Tray switches log
   HTTP, which is not an exception to this rule.
 - **Keep the comart client API stable.** comart uses its eight routes with no
   CORS and no auth. Its `/api/ask` answers a spoken question over passages the
-  reader picked; Memoir's `/api/memoir/check`, daily-dictation's
+  reader picked, and its optional `history` (earlier question/answer pairs in
+  the same Ask card) is how a follow-up keeps the conversation. Memoir's
+  `/api/memoir/check`, daily-dictation's
   `/api/transcribe-verbatim` and the clients' streaming transcription routes
   (`POST /api/transcribe/stream` and its `GET /api/transcribe/ws` transport;
   AssemblyAI live, buffered for others) are the deliberate additions. Change a

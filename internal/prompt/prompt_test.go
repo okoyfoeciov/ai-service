@@ -13,7 +13,7 @@ func TestBuildAskCarriesQuestionSelectionAndContext(t *testing.T) {
 		{Phrase: "charge", Words: []string{"charge"}},
 	}, []Context{
 		{Phrase: "charge", Text: "The officer will charge the suspect at noon."},
-	})
+	}, nil)
 	for _, want := range []string{
 		"What does this mean here?",
 		`- "charge"`,
@@ -27,6 +27,29 @@ func TestBuildAskCarriesQuestionSelectionAndContext(t *testing.T) {
 	} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("ask prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildAskCarriesEarlierConversation(t *testing.T) {
+	p := BuildAsk("And what about the second one?", nil, nil, []AskRound{
+		{Question: "Why did the officer charge him?", Answer: "Because the evidence was strong."},
+		{Question: "Was that legal?", Answer: "The passage does not say."},
+	})
+	for _, want := range []string{
+		"# EARLIER CONVERSATION",
+		"## Earlier question 1",
+		"Why did the officer charge him?",
+		"### Your earlier answer 1",
+		"Because the evidence was strong.",
+		"## Earlier question 2",
+		"Was that legal?",
+		"### Your earlier answer 2",
+		"The passage does not say.",
+		"And what about the second one?",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("ask prompt missing earlier conversation %q", want)
 		}
 	}
 }

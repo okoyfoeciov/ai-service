@@ -406,6 +406,40 @@ func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 	}
 }
 
+// A follow-up sends the earlier question/answer pairs to /api/ask, and the
+// prompt carries them before the new question so references resolve.
+func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
+	m := &captureModel{reply: "Yes — by the second reading."}
+	s := &Server{
+		cfg:          config.Config{AskProvider: config.ProviderCerebras},
+		askProviders: []string{config.ProviderCerebras},
+		askLLMs: map[string]llm.Streamer{
+			config.ProviderCerebras: testLLM(m),
+		},
+	}
+	body := `{"question":"Which one did you mean?","history":[{"question":"What are the two readings?","answer":"A narrow one and a broad one."}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	promptReq, _ := m.body.Load().(string)
+	for _, want := range []string{
+		"# EARLIER CONVERSATION",
+		"What are the two readings?",
+		"A narrow one and a broad one.",
+		"Which one did you mean?",
+	} {
+		if !strings.Contains(promptReq, want) {
+			t.Errorf("model request missing %q", want)
+		}
+	}
+}
+
 // A web page can POST cross-site without a preflight only with text/plain or a
 // form type, and a sandboxed iframe's Origin is "null", which the guard lets
 // through. The billed routes therefore demand the type the clients really send.
