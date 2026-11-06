@@ -21,11 +21,12 @@ func TestTranscribeStreamDeepgram(t *testing.T) {
 	oldURL := deepgramLiveURL
 	defer func() { deepgramLiveURL = oldURL }()
 
-	var gotAuth, gotModel, gotLanguage, gotEncoding, gotSampleRate, gotSmartFormat, gotInterim string
+	var gotAuth, gotModel, gotLanguage, gotEncoding, gotSampleRate, gotSmartFormat, gotInterim, gotRawQuery string
 	var gotAudio int
 	var firstFinalSent bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotRawQuery = r.URL.RawQuery
 		q := r.URL.Query()
 		gotModel = q.Get("model")
 		gotLanguage = q.Get("language")
@@ -78,30 +79,39 @@ func TestTranscribeStreamDeepgram(t *testing.T) {
 		},
 		httpShort: upstream.Client(),
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream", bytes.NewReader(testWAV()))
-	req.Host = "127.0.0.1:8770"
-	req.Header.Set("Content-Type", "audio/wav")
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
+	// Deepgram ignores ?timestamps=0: the upstream request and the answer are
+	// the same as without it.
+	var firstRawQuery string
+	for i, path := range []string{"/api/transcribe/stream", "/api/transcribe/stream?timestamps=0"} {
+		gotAudio, firstFinalSent = 0, false
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(testWAV()))
+		req.Host = "127.0.0.1:8770"
+		req.Header.Set("Content-Type", "audio/wav")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	var out struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("answer %q is not JSON: %v", rec.Body.String(), err)
-	}
-	if out.Text != "first part second part." {
-		t.Errorf("text %q, want both final segments joined", out.Text)
-	}
-	if gotAuth != "Token dg-key" || gotModel != "nova-3" || gotLanguage != "en" || gotEncoding != "linear16" ||
-		gotSampleRate != "16000" || gotSmartFormat != "true" || gotInterim != "false" {
-		t.Errorf("query/auth: auth=%q model=%q language=%q encoding=%q sample_rate=%q smart_format=%q interim_results=%q",
-			gotAuth, gotModel, gotLanguage, gotEncoding, gotSampleRate, gotSmartFormat, gotInterim)
-	}
-	if gotAudio == 0 {
-		t.Error("Deepgram received no PCM audio")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", path, rec.Code, rec.Body.String())
+		}
+		var out map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s: answer %q is not JSON: %v", path, rec.Body.String(), err)
+		}
+		if out["text"] != "first part second part." || len(out) != 1 {
+			t.Errorf("%s: answer %v, want only both final segments joined", path, out)
+		}
+		if gotAuth != "Token dg-key" || gotModel != "nova-3" || gotLanguage != "en" || gotEncoding != "linear16" ||
+			gotSampleRate != "16000" || gotSmartFormat != "true" || gotInterim != "false" {
+			t.Errorf("%s: query/auth: auth=%q model=%q language=%q encoding=%q sample_rate=%q smart_format=%q interim_results=%q",
+				path, gotAuth, gotModel, gotLanguage, gotEncoding, gotSampleRate, gotSmartFormat, gotInterim)
+		}
+		if i == 0 {
+			firstRawQuery = gotRawQuery
+		} else if gotRawQuery != firstRawQuery {
+			t.Errorf("%s: Deepgram query %q, want %q", path, gotRawQuery, firstRawQuery)
+		}
+		if gotAudio == 0 {
+			t.Errorf("%s: Deepgram received no PCM audio", path)
+		}
 	}
 }

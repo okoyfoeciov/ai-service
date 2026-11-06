@@ -1,16 +1,18 @@
 # ai-service
 
 A small localhost **LLM backend**: one static Go binary on `127.0.0.1:8770`,
-speaking JSON and SSE. It has three clients:
+speaking JSON and SSE. It has four clients:
 
 - the **comart Chrome extension** (`~/comart`): word explanations,
   pronunciations, mic transcription and the mic card's writing check;
 - **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading of
   journal entries;
 - **daily-dictation** (`~/daily-dictation`): verbatim transcripts through
-  `POST /api/transcribe-verbatim`.
+  `POST /api/transcribe-verbatim`;
+- **voice-typing** (`~/voice-typing`, GNOME top-bar dictation): text-only
+  transcripts through `POST /api/transcribe/stream?timestamps=0`.
 
-**There is no UI here.** All three clients carry their own pages. `GET /`
+**There is no UI here.** All four clients carry their own UI. `GET /`
 answers one line of plain text and nothing else. Do not add a template, a
 static directory or an `embed` back: a served copy of a client would have to be
 kept in step with the real one by hand.
@@ -30,7 +32,7 @@ additions. Change a route only together with the client that calls it.
 | `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}]}`. `history` is optional and carries the earlier rounds of the same Ask card for a follow-up. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch. It uses the selected **ask** provider/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/transcribe/stream` | comart; daily-dictation | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. |
+| `POST /api/transcribe/stream` | comart; daily-dictation; voice-typing (`?timestamps=0`) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` (and `first_word_ms` when it is known) or `{"error": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
@@ -221,12 +223,17 @@ universal-3-5-pro`. The clients send their MediaRecorder WebM/MP4 stream to
 to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
 part second, and closes the AssemblyAI request when the client body ends. That
 close is the finish signal; AssemblyAI returns one final JSON transcript, not
-per-chunk results. The config part asks for `timestamps: true`, so each word
+per-chunk results. The config part is
+`{"sample_rate":16000,"channels":1,"timestamps":true}`, so each word
 carries millisecond `start`/`end`; `first_word_ms` and
 `last_word_ms` are the first aligned word's start and the last aligned word's
 end, which comart uses to trim the silence before and after speech. Timestamps are exact
 or absent (AssemblyAI never estimates one), so the field is omitted when no word
-could be aligned; they add roughly 0.1–0.3 s to the post-stop wait. The browser clients reach this route through
+could be aligned; they add roughly 0.1–0.3 s to the post-stop wait. A caller that
+only wants the text (voice-typing) sends `?timestamps=0` (or exactly `false`):
+the config part then says `"timestamps":false` and the answer carries neither
+field. The WS transport forwards without a query (a `timestamps` on the WS URL
+is ignored), so comart keeps its timings. The browser clients reach this route through
 `/api/transcribe/ws`: Chrome blocks a streaming `fetch` body to loopback from an
 extension page, while a WebSocket to the same host works. The WS handler only
 carries bytes; the decoding is the stream route's.

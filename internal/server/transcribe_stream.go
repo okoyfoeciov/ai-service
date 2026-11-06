@@ -262,12 +262,27 @@ func (s *Server) handleTranscribeWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// wantTimestamps reports whether the caller wants word timings. Only the exact
+// values ?timestamps=0 and ?timestamps=false turn them off: voice-typing
+// inserts the text and never trims audio, and the alignment costs 0.1–0.3 s of
+// post-stop wait. No query, or any other value (FALSE, off, no, " 0"), keeps
+// them on, so comart and the WS transport (which forwards without a query) are
+// unchanged. Deepgram returns no timings either way.
+func wantTimestamps(r *http.Request) bool {
+	switch r.URL.Query().Get("timestamps") {
+	case "0", "false":
+		return false
+	}
+	return true
+}
+
 // streamAssemblyAI pipes the incoming recording through ffmpeg into one
 // persistent AssemblyAI /v1/transcribe/live request. The request body is
 // multipart with config first and audio second, exactly as AssemblyAI requires.
 func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *cappedReader, metrics *streamMetrics) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
+	timestamps := wantTimestamps(r)
 
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
@@ -297,7 +312,8 @@ func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *
 		// which is the only honest T1 in a room with a fan and a clock in it
 		// (measured, 2026-10-28: energy-only onset detection anchored on the
 		// noise in 2 of 8 real recordings and left 2.4s and 4.9s of silence).
-		if _, e = fmt.Fprintf(part, `{"sample_rate":%d,"channels":%d,"timestamps":true}`, streamSampleRate, streamChannels); e != nil {
+		// A caller that asks for timestamps=0 gets "timestamps":false.
+		if _, e = fmt.Fprintf(part, `{"sample_rate":%d,"channels":%d,"timestamps":%t}`, streamSampleRate, streamChannels, timestamps); e != nil {
 			err = e
 			return
 		}
@@ -377,11 +393,13 @@ func (s *Server) streamAssemblyAI(w http.ResponseWriter, r *http.Request, body *
 		return
 	}
 	answer := map[string]any{"text": strings.TrimSpace(out.Text)}
-	if ms, ok := out.firstWordMS(); ok {
-		answer["first_word_ms"] = ms
-	}
-	if ms, ok := out.lastWordMS(); ok {
-		answer["last_word_ms"] = ms
+	if timestamps {
+		if ms, ok := out.firstWordMS(); ok {
+			answer["first_word_ms"] = ms
+		}
+		if ms, ok := out.lastWordMS(); ok {
+			answer["last_word_ms"] = ms
+		}
 	}
 	writeJSON(w, http.StatusOK, answer)
 }

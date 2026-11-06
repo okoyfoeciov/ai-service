@@ -798,6 +798,130 @@ func TestTranscribeStreamAssemblyAI(t *testing.T) {
 	}
 }
 
+// Exactly ?timestamps=0 or ?timestamps=false asks AssemblyAI for no word
+// timings and drops first_word_ms/last_word_ms from the answer, even if the
+// provider sends timings anyway. No query or any other value (other case,
+// spaces, other words) is today's behaviour, which comart relies on.
+func TestTranscribeStreamTimestampsQuery(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	oldURL := assemblyAILiveURL
+	defer func() { assemblyAILiveURL = oldURL }()
+
+	configs := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Errorf("MultipartReader: %v", err)
+			return
+		}
+		for {
+			p, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Errorf("NextPart: %v", err)
+				return
+			}
+			b, _ := io.ReadAll(p)
+			if p.FormName() == "config" {
+				// Never block: a subtest that failed early must not hang the next.
+				select {
+				case configs <- string(b):
+				default:
+					t.Errorf("unread config part left over: %s", b)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"streamed transcript","words":[
+			{"text":"streamed","start":1200,"end":1500},
+			{"text":"transcript","start":1510,"end":1900}]}`))
+	}))
+	defer srv.Close()
+	assemblyAILiveURL = srv.URL
+
+	s := &Server{
+		cfg: config.Config{
+			AssemblyAIKey:      "aai-key",
+			TranscribeProvider: config.ProviderAssemblyAI,
+		},
+		httpShort: srv.Client(),
+	}
+	const (
+		withTimings    = `{"sample_rate":16000,"channels":1,"timestamps":true}`
+		withoutTimings = `{"sample_rate":16000,"channels":1,"timestamps":false}`
+	)
+	for _, tc := range []struct {
+		query      string
+		wantConfig string
+	}{
+		{"", withTimings},
+		{"?timestamps=0", withoutTimings},
+		{"?timestamps=false", withoutTimings},
+		{"?other=1&timestamps=0", withoutTimings},
+		{"?timestamps=1", withTimings},
+		{"?timestamps=true", withTimings},
+		{"?timestamps=FALSE", withTimings},
+		{"?timestamps=False", withTimings},
+		{"?timestamps=%200", withTimings},
+		{"?timestamps=00", withTimings},
+		{"?timestamps=off", withTimings},
+		{"?timestamps=no", withTimings},
+		{"?timestamps=", withTimings},
+		{"?timestamps", withTimings},
+		{"?Timestamps=0", withTimings},
+	} {
+		name := tc.query
+		if name == "" {
+			name = "no query"
+		}
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/transcribe/stream"+tc.query, bytes.NewReader(testWAV()))
+			req.Host = "127.0.0.1:8770"
+			req.Header.Set("Content-Type", "audio/wav")
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+			// Take the config before any Fatal, so none is left for the next case.
+			var gotConfig string
+			select {
+			case gotConfig = <-configs:
+			default:
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			if gotConfig == "" {
+				t.Fatal("AssemblyAI received no config part")
+			}
+			if gotConfig != tc.wantConfig {
+				t.Errorf("config part %s, want %s", gotConfig, tc.wantConfig)
+			}
+
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("answer %q is not JSON: %v", rec.Body.String(), err)
+			}
+			if string(out["text"]) != `"streamed transcript"` {
+				t.Errorf("text %s, want \"streamed transcript\"", out["text"])
+			}
+			first, hasFirst := out["first_word_ms"]
+			last, hasLast := out["last_word_ms"]
+			if tc.wantConfig == withoutTimings {
+				if hasFirst || hasLast || len(out) != 1 {
+					t.Errorf("answer %s, want text only", rec.Body.String())
+				}
+				return
+			}
+			if string(first) != "1200" || string(last) != "1900" || len(out) != 3 {
+				t.Errorf("answer %s, want first_word_ms 1200 and last_word_ms 1900", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestTranscribeWebSocket(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not on PATH")
@@ -806,6 +930,7 @@ func TestTranscribeWebSocket(t *testing.T) {
 	defer func() { assemblyAILiveURL = oldURL }()
 
 	var gotAudio int
+	var gotConfig string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mr, err := r.MultipartReader()
 		if err != nil {
@@ -822,12 +947,17 @@ func TestTranscribeWebSocket(t *testing.T) {
 				return
 			}
 			b, _ := io.ReadAll(p)
-			if p.FormName() == "audio" {
+			switch p.FormName() {
+			case "audio":
 				gotAudio = len(b)
+			case "config":
+				gotConfig = string(b)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"text":"ws transcript"}`))
+		_, _ = w.Write([]byte(`{"text":"ws transcript","words":[
+			{"text":"ws","start":300,"end":500},
+			{"text":"transcript","start":520,"end":900}]}`))
 	}))
 	defer upstream.Close()
 	assemblyAILiveURL = upstream.URL
@@ -846,36 +976,45 @@ func TestTranscribeWebSocket(t *testing.T) {
 	// exactly as it does in production.
 	s.cfg.ListenAddr = strings.TrimPrefix(srv.URL, "http://")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/transcribe/ws?type=audio/wav"
-	c, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer c.CloseNow()
+	// The WS transport forwards without a query, so comart keeps its timings,
+	// and a timestamps=0 on the WS URL itself is ignored, not passed on.
+	for _, query := range []string{"?type=audio/wav", "?type=audio/wav&timestamps=0"} {
+		t.Run(query, func(t *testing.T) {
+			gotAudio, gotConfig = 0, ""
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/transcribe/ws" + query
+			c, _, err := websocket.Dial(ctx, wsURL, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer c.CloseNow()
 
-	if err := c.Write(ctx, websocket.MessageBinary, testWAV()); err != nil {
-		t.Fatalf("write audio: %v", err)
-	}
-	if err := c.Write(ctx, websocket.MessageText, []byte("stop")); err != nil {
-		t.Fatalf("write stop: %v", err)
-	}
-	_, data, err := c.Read(ctx)
-	if err != nil {
-		t.Fatalf("read answer: %v", err)
-	}
-	var out struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("answer %q is not JSON: %v", data, err)
-	}
-	if out.Text != "ws transcript" {
-		t.Errorf("text %q, want %q", out.Text, "ws transcript")
-	}
-	if gotAudio == 0 {
-		t.Error("AssemblyAI received no PCM audio")
+			if err := c.Write(ctx, websocket.MessageBinary, testWAV()); err != nil {
+				t.Fatalf("write audio: %v", err)
+			}
+			if err := c.Write(ctx, websocket.MessageText, []byte("stop")); err != nil {
+				t.Fatalf("write stop: %v", err)
+			}
+			_, data, err := c.Read(ctx)
+			if err != nil {
+				t.Fatalf("read answer: %v", err)
+			}
+			var out map[string]json.RawMessage
+			if err := json.Unmarshal(data, &out); err != nil {
+				t.Fatalf("answer %q is not JSON: %v", data, err)
+			}
+			if string(out["text"]) != `"ws transcript"` || string(out["first_word_ms"]) != "300" ||
+				string(out["last_word_ms"]) != "900" || len(out) != 3 {
+				t.Errorf("answer %s, want text, first_word_ms 300 and last_word_ms 900", data)
+			}
+			if gotAudio == 0 {
+				t.Error("AssemblyAI received no PCM audio")
+			}
+			if want := `{"sample_rate":16000,"channels":1,"timestamps":true}`; gotConfig != want {
+				t.Errorf("config part %s, want %s", gotConfig, want)
+			}
+		})
 	}
 }
 
