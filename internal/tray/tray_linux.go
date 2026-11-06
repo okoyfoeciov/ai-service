@@ -4,6 +4,8 @@ package tray
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"image"
 	_ "image/png"
 	"log"
@@ -55,17 +57,36 @@ type statusNotifier struct {
 }
 
 // Run exports a StatusNotifierItem and its dbusmenu, then blocks until Quit.
+//
+// The service outlives the session bus: it runs under systemd --user with
+// lingering, and GNOME restarts the user's dbus.service at logout. When the
+// connection drops, Run reconnects and publishes the same item and menu (picks
+// included) on the new bus, so the icon is back after the next login.
 func Run(c Controller, onPick func(kind, provider string)) {
-	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+	// Read once: systemd's dbus.socket sets it to the fixed
+	// unix:path=$XDG_RUNTIME_DIR/bus, which outlives dbus.service restarts.
+	addr := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	if addr == "" {
 		log.Printf("tray: no session D-Bus available — provider pickers need a desktop session")
 		return
 	}
-	conn, err := dbus.SessionBus()
-	if err != nil {
-		log.Printf("tray: session bus: %v", err)
-		return
-	}
-	defer conn.Close()
+	run(c, onPick, quitCh, addr)
+}
+
+// run is Run on an explicit bus address and quit channel, so tests use a
+// private bus and never fall back to the desktop's.
+func run(c Controller, onPick func(kind, provider string), quit <-chan struct{}, addr string) {
+	// Every connection is bound to ctx, so quitting closes the current one,
+	// even mid-handshake, and ends its register goroutine.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	sni := &statusNotifier{icons: []pixmap{
 		decodePixmap(icon16),
@@ -76,18 +97,109 @@ func Run(c Controller, onPick func(kind, provider string)) {
 		decodePixmap(icon48),
 		decodePixmap(iconRegular),
 	}}
-	if _, err := prop.Export(conn, sniPath, sni.spec()); err != nil {
-		log.Printf("tray: export status item: %v", err)
+	m := newMenu(c, onPick)
+	conn, err := publish(ctx, addr, sni, m)
+	if err != nil {
+		log.Printf("tray: %v", err)
 		return
+	}
+	log.Printf("tray: provider pickers ready")
+
+	delay := minReconnectDelay
+	for {
+		up := time.Now()
+		// Register by object path only. Requesting a well-known
+		// org.kde.StatusNotifierItem-<pid> name as well makes the GNOME
+		// AppIndicator watcher discover the same item twice (once by that name,
+		// once by the path registration), which shows two identical tray icons
+		// after a shell restart.
+		go register(conn)
+		<-conn.Context().Done()
+		if ctx.Err() != nil {
+			conn.Close()
+			return
+		}
+		log.Printf("tray: session bus lost; reconnecting")
+		// The backoff restarts only after a connection that lasted. A bus that
+		// keeps dropping us right after we connect is retried, and logged,
+		// at most every maxReconnectDelay.
+		if time.Since(up) >= stableConnection {
+			delay = minReconnectDelay
+		}
+		if conn, delay = reconnect(ctx, addr, sni, m, delay); conn == nil {
+			return
+		}
+		log.Printf("tray: reconnected")
+	}
+}
+
+// Quit ends Run.
+func Quit() {
+	quitOnce.Do(func() { close(quitCh) })
+}
+
+const (
+	minReconnectDelay = time.Second
+	maxReconnectDelay = 5 * time.Second
+	stableConnection  = time.Minute
+)
+
+// reconnect publishes the item on a new connection, first after delay, then
+// with the delay doubling up to maxReconnectDelay. It returns the connection
+// and the delay for the next reconnect, or nil once ctx is done. Only the
+// first failure is logged: the bus can stay away for hours while logged out.
+func reconnect(ctx context.Context, addr string, sni *statusNotifier, m *menu, delay time.Duration) (*dbus.Conn, time.Duration) {
+	for logged := false; ; {
+		select {
+		case <-ctx.Done():
+			return nil, delay
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, maxReconnectDelay)
+		conn, err := publish(ctx, addr, sni, m)
+		if err == nil {
+			return conn, delay
+		}
+		if !logged && ctx.Err() == nil {
+			log.Printf("tray: reconnect: %v (retrying quietly, backing off to every %v)", err, maxReconnectDelay)
+			logged = true
+		}
+	}
+}
+
+// publish opens a private connection to the session bus at addr and exports
+// the item, its menu and their introspection data on it. Not the shared
+// dbus.SessionBus(): a private connection is bound to ctx, so Quit can close
+// it, even mid-handshake, and it is never shared with other code.
+func publish(ctx context.Context, addr string, sni *statusNotifier, m *menu) (*dbus.Conn, error) {
+	conn, err := dbus.Connect(addr, dbus.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("session bus: %w", err)
+	}
+	if err := export(conn, sni, m); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func export(conn *dbus.Conn, sni *statusNotifier, m *menu) error {
+	if _, err := prop.Export(conn, sniPath, sni.spec()); err != nil {
+		return fmt.Errorf("export status item: %w", err)
 	}
 
-	m := newMenu(c, onPick)
+	// The menu keeps its picks and revision across connections. Swapping
+	// m.props under m.mu sends a pick's Version update to the current
+	// connection, and the exported Version always matches m.revision.
+	m.mu.Lock()
 	menuProps, err := prop.Export(conn, menuPath, m.spec())
-	if err != nil {
-		log.Printf("tray: export menu properties: %v", err)
-		return
+	if err == nil {
+		m.props = menuProps
 	}
-	m.props = menuProps
+	m.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("export menu properties: %w", err)
+	}
 	if err := conn.ExportSubtreeMethodTable(map[string]interface{}{
 		"GetLayout":          m.GetLayout,
 		"GetGroupProperties": m.GetGroupProperties,
@@ -97,8 +209,7 @@ func Run(c Controller, onPick func(kind, provider string)) {
 		"AboutToShow":        m.AboutToShow,
 		"AboutToShowGroup":   m.AboutToShowGroup,
 	}, menuPath, menuIface); err != nil {
-		log.Printf("tray: export menu methods: %v", err)
-		return
+		return fmt.Errorf("export menu methods: %w", err)
 	}
 
 	sniNode := introspect.Node{
@@ -107,8 +218,7 @@ func Run(c Controller, onPick func(kind, provider string)) {
 	}
 	if err := conn.Export(introspect.NewIntrospectable(&sniNode), sniPath,
 		"org.freedesktop.DBus.Introspectable"); err != nil {
-		log.Printf("tray: export status introspection: %v", err)
-		return
+		return fmt.Errorf("export status introspection: %w", err)
 	}
 	menuNode := introspect.Node{
 		Name:       menuPath,
@@ -116,24 +226,9 @@ func Run(c Controller, onPick func(kind, provider string)) {
 	}
 	if err := conn.Export(introspect.NewIntrospectable(&menuNode), menuPath,
 		"org.freedesktop.DBus.Introspectable"); err != nil {
-		log.Printf("tray: export menu introspection: %v", err)
-		return
+		return fmt.Errorf("export menu introspection: %w", err)
 	}
-
-	// Register by object path only. Requesting a well-known
-	// org.kde.StatusNotifierItem-<pid> name as well makes the GNOME AppIndicator
-	// watcher discover the same item twice (once by that name, once by the path
-	// registration below), which shows two identical tray icons after a shell
-	// restart.
-	go register(conn)
-	log.Printf("tray: provider pickers ready")
-
-	<-quitCh
-}
-
-// Quit ends Run.
-func Quit() {
-	quitOnce.Do(func() { close(quitCh) })
+	return nil
 }
 
 func (s *statusNotifier) spec() map[string]map[string]*prop.Prop {
@@ -458,14 +553,17 @@ func (m *menu) pick(id int32) {
 	}
 }
 
+// register registers the item with the watcher, waiting for one if needed, and
+// again whenever the watcher restarts. It returns when conn closes.
 func register(conn *dbus.Conn) {
+	closed := conn.Context().Done()
 	watcher := conn.Object(watcherName, watcherPath)
 	registerOnce := func() bool {
 		return watcher.Call(watcherName+".RegisterStatusNotifierItem", 0, sniPath).Err == nil
 	}
 	for !registerOnce() {
 		select {
-		case <-quitCh:
+		case <-closed:
 			return
 		case <-time.After(time.Second):
 		}
@@ -476,14 +574,16 @@ func register(conn *dbus.Conn) {
 		dbus.WithMatchMember("NameOwnerChanged"),
 		dbus.WithMatchArg(0, watcherName),
 	); err != nil {
-		log.Printf("tray: watch %s: %v", watcherName, err)
+		if conn.Connected() { // a lost bus is reported by run
+			log.Printf("tray: watch %s: %v", watcherName, err)
+		}
 		return
 	}
 	ch := make(chan *dbus.Signal, 10)
 	conn.Signal(ch)
 	for {
 		select {
-		case <-quitCh:
+		case <-closed:
 			return
 		case sig := <-ch:
 			if sig == nil {

@@ -368,6 +368,13 @@ the same routes.
 - Linux needs the service to have the session D-Bus address; the systemd user
   manager imports it at login. Without a desktop session the service still
   serves HTTP, logs `tray: no session D-Bus …`, and skips the icon.
+- The service outlives the session bus: it keeps running through a logout
+  (lingering), while GNOME restarts the user's `dbus.service`. The tray then
+  logs `tray: session bus lost; reconnecting`, retries on a new private
+  connection after 1 s, then backs off to every 5 s (only the first failure
+  is logged, as `tray: reconnect: …`), publishes the same icon and menu
+  (current picks kept), registers again and logs `tray: reconnected`, so the
+  icon is back after the next login without a service restart.
 - macOS builds the tray with cgo/Cocoa, so `install.sh` needs the Xcode
   command-line tools (`xcode-select --install`). Linux uses a small in-repo
   StatusNotifierItem/dbusmenu backend (`internal/tray/tray_linux.go`) and keeps
