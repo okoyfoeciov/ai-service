@@ -103,16 +103,19 @@ func New(cfg config.Config, st *store.Store) *Server {
 	return s
 }
 
-func newClaude(key, model, route string, webSearch bool, hc *http.Client) llm.Streamer {
+func newClaude(key, model, route string, web bool, hc *http.Client) llm.Streamer {
 	return llm.NewClaude(llm.ClaudeConfig{
-		APIKey:           key,
-		BaseURL:          claudeURL,
-		Model:            model,
-		MaxTokens:        maxAnswerTokens,
-		Effort:           config.ClaudeEffort,
-		Route:            route,
-		WebSearch:        webSearch,
-		WebSearchMaxUses: int64(config.ClaudeAskWebSearches),
+		APIKey:                   key,
+		BaseURL:                  claudeURL,
+		Model:                    model,
+		MaxTokens:                maxAnswerTokens,
+		Effort:                   config.ClaudeEffort,
+		Route:                    route,
+		WebSearch:                web,
+		WebSearchMaxUses:         int64(config.ClaudeAskWebSearches),
+		WebFetch:                 web,
+		WebFetchMaxUses:          int64(config.ClaudeAskWebFetches),
+		WebFetchMaxContentTokens: int64(config.ClaudeAskWebFetchTokens),
 	}, hc)
 }
 
@@ -159,11 +162,13 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 }
 
 // newOpenRouterAsk builds the Ask client for DeepSeek V4.1 Flash 1017. Its
-// thinking level is reasoning.effort (not explain's token budget). With
-// webSearch it carries OpenRouter's web search server tool: the model may
-// search when the question needs current information, and OpenRouter runs the
-// search itself. DeepSeek has no native search, so the tool uses Exa.
-func newOpenRouterAsk(key, model string, webSearch bool, hc *http.Client) llm.Streamer {
+// thinking level is reasoning.effort (not explain's token budget). With web it
+// carries OpenRouter's web search and web fetch server tools: the model may
+// search when the question needs current information, and open a promising
+// result when the search excerpts are not enough. DeepSeek has no native web
+// tools, so both run through OpenRouter; search uses Exa and fetch uses Exa's
+// Contents API.
+func newOpenRouterAsk(key, model string, web bool, hc *http.Client) llm.Streamer {
 	params := map[string]any{
 		"max_tokens": maxAnswerTokens,
 		"reasoning": map[string]any{
@@ -171,15 +176,25 @@ func newOpenRouterAsk(key, model string, webSearch bool, hc *http.Client) llm.St
 			"exclude": true,
 		},
 	}
-	if webSearch {
-		params["tools"] = []map[string]any{{
-			"type": "openrouter:web_search",
-			"parameters": map[string]any{
-				"engine":      "exa",
-				"max_results": config.OpenRouterAskWebResults,
-				"max_uses":    config.OpenRouterAskWebSearches,
+	if web {
+		params["tools"] = []map[string]any{
+			{
+				"type": "openrouter:web_search",
+				"parameters": map[string]any{
+					"engine":      "exa",
+					"max_results": config.OpenRouterAskWebResults,
+					"max_uses":    config.OpenRouterAskWebSearches,
+				},
 			},
-		}}
+			{
+				"type": "openrouter:web_fetch",
+				"parameters": map[string]any{
+					"engine":             "exa",
+					"max_uses":           config.OpenRouterAskWebFetches,
+					"max_content_tokens": config.OpenRouterAskWebFetchTokens,
+				},
+			},
+		}
 	}
 	return llm.New(llm.Config{
 		Provider: "OpenRouter",

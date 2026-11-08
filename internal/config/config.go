@@ -21,9 +21,8 @@ const (
 	ProviderCerebras   = "cerebras"
 	ProviderClaude     = "claude"
 
-	// Ask variants without the provider's web search tool. The plain provider
-	// names above stay the search-enabled choices, so a saved tray pick keeps
-	// working.
+	// Ask variants without the provider's web tools. The plain provider names
+	// above stay the web-enabled choices, so a saved tray pick keeps working.
 	ProviderClaudeNoSearch     = "claude-no-search"
 	ProviderOpenRouterNoSearch = "openrouter-no-search"
 )
@@ -72,8 +71,8 @@ type Config struct {
 	AskCerebrasAPIKey   string
 	AskOpenRouterAPIKey string
 	// AskProviders lists every configured ask choice in a fixed order
-	// (Claude search/no-search, Cerebras, OpenRouter search/no-search). It is
-	// empty when no key is set.
+	// (Claude web/no-web, Cerebras, OpenRouter web/no-web). It is empty when
+	// no key is set.
 	AskProviders []string
 	// AskProvider is the provider /api/ask starts on: the first entry of
 	// AskProviders, unless main restores a selection saved by the tray picker.
@@ -128,10 +127,24 @@ const (
 	// Two leaves room for a multi-hop question while keeping cost and latency
 	// bounded even when the model wants to search repeatedly.
 	OpenRouterAskWebSearches = 2
+	// OpenRouterAskWebFetches caps how many full pages one Ask request may
+	// open. Search finds the sources; two fetches let the model read the most
+	// relevant ones without letting a confused loop crawl the web.
+	OpenRouterAskWebFetches = 2
+	// OpenRouterAskWebFetchTokens caps the text one fetch adds to the context.
+	// 30k tokens is roughly 120 kB, enough for a long article or a small PDF;
+	// it keeps two fetches from crowding out the picked page text and history.
+	OpenRouterAskWebFetchTokens = 30000
 	// ClaudeAskWebSearches caps Claude's direct web searches in one Ask turn.
 	// A pause_turn continuation remains the same turn, so the API counts it
 	// against this same budget.
 	ClaudeAskWebSearches = 2
+	// ClaudeAskWebFetches caps Claude's direct web fetches in one Ask turn.
+	// Like searches, a pause_turn continuation remains the same turn.
+	ClaudeAskWebFetches = 2
+	// ClaudeAskWebFetchTokens caps the fetched text in Claude's context, for
+	// the same reason as OpenRouter's cap.
+	ClaudeAskWebFetchTokens = 30000
 )
 
 // Load reads config from the environment. It also returns the missing API
@@ -285,10 +298,10 @@ func (c Config) ExplainModelFor(provider string) string {
 }
 
 // resolveAsk collects the /api/ask choices. Every key may be set; the tray
-// picker then switches between them. A provider with a search tool gets two
-// entries, search and no-search, so the reader can choose a plain answer
-// without changing credentials. An empty key counts as unset, because
-// .env.example ships empty lines. Models are fixed per provider.
+// picker then switches between them. A provider with web tools gets two
+// entries, web and no-web, so the reader can choose a plain answer without
+// changing credentials. An empty key counts as unset, because .env.example
+// ships empty lines. Models are fixed per provider.
 func (c *Config) resolveAsk() error {
 	if c.AskClaudeAPIKey != "" {
 		c.AskProviders = append(c.AskProviders, ProviderClaude, ProviderClaudeNoSearch)
@@ -424,15 +437,15 @@ func (c Config) AskRoute() string {
 	for _, p := range c.AskProviders {
 		switch p {
 		case ProviderClaude:
-			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search on", c.AskModelFor(p), ClaudeEffort))
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch on", c.AskModelFor(p), ClaudeEffort))
 		case ProviderClaudeNoSearch:
-			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search off", c.AskModelFor(p), ClaudeEffort))
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch off", c.AskModelFor(p), ClaudeEffort))
 		case ProviderCerebras:
 			parts = append(parts, fmt.Sprintf("Cerebras, model %s, reasoning %s", c.AskModelFor(p), CerebrasReasoningEffort))
 		case ProviderOpenRouter:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		case ProviderOpenRouterNoSearch:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search off", c.AskModelFor(p), OpenRouterAskReasoningEffort))
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch off", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		}
 	}
 	switch len(parts) {
@@ -449,13 +462,13 @@ func (c Config) AskRoute() string {
 func askProviderName(provider string) string {
 	switch provider {
 	case ProviderClaude:
-		return "Claude Platform (search)"
+		return "Claude Platform (search + fetch)"
 	case ProviderClaudeNoSearch:
 		return "Claude Platform (no search)"
 	case ProviderCerebras:
 		return "Cerebras"
 	case ProviderOpenRouter:
-		return "OpenRouter (search)"
+		return "OpenRouter (search + fetch)"
 	case ProviderOpenRouterNoSearch:
 		return "OpenRouter (no search)"
 	}

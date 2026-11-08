@@ -131,29 +131,42 @@ func TestClaudeStreamsAnswerAndDropsThinking(t *testing.T) {
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
-// Search is a server tool on the Ask client only: it rides in the request's
-// tools array with a direct caller and a capped search count.
-func TestClaudeWebSearchToolOnlyWhenEnabled(t *testing.T) {
+// Search and fetch are server tools on the web-enabled Ask client only: they
+// ride in the request's tools array with direct callers and capped use counts.
+func TestClaudeWebToolsOnlyWhenEnabled(t *testing.T) {
 	cs := newClaudeServer(t, []int{200}, claudeSSE(
 		evStart("claude-opus-5-5"), evText("ok"), evStop("end_turn"), evMessageStop))
 	c := NewClaude(ClaudeConfig{
 		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
-		MaxTokens: 100, Effort: "medium", WebSearch: true, WebSearchMaxUses: 2,
+		MaxTokens: 100, Effort: "medium",
+		WebSearch: true, WebSearchMaxUses: 2,
+		WebFetch: true, WebFetchMaxUses: 2, WebFetchMaxContentTokens: 30000,
 	}, cs.Client())
 	if res := c.Stream(context.Background(), "latest news", nil); !res.OK {
 		t.Fatalf("%+v", res)
 	}
 	tools, _ := cs.sent["tools"].([]any)
-	if len(tools) != 1 {
+	if len(tools) != 2 {
 		t.Fatalf("tools %v", cs.sent["tools"])
 	}
-	tool, _ := tools[0].(map[string]any)
-	if tool["type"] != "web_search_20250305" || tool["name"] != "web_search" || tool["max_uses"] != float64(2) {
-		t.Errorf("tool %v", tool)
+	byType := map[string]map[string]any{}
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		typ, _ := tool["type"].(string)
+		byType[typ] = tool
 	}
-	callers, _ := tool["allowed_callers"].([]any)
+	search := byType["web_search_20250305"]
+	if search["name"] != "web_search" || search["max_uses"] != float64(2) {
+		t.Errorf("search tool %v", search)
+	}
+	callers, _ := search["allowed_callers"].([]any)
 	if len(callers) != 1 || callers[0] != "direct" {
-		t.Errorf("allowed_callers %v", tool["allowed_callers"])
+		t.Errorf("search allowed_callers %v", search["allowed_callers"])
+	}
+	fetch := byType["web_fetch_20250910"]
+	if fetch["name"] != "web_fetch" || fetch["max_uses"] != float64(2) ||
+		fetch["max_content_tokens"] != float64(30000) {
+		t.Errorf("fetch tool %v", fetch)
 	}
 }
 
@@ -185,6 +198,55 @@ func TestClaudeReportsWebSearch(t *testing.T) {
 	}
 	if len(states) != 2 || states[0] != true || states[1] != false {
 		t.Fatalf("search states %v, want [true false]", states)
+	}
+}
+
+// A fetch is a web tool too: the card must show the wait row while Claude
+// opens a page, not only while it searches.
+func TestClaudeReportsWebFetch(t *testing.T) {
+	cs := newClaudeServer(t, []int{200}, claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_2","name":"web_fetch","input":{}}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_2","caller":{"type":"direct"},"content":{"type":"web_fetch_result","url":"https://example.com","retrieved_at":"2026-11-08T00:00:00Z","content":{"type":"document","title":"Example","citations":{"enabled":true},"source":{"type":"text","media_type":"text/plain","data":"page"}}}}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+		[2]string{"content_block_start", `{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"answer"}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":2}`},
+		evStop("end_turn"), evMessageStop))
+
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
+		MaxTokens: 100, Effort: "medium",
+		WebFetch: true, WebFetchMaxUses: 2, WebFetchMaxContentTokens: 30000,
+	}, cs.Client())
+	var states []bool
+	res := c.StreamWithSearch(context.Background(), "read this page", nil, func(active bool) {
+		states = append(states, active)
+	})
+	if !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	if len(states) != 2 || states[0] != true || states[1] != false {
+		t.Fatalf("web states %v, want [true false]", states)
+	}
+}
+
+// Parallel web tools share one status: the answer is still on the web until the
+// last result arrives, and finishing one tool must not clear the row while
+// another is running.
+func TestWebToolTrackerWaitsForLastParallelTool(t *testing.T) {
+	var states []bool
+	w := &webToolTracker{notify: func(active bool) { states = append(states, active) }}
+	w.start("search")
+	w.start("fetch")
+	w.finish("search")
+	if len(states) != 1 || !states[0] {
+		t.Fatalf("states after one of two tools finished %v, want [true]", states)
+	}
+	w.finish("fetch")
+	if len(states) != 2 || states[1] != false {
+		t.Fatalf("states after both tools finished %v, want [true false]", states)
 	}
 }
 

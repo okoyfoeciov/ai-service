@@ -172,7 +172,7 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") ||
-		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search on") {
+		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search + fetch on") {
 		t.Errorf("ask route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") {
@@ -287,7 +287,7 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := c.AskRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") ||
-		!strings.Contains(got, "medium") || !strings.Contains(got, "web search on") {
+		!strings.Contains(got, "medium") || !strings.Contains(got, "web search + fetch on") {
 		t.Errorf("route %q", got)
 	}
 
@@ -297,7 +297,7 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.AskRoute()
-	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "3 choices", "tray picker", "starting on Claude Platform", "web search off"} {
+	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "3 choices", "tray picker", "starting on Claude Platform", "web search + fetch off"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}
@@ -309,7 +309,7 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = c.AskRoute()
-	for _, want := range []string{"OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "web search on", "web search off", "5 choices"} {
+	for _, want := range []string{"OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "web search + fetch on", "web search + fetch off", "5 choices"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}

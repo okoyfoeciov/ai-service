@@ -60,10 +60,11 @@ const (
 // The SSE contract is /api/explain's: `chunk` events carry answer fragments,
 // an optional `error` event carries a user-readable message, and `done` is
 // always the last event. Every Ask starts with a `search` event
-// ({active:false,enabled:bool}); Claude's search choice then sends
-// {active:true/false,enabled:true} around a native search. OpenRouter's search
-// choice sets enabled:true but has no active transitions, and the no-search
-// choices set enabled:false. HTTP status stays 200 after the stream opens.
+// ({active:false,enabled:bool}); Claude's web choice then sends
+// {active:true/false,enabled:true} around a native search or fetch.
+// OpenRouter's web choice sets enabled:true but has no active transitions, and
+// the no-search choices set enabled:false. HTTP status stays 200 after the
+// stream opens.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// Resolve the tray choice once. A tray switch while this request is being
@@ -219,7 +220,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	} else {
 		p = prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
 	}
-	// Tell the card whether this choice has a search tool at all, so its idle
+	// Tell the card whether this choice has web tools at all, so its idle
 	// indicator says "Thinking" for the no-search choices instead of guessing
 	// from words in the answer.
 	searchEnabled := provider == config.ProviderClaude || provider == config.ProviderOpenRouter
@@ -227,9 +228,10 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	onText := func(t string) {
 		send("chunk", map[string]any{"text": t})
 	}
-	// Claude's native search runs before it writes the answer. Tell the card
-	// when that happens, so its indicator can say "Searching the web…" during
-	// the silent part instead of guessing from a pause in the text.
+	// Claude's native search or fetch runs before it writes the answer. Tell
+	// the card when that happens, so its indicator can say "Searching the
+	// web…" during the silent part instead of guessing from a pause in the
+	// text.
 	onSearch := func(active bool) {
 		send("search", map[string]any{"active": active, "enabled": true})
 	}

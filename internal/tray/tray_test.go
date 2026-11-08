@@ -95,10 +95,10 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
-		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search)"},
+		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
 		{PickAsk, config.ProviderClaudeNoSearch, "Claude Platform Opus 5.5"},
 		{PickAsk, config.ProviderCerebras, "Cerebras Qwen 3.8 27B"},
-		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search)"},
+		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"},
 		{PickAsk, config.ProviderOpenRouterNoSearch, "OpenRouter DeepSeek V4.1 Flash 1017"},
 	}
 	for _, tc := range cases {

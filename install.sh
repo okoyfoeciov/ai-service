@@ -294,9 +294,9 @@ else
     fi
   done
   case "$ask_start" in
-    ASK_CLAUDE_API_KEY) ask_start_name="the Claude Platform (search)" ;;
+    ASK_CLAUDE_API_KEY) ask_start_name="the Claude Platform (search + fetch)" ;;
     ASK_CEREBRAS_API_KEY) ask_start_name="Cerebras" ;;
-    ASK_OPENROUTER_API_KEY) ask_start_name="OpenRouter DeepSeek V4.1 Flash 1017 (search)" ;;
+    ASK_OPENROUTER_API_KEY) ask_start_name="OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)" ;;
     *) ask_start_name="" ;;
   esac
   if [ "$ask_count" -ge 2 ]; then
@@ -305,10 +305,10 @@ else
   elif [ "$ask_count" -eq 1 ]; then
     case "$ask_start" in
       ASK_CLAUDE_API_KEY)
-        say "[d] ai-service.env: ASK_CLAUDE_API_KEY is set — /api/ask offers Claude Platform with and without web search in the tray picker"
+        say "[d] ai-service.env: ASK_CLAUDE_API_KEY is set — /api/ask offers Claude Platform with and without web search and fetch in the tray picker"
         ;;
       ASK_OPENROUTER_API_KEY)
-        say "[d] ai-service.env: ASK_OPENROUTER_API_KEY is set — /api/ask offers OpenRouter DeepSeek V4.1 Flash 1017 with and without web search in the tray picker"
+        say "[d] ai-service.env: ASK_OPENROUTER_API_KEY is set — /api/ask offers OpenRouter DeepSeek V4.1 Flash 1017 with and without web search and fetch in the tray picker"
         ;;
       *)
         say "[d] ai-service.env: $ask_start is set — /api/ask runs on $ask_start_name"
@@ -320,7 +320,7 @@ else
     # leaves /api/ask unconfigured; the handler names the missing keys.
     ask_key ASK_CLAUDE_API_KEY "spoken questions via the Claude Platform. Leave it empty to use a Cerebras key instead" 1 ||
       ask_key ASK_CEREBRAS_API_KEY "spoken questions via Cerebras. Leave it empty to use an OpenRouter key instead" 1 ||
-      ask_key ASK_OPENROUTER_API_KEY "spoken questions via OpenRouter DeepSeek V4.1 Flash 1017 (thinking high, web search on). Leave it empty to skip" 1 ||
+      ask_key ASK_OPENROUTER_API_KEY "spoken questions via OpenRouter DeepSeek V4.1 Flash 1017 (thinking high, web search + fetch on). Leave it empty to skip" 1 ||
       say "[d] ai-service.env: ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY left empty — /api/ask stays unconfigured"
   fi
   if env_set MEMOIR_CLAUDE_API_KEY; then

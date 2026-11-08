@@ -441,10 +441,10 @@ func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 }
 
 // The OpenRouter Ask client is DeepSeek V4.1 Flash 1017 at thinking level
-// high, and it carries the web search server tool. Its reasoning control is
-// effort, not explain's token budget, and the tool runs on Exa because
-// DeepSeek has no native search.
-func TestAskOpenRouterUsesDeepSeekHighEffortWithWebSearch(t *testing.T) {
+// high, and it carries the web search and web fetch server tools. Its reasoning
+// control is effort, not explain's token budget, and both tools run on Exa
+// because DeepSeek has no native web tools.
+func TestAskOpenRouterUsesDeepSeekHighEffortWithWebTools(t *testing.T) {
 	m := &captureModel{reply: "ok"}
 	cfg := config.Config{
 		AskProviders:        []string{config.ProviderOpenRouter},
@@ -472,22 +472,32 @@ func TestAskOpenRouterUsesDeepSeekHighEffortWithWebSearch(t *testing.T) {
 		t.Errorf("reasoning %v", body["reasoning"])
 	}
 	tools, _ := body["tools"].([]any)
-	if len(tools) != 1 {
+	if len(tools) != 2 {
 		t.Fatalf("tools %v", body["tools"])
 	}
-	tool, _ := tools[0].(map[string]any)
-	if tool["type"] != "openrouter:web_search" {
-		t.Errorf("tool %v", tool)
+	byType := map[string]map[string]any{}
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		typ, _ := tool["type"].(string)
+		byType[typ] = tool
 	}
-	params, _ := tool["parameters"].(map[string]any)
+	search := byType["openrouter:web_search"]
+	params, _ := search["parameters"].(map[string]any)
 	if params["engine"] != "exa" || params["max_results"] != float64(10) || params["max_uses"] != float64(2) {
-		t.Errorf("web search parameters %v", params)
+		t.Errorf("web search parameters %v", search)
+	}
+	fetch := byType["openrouter:web_fetch"]
+	params, _ = fetch["parameters"].(map[string]any)
+	if params["engine"] != "exa" || params["max_uses"] != float64(2) ||
+		params["max_content_tokens"] != float64(30000) {
+		t.Errorf("web fetch parameters %v", fetch)
 	}
 }
 
-// Claude's web search tool belongs to /api/ask only. The Explain client must
-// keep its old tool-less request.
-func TestClaudeWebSearchIsAskOnly(t *testing.T) {
+// Claude's web search and fetch tools belong to /api/ask's web-enabled choice
+// only. The no-search Ask choice and the Explain client must keep their
+// tool-less requests.
+func TestClaudeWebToolsAreAskOnly(t *testing.T) {
 	body := "event: message_start\n" +
 		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
 		"event: content_block_start\n" +
@@ -532,25 +542,35 @@ func TestClaudeWebSearchIsAskOnly(t *testing.T) {
 			}
 			tools, _ := req["tools"].([]any)
 			if tc.name == "ask" {
-				if len(tools) != 1 {
+				if len(tools) != 2 {
 					t.Fatalf("ask tools %v", req["tools"])
 				}
-				tool, _ := tools[0].(map[string]any)
-				if tool["type"] != "web_search_20250305" || tool["max_uses"] != float64(2) {
-					t.Errorf("ask tool %v", tool)
+				byType := map[string]map[string]any{}
+				for _, raw := range tools {
+					tool, _ := raw.(map[string]any)
+					typ, _ := tool["type"].(string)
+					byType[typ] = tool
+				}
+				search := byType["web_search_20250305"]
+				if search["max_uses"] != float64(2) {
+					t.Errorf("ask search tool %v", search)
+				}
+				fetch := byType["web_fetch_20250910"]
+				if fetch["max_uses"] != float64(2) || fetch["max_content_tokens"] != float64(30000) {
+					t.Errorf("ask fetch tool %v", fetch)
 				}
 				return
 			}
 			if len(tools) != 0 {
-				t.Errorf("explain request carries tools %v", req["tools"])
+				t.Errorf("request carries tools %v", req["tools"])
 			}
 		})
 	}
 }
 
-// /api/ask turns Claude's search callbacks into SSE `search` events, and the
-// prompt carries the web-search guidance.
-func TestAskSendsClaudeSearchStatus(t *testing.T) {
+// /api/ask turns Claude's search and fetch callbacks into SSE `search` events,
+// and the prompt carries the web guidance.
+func TestAskSendsClaudeWebToolStatus(t *testing.T) {
 	body := "event: message_start\n" +
 		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
 		"event: content_block_start\n" +
@@ -562,11 +582,19 @@ func TestAskSendsClaudeSearchStatus(t *testing.T) {
 		"event: content_block_stop\n" +
 		`data: {"type":"content_block_stop","index":1}` + "\n\n" +
 		"event: content_block_start\n" +
-		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}` + "\n\n" +
-		"event: content_block_delta\n" +
-		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"the answer"}}` + "\n\n" +
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_2","name":"web_fetch","input":{}}}` + "\n\n" +
 		"event: content_block_stop\n" +
 		`data: {"type":"content_block_stop","index":2}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":3,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_2","caller":{"type":"direct"},"content":{"type":"web_fetch_result","url":"https://example.com","retrieved_at":"2026-11-08T00:00:00Z","content":{"type":"document","title":"Example","citations":{"enabled":true},"source":{"type":"text","media_type":"text/plain","data":"page"}}}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":3}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":4,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"the answer"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":4}` + "\n\n" +
 		"event: message_delta\n" +
 		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n" +
 		"event: message_stop\n" +
@@ -599,11 +627,11 @@ func TestAskSendsClaudeSearchStatus(t *testing.T) {
 			t.Errorf("stream missing %q:\n%s", want, out)
 		}
 	}
-	if got := strings.Count(out, `"active":true`); got != 1 {
-		t.Errorf("stream has %d active=true events, want 1:\n%s", got, out)
+	if got := strings.Count(out, `"active":true`); got != 2 {
+		t.Errorf("stream has %d active=true events, want 2 (search + fetch):\n%s", got, out)
 	}
-	if got := strings.Count(out, `"active":false`); got != 2 {
-		t.Errorf("stream has %d active=false events, want 2 (initial + result):\n%s", got, out)
+	if got := strings.Count(out, `"active":false`); got != 3 {
+		t.Errorf("stream has %d active=false events, want 3 (initial + two results):\n%s", got, out)
 	}
 	if strings.Index(out, "event: search") > strings.Index(out, "event: chunk") {
 		t.Errorf("search event came after the first chunk:\n%s", out)
@@ -612,8 +640,10 @@ func TestAskSendsClaudeSearchStatus(t *testing.T) {
 		t.Errorf("stream does not end with done:\n%s", out)
 	}
 	raw, _ := capture.sent.Load().(string)
-	if !strings.Contains(raw, "# WEB SEARCH") {
-		t.Errorf("request prompt lacks the web-search section: %s", raw)
+	for _, want := range []string{"# WEB SEARCH", "web fetch tool"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("request prompt lacks %q: %s", want, raw)
+		}
 	}
 }
 

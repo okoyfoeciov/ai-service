@@ -60,11 +60,11 @@ type Streamer interface {
 	Stream(ctx context.Context, prompt string, onText func(string)) Result
 }
 
-// SearchStreamer is a Streamer that can report a server-side web search to the
-// handler. onSearch(true) means a search started; onSearch(false) means its
-// results arrived and the model is working on the answer. The callback is
-// optional: a text-only client that does not implement this simply never sends
-// the search status.
+// SearchStreamer is a Streamer that can report a server-side web tool to the
+// handler. onSearch(true) means a search or fetch started; onSearch(false)
+// means its results arrived and the model is working on the answer. The
+// callback is optional: a text-only client that does not implement this simply
+// never sends the web status.
 type SearchStreamer interface {
 	StreamWithSearch(ctx context.Context, prompt string, onText func(string), onSearch func(bool)) Result
 }

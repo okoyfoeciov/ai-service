@@ -27,11 +27,19 @@ type ClaudeConfig struct {
 	// for the log only: Claude clients with the same model would otherwise log
 	// identical lines.
 	Route string
-	// WebSearch enables Claude's server-side web search tool. Only /api/ask
-	// sets it; Explain and Memoir must not.
+	// WebSearch enables Claude's server-side web search tool. Only /api/ask's
+	// web-enabled choices set it; Explain and Memoir must not.
 	WebSearch bool
 	// WebSearchMaxUses caps searches in one turn when WebSearch is on.
 	WebSearchMaxUses int64
+	// WebFetch enables Claude's server-side web fetch tool. Like WebSearch, it
+	// belongs only to /api/ask's web-enabled choices.
+	WebFetch bool
+	// WebFetchMaxUses caps fetches in one turn when WebFetch is on.
+	WebFetchMaxUses int64
+	// WebFetchMaxContentTokens caps the fetched text added to the context.
+	// Zero leaves the API's own behaviour (no cap), so callers should set it.
+	WebFetchMaxContentTokens int64
 }
 
 // Claude streams an answer from the Claude Platform's Messages API with the
@@ -39,10 +47,11 @@ type ClaudeConfig struct {
 // use either.
 //
 // The request carries the model, max_tokens, adaptive thinking and the effort,
-// plus Claude's web-search tool only on the search-enabled /api/ask choice. It
-// carries no sampling settings and no refusal fallback. A fallback would answer
-// from another model after a refusal, which is the silent re-routing this
-// service is set up to avoid; a refusal is reported as an error instead.
+// plus Claude's web-search and web-fetch tools only on the web-enabled
+// /api/ask choice. It carries no sampling settings and no refusal fallback. A
+// fallback would answer from another model after a refusal, which is the silent
+// re-routing this service is set up to avoid; a refusal is reported as an error
+// instead.
 // Adaptive thinking is asked for explicitly because leaving the field
 // out means "no thinking" on some older models (Opus 4.8, 4.7) and "thinking"
 // on Opus 5.5; the explicit form is the same on every model that has it.
@@ -90,15 +99,15 @@ func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image
 	return c.StreamImagesWithSearch(ctx, prompt, images, onText, nil)
 }
 
-// StreamWithSearch is Stream with a server-tool search status callback.
+// StreamWithSearch is Stream with a server-tool web status callback.
 func (c *Claude) StreamWithSearch(ctx context.Context, prompt string, onText func(string), onSearch func(bool)) Result {
 	return c.StreamImagesWithSearch(ctx, prompt, nil, onText, onSearch)
 }
 
-// StreamImagesWithSearch is StreamImages with a search status callback. The
-// callback fires when Claude opens a web_search server_tool_use block
-// (onSearch(true)) and when the corresponding web_search_tool_result starts
-// arriving (onSearch(false)).
+// StreamImagesWithSearch is StreamImages with a web status callback. The
+// callback fires when Claude opens a web_search or web_fetch server_tool_use
+// block (onSearch(true)) and when the corresponding result starts arriving
+// (onSearch(false)).
 func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, images []Image, onText func(string), onSearch func(bool)) Result {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(images)+1)
 	blocks = append(blocks, anthropic.NewTextBlock(prompt))
@@ -114,28 +123,45 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 	if c.cfg.Effort != "" {
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(c.cfg.Effort)}
 	}
+	var tools []anthropic.ToolUnionParam
 	if c.cfg.WebSearch {
 		uses := c.cfg.WebSearchMaxUses
 		if uses <= 0 {
 			uses = 2
 		}
-		params.Tools = []anthropic.ToolUnionParam{{
+		tools = append(tools, anthropic.ToolUnionParam{
 			OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
 				MaxUses:        anthropic.Int(uses),
 				AllowedCallers: []string{"direct"},
 			},
-		}}
+		})
+	}
+	if c.cfg.WebFetch {
+		uses := c.cfg.WebFetchMaxUses
+		if uses <= 0 {
+			uses = 2
+		}
+		fetch := &anthropic.WebFetchTool20250910Param{
+			MaxUses: anthropic.Int(uses),
+		}
+		if c.cfg.WebFetchMaxContentTokens > 0 {
+			fetch.MaxContentTokens = anthropic.Int(c.cfg.WebFetchMaxContentTokens)
+		}
+		tools = append(tools, anthropic.ToolUnionParam{OfWebFetchTool20250910: fetch})
+	}
+	if len(tools) > 0 {
+		params.Tools = tools
 	}
 
-	// A paused search turn is continued by appending the assistant message it
-	// returned and asking again with the same tools (Messages API pause_turn).
-	// The cap is the same kind of backstop as the HTTP retry budget: it stops a
-	// provider loop from running forever.
+	// A paused search or fetch turn is continued by appending the assistant
+	// message it returned and asking again with the same tools (Messages API
+	// pause_turn). The cap is the same kind of backstop as the HTTP retry
+	// budget: it stops a provider loop from running forever.
 	messages := params.Messages
 	pauses := 0
 	attempt := 0
 	totalText := 0
-	searches := &searchTracker{notify: onSearch}
+	web := &webToolTracker{notify: onSearch}
 	textOut := onText
 	if onText != nil {
 		textOut = func(s string) {
@@ -146,7 +172,7 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 	for {
 		params.Messages = messages
 		stream := c.client.Messages.NewStreaming(ctx, params)
-		res, msg, httpErr := c.read(ctx, stream, textOut, searches, totalText)
+		res, msg, httpErr := c.read(ctx, stream, textOut, web, totalText)
 		_ = stream.Close()
 		if httpErr == nil {
 			if res.Code == "pause-turn" {
@@ -180,41 +206,41 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 }
 
 // maxPauseTurns caps how many times one answer may be resumed after a
-// pause_turn, like the HTTP retry budget. A web search turn can pause more than
-// once; a provider loop must not run forever.
+// pause_turn, like the HTTP retry budget. A web search or fetch turn can pause
+// more than once; a provider loop must not run forever.
 const maxPauseTurns = 4
 
-// searchTracker keeps the search status correct when Claude runs more than one
-// search in parallel: the answer is still searching until the last result
-// arrives. It lives across pause_turn continuations.
-type searchTracker struct {
+// webToolTracker keeps the web status correct when Claude runs more than one
+// search or fetch in parallel: the answer is still working on the web until the
+// last result arrives. It lives across pause_turn continuations.
+type webToolTracker struct {
 	pending map[string]bool
 	active  bool
 	notify  func(bool)
 }
 
-func (s *searchTracker) start(id string) {
-	if s == nil || s.notify == nil {
+func (w *webToolTracker) start(id string) {
+	if w == nil || w.notify == nil {
 		return
 	}
-	if s.pending == nil {
-		s.pending = make(map[string]bool)
+	if w.pending == nil {
+		w.pending = make(map[string]bool)
 	}
-	s.pending[id] = true
-	if !s.active {
-		s.active = true
-		s.notify(true)
+	w.pending[id] = true
+	if !w.active {
+		w.active = true
+		w.notify(true)
 	}
 }
 
-func (s *searchTracker) finish(id string) {
-	if s == nil || s.notify == nil {
+func (w *webToolTracker) finish(id string) {
+	if w == nil || w.notify == nil {
 		return
 	}
-	delete(s.pending, id)
-	if s.active && len(s.pending) == 0 {
-		s.active = false
-		s.notify(false)
+	delete(w.pending, id)
+	if w.active && len(w.pending) == 0 {
+		w.active = false
+		w.notify(false)
 	}
 }
 
@@ -231,7 +257,7 @@ func (c *Claude) read(ctx context.Context, stream interface {
 	Next() bool
 	Current() anthropic.MessageStreamEventUnion
 	Err() error
-}, onText func(string), searches *searchTracker, priorText int) (Result, *anthropic.Message, *anthropic.Error) {
+}, onText func(string), web *webToolTracker, priorText int) (Result, *anthropic.Message, *anthropic.Error) {
 	var (
 		textChars int
 		stop      anthropic.StopReason
@@ -252,10 +278,12 @@ func (c *Claude) read(ctx context.Context, stream interface {
 			log.Printf("llm[%s]: asked %s, answered by %s (message %s)", c.logName(), c.cfg.Model, ev.Message.Model, ev.Message.ID)
 		case anthropic.ContentBlockStartEvent:
 			switch {
-			case ev.ContentBlock.Type == "server_tool_use" && ev.ContentBlock.Name == "web_search":
-				searches.start(ev.ContentBlock.ID)
-			case ev.ContentBlock.Type == "web_search_tool_result":
-				searches.finish(ev.ContentBlock.ToolUseID)
+			case ev.ContentBlock.Type == "server_tool_use" &&
+				(ev.ContentBlock.Name == "web_search" || ev.ContentBlock.Name == "web_fetch"):
+				web.start(ev.ContentBlock.ID)
+			case ev.ContentBlock.Type == "web_search_tool_result",
+				ev.ContentBlock.Type == "web_fetch_tool_result":
+				web.finish(ev.ContentBlock.ToolUseID)
 			}
 		case anthropic.ContentBlockDeltaEvent:
 			if td, ok := ev.Delta.AsAny().(anthropic.TextDelta); ok && td.Text != "" {
