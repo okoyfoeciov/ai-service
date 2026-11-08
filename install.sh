@@ -23,6 +23,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The screenshot portal saves each interactive capture under ~/Pictures/
+# Screenshots. ai-service reads and deletes it, so the Linux unit makes this
+# one directory writable (the rest of home stays read-only).
+PICTURES_DIR="$(xdg-user-dir PICTURES 2>/dev/null || true)"
+[ -n "$PICTURES_DIR" ] || PICTURES_DIR="$HOME/Pictures"
+SHOT_DIR="$PICTURES_DIR/Screenshots"
 ENVFILE="$HERE/ai-service.env"
 LABEL="com.ai-service.backend"   # macOS LaunchAgent label
 UNIT="ai-service.service"        # Linux systemd user unit
@@ -358,6 +364,19 @@ EOF
 }
 
 write_unit() {
+  # The screenshot portal's directory must exist when systemd starts the unit.
+  # A path with whitespace cannot go in the unquoted ReadWritePaths= list, so
+  # it is omitted; the service then logs a warning when it cannot delete the
+  # PNG (the capture itself still works). The "-" prefix makes the entry
+  # optional: deleting the directory later must not stop the whole service.
+  SHOT_RW=""
+  if [[ "$SHOT_DIR" != *[[:space:]]* ]]; then
+    if [ "$DRY_RUN" -eq 0 ]; then mkdir -p "$SHOT_DIR" 2>/dev/null || true; fi
+    if [ -d "$SHOT_DIR" ]; then SHOT_RW=" -$SHOT_DIR"; fi
+  fi
+  if [ -z "$SHOT_RW" ] && [ "$DRY_RUN" -eq 0 ]; then
+    echo "warning: $SHOT_DIR is unavailable; screenshots will be captured but not deleted" >&2
+  fi
   cat <<EOF
 # Written by $HERE/install.sh — edit that script, not this file; re-running it
 # overwrites this unit. Remove with $HERE/uninstall.sh.
@@ -385,8 +404,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-# The only paths the service writes: the SQLite cache and its log.
-ReadWritePaths=$HERE/data $HERE/logs
+# The only paths the service writes: the SQLite cache, its log, and the one
+# directory GNOME's screenshot portal saves into (ai-service deletes each
+# capture after reading it, so this is temporary by design).
+ReadWritePaths=$HERE/data $HERE/logs$SHOT_RW
 
 [Install]
 WantedBy=default.target

@@ -12,7 +12,9 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
 use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform or
-Cerebras, each at once with its own tray picker;
+Cerebras, each at once with its own tray picker. Both Ask providers accept
+images, which `/api/ask` sends after the prompt in capture order; the image
+bytes live in `/api/screenshot`'s in-memory store, and the client sends ids.
 `/api/memoir/check` still has two and refuses both. Every Memoir variable
 starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
 keys are `ASK_CLAUDE_API_KEY` and `ASK_CEREBRAS_API_KEY`; the transcription
@@ -65,10 +67,23 @@ outcome, item, context and earlier-round counts. Tray switches log
   served copy of a client would have to be kept in step with the real one by
   hand. The tray's two icons are embedded in the binary and never served over
   HTTP, which is not an exception to this rule.
-- **Keep the comart client API stable.** comart uses its eight routes with no
-  CORS and no auth. Its `/api/ask` answers a spoken question over passages the
-  reader picked, and its optional `history` (earlier question/answer pairs in
-  the same Ask card) is how a follow-up keeps the conversation. Memoir's
+- **Keep the comart client API stable.** comart uses its routes with no CORS
+  and no auth. Its `/api/ask` answers a spoken question over passages the
+  reader picked, its optional `history` (earlier question/answer pairs in the
+  same Ask card) keeps a follow-up's conversation, its optional `screenshots`
+  names images from `/api/screenshot` in capture order, and its optional
+  `timeline` interleaves selected text and those screenshots in the order the
+  reader added them. `BuildAsk` renders that order under `# CONTEXT TIMELINE`.
+- **`/api/screenshot` is Linux/GNOME only.** It opens
+  `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG
+  the portal saves under `~/Pictures/Screenshots`, keeps it in memory under an
+  unguessable id, and deletes the file immediately. `POST /api/screenshot/release`, not the TTL,
+  is the normal cleanup: a non-Ask Stop releases that take's ids, and the Ask
+  card's dismissal releases every round. The TTL is the backstop. One Ask
+  card is capped at 10 screenshots and 8 MiB of base64 on the server, matching
+  the client's camera cap; images are scaled to a 1200px long edge. The systemd
+  unit must keep the Screenshots directory in `ReadWritePaths=` or the PNG is
+  left on disk. Memoir's
   `/api/memoir/check`, daily-dictation's
   `/api/transcribe-verbatim` and the clients' streaming transcription routes
   (`POST /api/transcribe/stream` and its `GET /api/transcribe/ws` transport;

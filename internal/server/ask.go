@@ -47,6 +47,14 @@ func (s *Server) askStreamer() llm.Streamer {
 	return s.askLLMs[s.AskProvider()]
 }
 
+// The Ask routes send every round's screenshots, so these caps keep one card
+// inside Cerebras' per-request image/payload limits. The client also refuses
+// to capture beyond maxAskImages per Ask card.
+const (
+	maxAskImages      = 10
+	maxAskImageBase64 = 8 << 20
+)
+
 // handleAsk streams the answer to a spoken question about text the reader
 // picked during the recording. It is deliberately not /api/explain: there is
 // no vocabulary target and no Merriam-Webster work, only the question, the
@@ -67,6 +75,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	items := 0
 	contexts := 0
 	history := 0
+	screenshots := 0
 	defer func() {
 		providerName, modelName := provider, model
 		if providerName == "" {
@@ -83,8 +92,8 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			suffix = fmt.Sprintf(" error=%q", errMsg)
 		}
-		log.Printf("ask[%s]: model=%s status=%d outcome=%s items=%d contexts=%d history=%d duration=%s%s",
-			providerName, modelName, sw.Status(), outcome, items, contexts, history,
+		log.Printf("ask[%s]: model=%s status=%d outcome=%s items=%d contexts=%d history=%d screenshots=%d duration=%s%s",
+			providerName, modelName, sw.Status(), outcome, items, contexts, history, screenshots,
 			time.Since(start).Round(time.Millisecond), suffix)
 	}()
 
@@ -94,10 +103,16 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	var body struct {
-		Question string            `json:"question"`
-		Items    []prompt.Item     `json:"items"`
-		Contexts []prompt.Context  `json:"contexts"`
-		History  []prompt.AskRound `json:"history"`
+		Question    string            `json:"question"`
+		Items       []prompt.Item     `json:"items"`
+		Contexts    []prompt.Context  `json:"contexts"`
+		History     []prompt.AskRound `json:"history"`
+		Screenshots []string          `json:"screenshots"`
+		Timeline    []struct {
+			Kind       string `json:"kind"`
+			Phrase     string `json:"phrase"`
+			Screenshot string `json:"screenshot"`
+		} `json:"timeline"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var mbe *http.MaxBytesError
@@ -113,6 +128,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	items = len(body.Items)
 	contexts = len(body.Contexts)
 	history = len(body.History)
+	screenshots = len(body.Screenshots)
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -149,10 +165,69 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History)
-	result := streamer.Stream(ctx, p, func(t string) {
+	if len(body.Screenshots) > maxAskImages {
+		outcome = "too_many_screenshots"
+		errMsg = "This Ask card can carry at most 10 screenshots."
+		send("error", map[string]any{"message": errMsg})
+		return
+	}
+	images, err := s.shots.getMany(body.Screenshots)
+	if err != nil {
+		outcome = "missing_screenshot"
+		errMsg = "A screenshot is no longer available. Take it again."
+		send("error", map[string]any{"message": errMsg})
+		return
+	}
+	if len(images) > maxAskImages {
+		outcome = "too_many_screenshots"
+		errMsg = "This Ask card can carry at most 10 screenshots."
+		send("error", map[string]any{"message": errMsg})
+		return
+	}
+	encodedBytes := 0
+	for _, img := range images {
+		encodedBytes += len(img.Data)
+	}
+	if encodedBytes > maxAskImageBase64 {
+		outcome = "screenshots_too_large"
+		errMsg = "The screenshots are too large for this Ask model. Take fewer or smaller ones."
+		send("error", map[string]any{"message": errMsg})
+		return
+	}
+	timeline := make([]prompt.TimelineEntry, 0, len(body.Timeline))
+	shotNumber := make(map[string]int, len(body.Screenshots))
+	for i, id := range body.Screenshots {
+		shotNumber[id] = i + 1
+	}
+	for _, entry := range body.Timeline {
+		switch entry.Kind {
+		case "screenshot":
+			if n, ok := shotNumber[entry.Screenshot]; ok {
+				timeline = append(timeline, prompt.TimelineEntry{Kind: "screenshot", Screenshot: n})
+			}
+		case "text":
+			if phrase := strings.TrimSpace(entry.Phrase); phrase != "" {
+				timeline = append(timeline, prompt.TimelineEntry{Kind: "text", Phrase: phrase})
+			}
+		}
+	}
+	p := prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
+	onText := func(t string) {
 		send("chunk", map[string]any{"text": t})
-	})
+	}
+	var result llm.Result
+	if len(images) > 0 {
+		imageStreamer, ok := streamer.(llm.ImageStreamer)
+		if !ok {
+			outcome = "no_image_support"
+			errMsg = "The selected Ask model does not accept screenshots."
+			send("error", map[string]any{"message": errMsg})
+			return
+		}
+		result = imageStreamer.StreamImages(ctx, p, images, onText)
+	} else {
+		result = streamer.Stream(ctx, p, onText)
+	}
 	if !result.OK {
 		if ctx.Err() != nil {
 			outcome = "client_gone"

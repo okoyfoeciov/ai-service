@@ -139,3 +139,51 @@ func TestStreamDoesNotRetryClientErrors(t *testing.T) {
 		t.Fatalf("got %+v after %d calls", res, ft.calls.Load())
 	}
 }
+
+// Images ride beside the prompt as image_url parts, in the order the caller
+// supplied them. A text-only request keeps the old string content shape.
+func TestStreamImagesUsesOrderedContentParts(t *testing.T) {
+	ft := &fakeTransport{statuses: []int{200}, bodies: []string{sse(
+		`{"choices":[{"delta":{"content":"seen"},"finish_reason":"stop"}]}`,
+		`[DONE]`,
+	)}}
+	c := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m"}, &http.Client{Transport: ft})
+	var sb strings.Builder
+	res := c.StreamImages(context.Background(), "what is this?", []Image{
+		{MediaType: "image/png", Data: "AAA"},
+		{MediaType: "image/jpeg", Data: "BBB"},
+	}, func(s string) { sb.WriteString(s) })
+	if !res.OK || sb.String() != "seen" {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	msgs, ok := ft.sent[0]["messages"].([]any)
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("messages %v", ft.sent[0]["messages"])
+	}
+	msg, _ := msgs[0].(map[string]any)
+	parts, ok := msg["content"].([]any)
+	if !ok || len(parts) != 3 {
+		t.Fatalf("content %v", msg["content"])
+	}
+	text, _ := parts[0].(map[string]any)
+	if text["type"] != "text" || text["text"] != "what is this?" {
+		t.Errorf("text part %v", text)
+	}
+	for i, want := range []string{"data:image/png;base64,AAA", "data:image/jpeg;base64,BBB"} {
+		part, _ := parts[i+1].(map[string]any)
+		img, _ := part["image_url"].(map[string]any)
+		if part["type"] != "image_url" || img["url"] != want {
+			t.Errorf("image part %d = %v, want %s", i+1, part, want)
+		}
+	}
+
+	// No images: the text-only wire shape is unchanged.
+	ft2 := &fakeTransport{statuses: []int{200}, bodies: []string{sse(`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)}}
+	c2 := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m"}, &http.Client{Transport: ft2})
+	_ = c2.Stream(context.Background(), "plain", nil)
+	msgs2, _ := ft2.sent[0]["messages"].([]any)
+	msg2, _ := msgs2[0].(map[string]any)
+	if msg2["content"] != "plain" {
+		t.Errorf("text-only content = %v, want the plain string", msg2["content"])
+	}
+}

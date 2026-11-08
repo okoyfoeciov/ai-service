@@ -280,3 +280,42 @@ func TestClaudeUnreachableAndCancelled(t *testing.T) {
 
 var _ Streamer = (*Claude)(nil)
 var _ Streamer = (*Client)(nil)
+
+// The Claude client carries images as base64 image blocks after the text block.
+func TestClaudeStreamImagesUsesImageBlocks(t *testing.T) {
+	cs := newClaudeServer(t, []int{200}, claudeSSE(
+		evStart("claude-opus-5-5"), evText("I see it."), evStop("end_turn"), evMessageStop))
+	c := NewClaude(ClaudeConfig{APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5", MaxTokens: 100}, cs.Client())
+	var sb strings.Builder
+	res := c.StreamImages(context.Background(), "what is this?", []Image{
+		{MediaType: "image/png", Data: "AAA"},
+		{MediaType: "image/jpeg", Data: "BBB"},
+	}, func(s string) { sb.WriteString(s) })
+	if !res.OK || sb.String() != "I see it." {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	msgs, _ := cs.sent["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages %v", cs.sent["messages"])
+	}
+	msg, _ := msgs[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	if len(blocks) != 3 {
+		t.Fatalf("content %v", msg["content"])
+	}
+	text, _ := blocks[0].(map[string]any)
+	if text["type"] != "text" || text["text"] != "what is this?" {
+		t.Errorf("text block %v", text)
+	}
+	for i, want := range []struct{ media, data string }{
+		{"image/png", "AAA"},
+		{"image/jpeg", "BBB"},
+	} {
+		block, _ := blocks[i+1].(map[string]any)
+		source, _ := block["source"].(map[string]any)
+		if block["type"] != "image" || source["type"] != "base64" ||
+			source["media_type"] != want.media || source["data"] != want.data {
+			t.Errorf("image block %d = %v", i+1, block)
+		}
+	}
+}

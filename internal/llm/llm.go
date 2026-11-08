@@ -82,12 +82,34 @@ const maxRetryAfter = 5 * time.Second
 // Stream sends prompt as one user message and calls onText for each fragment
 // of the answer. Reasoning fragments are dropped: callers want the answer only.
 func (c *Client) Stream(ctx context.Context, prompt string, onText func(string)) Result {
+	return c.StreamImages(ctx, prompt, nil, onText)
+}
+
+// StreamImages is Stream with images attached to the same user message. The
+// images keep their slice order, which is the order the reader captured them;
+// the prompt says how to read that order. It is a content array only when
+// there are images, so every text-only request keeps the old wire shape.
+func (c *Client) StreamImages(ctx context.Context, prompt string, images []Image, onText func(string)) Result {
 	body := map[string]any{}
 	for k, v := range c.cfg.Params {
 		body[k] = v
 	}
 	body["model"] = c.cfg.Model
-	body["messages"] = []map[string]string{{"role": "user", "content": prompt}}
+	if len(images) == 0 {
+		body["messages"] = []map[string]string{{"role": "user", "content": prompt}}
+	} else {
+		parts := make([]map[string]any, 0, len(images)+1)
+		parts = append(parts, map[string]any{"type": "text", "text": prompt})
+		for _, img := range images {
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:" + img.MediaType + ";base64," + img.Data,
+				},
+			})
+		}
+		body["messages"] = []map[string]any{{"role": "user", "content": parts}}
+	}
 	body["stream"] = true
 	payload, err := json.Marshal(body)
 	if err != nil {

@@ -18,8 +18,9 @@ static directory or an `embed` back: a served copy of a client would have to be
 kept in step with the real one by hand.
 
 The comart API is deliberately stable: no CORS, no auth, and only the routes
-the clients actually call. `/api/ask` is comart's one recent addition (a spoken
-question over picked page passages); Memoir's `/api/memoir/check` and
+the clients actually call. `/api/ask` is comart's spoken-question route, and
+`/api/screenshot` is its Linux screen-capture route (the image is kept here
+under an id and released by the client); Memoir's `/api/memoir/check` and
 daily-dictation's `/api/transcribe-verbatim` are the other deliberate
 additions. Change a route only together with the client that calls it.
 
@@ -29,9 +30,11 @@ additions. Change a route only together with the client that calls it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
-| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}]}`. `history` is optional and carries the earlier rounds of the same Ask card for a follow-up. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch. It uses the selected **ask** provider/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. |
+| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch. It uses the selected **ask** provider/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both ask providers accept images; the prompt labels them in capture order and treats their text as data. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
+| `POST /api/screenshot` | comart | Linux/GNOME only. Opens the desktop portal's interactive area selection, stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The portal's file is deleted as soon as it is read, including on a failed or oversized read. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to stay inside Cerebras' request limit. |
+| `POST /api/screenshot/release` | comart | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
 | `POST /api/transcribe/stream` | comart; daily-dictation; voice-typing (`?timestamps=0`) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` (and `first_word_ms` when it is known) or `{"error": …}`. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
@@ -297,8 +300,11 @@ Tray switches are logged separately as `transcribe provider: … (tray)`,
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
-`ProtectSystem=strict` and `ProtectHome=read-only`, with only `data/` and
-`logs/` writable, so do not point it outside `data/`.
+`ProtectSystem=strict` and `ProtectHome=read-only`, with `data/`, `logs/` and
+the desktop's `~/Pictures/Screenshots` directory writable. The screenshot
+directory is the one exception because GNOME's portal saves every interactive
+capture there; ai-service reads it and deletes the PNG immediately. Do not
+point anything else outside `data/`.
 
 `run.sh` sources the file with bash (`set -a`). Keep to plain `KEY=value` lines
 and put single quotes around any value with spaces, `$` or parentheses (inside
@@ -412,7 +418,8 @@ The comart extension (`chrome-extension://` pages) and Cairn (Electron,
 The billed routes also require the Content-Type the clients really send, and
 answer 415 otherwise:
 
-- `application/json` on `/api/explain`, `/api/ask` and `/api/memoir/check`;
+- `application/json` on `/api/explain`, `/api/ask`, `/api/screenshot`,
+  `/api/screenshot/release` and `/api/memoir/check`;
 - `audio/*` (or `video/*`) on `/api/transcribe/stream` and as the `type` query on
   `/api/transcribe/ws`;
 - `multipart/form-data` on `/api/transcribe-verbatim`.
@@ -421,9 +428,15 @@ A web page can send a cross-site POST without a CORS preflight only as
 `text/plain` or a form type, and a sandboxed iframe (`Origin: null`) passes the
 guard. The Content-Type rule closes that gap.
 
+`/api/screenshot` can only ask the desktop portal to open its interactive
+selection; it cannot read screen pixels without the person at the machine
+choosing an area. The capture is stored in memory, never served back over HTTP,
+and deleted by `/api/screenshot/release` or the idle TTL.
+
 Request limits:
 
 - `/api/explain` and `/api/ask`: 5 MiB JSON body (413 `Request too large.`).
+- `/api/screenshot`: 4 KiB JSON body (413); `/api/screenshot/release`: 5 MiB. Both are loopback-only and require `application/json`.
 - `/api/memoir/check`: 5 MiB JSON body (a larger one fails as 400
   `Invalid JSON.`), plus the character caps in the route table.
 - `/api/transcribe/stream`: 25 MiB streamed audio (413 `recording too long`).
@@ -469,6 +482,14 @@ OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
 the token budget and reasoning, which `internal/config` fixes for every route:
 OpenRouter takes `max_tokens` and `reasoning: {max_tokens: 1024, exclude}`;
 Cerebras takes `max_completion_tokens` and `reasoning_effort: medium`.
+
+`/api/ask` also carries screenshots. Both current Ask models are vision-capable:
+Cerebras documents `qwen-3.8-27b` base64 PNG/JPEG image inputs, and Claude
+accepts image blocks. The clients therefore send one user message with the
+prompt text followed by the images in capture order; the prompt says how to
+read that order. A future Ask provider must implement `llm.ImageStreamer`;
+otherwise a request with screenshots reports that the model does not accept
+them.
 
 Claude is called directly on the Claude Platform with the official Go SDK, for
 whichever of the routes (explain, ask, Memoir) has a Claude key
@@ -541,7 +562,8 @@ at a time, and waits at most 10 s in total before it explains without the rest.
 cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
-internal/server     HTTP routing, the security guard, the handlers
+internal/server     HTTP routing, the security guard, the handlers, the in-memory
+                    screenshot store and its Linux/GNOME D-Bus portal
 internal/tray       the provider pickers for /api/transcribe/stream, /api/explain and /api/ask (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)

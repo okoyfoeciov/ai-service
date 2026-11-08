@@ -39,6 +39,11 @@ type Server struct {
 	askProvider      atomic.Value // string
 	memoirLLM        llm.Streamer
 
+	// shots holds the transient screenshots the Ask card is using. The client
+	// keeps only ids and thumbnails; the bytes are released when the card is
+	// dismissed or the two-hour TTL expires.
+	shots *screenshotStore
+
 	httpShort      *http.Client // streaming transcription and the WS transport (10 min backstop)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
 
@@ -83,6 +88,7 @@ func New(cfg config.Config, st *store.Store) *Server {
 		explainLLMs:         newExplainLLMs(cfg, hc),
 		askProviders:        append([]string(nil), cfg.AskProviders...),
 		askLLMs:             newAskLLMs(cfg, hc),
+		shots:               newScreenshotStore(screenshotTTL, screenshotMaxBytes, screenshotMaxShots),
 	}
 	if cfg.TranscribeProvider != "" {
 		s.transcribeProvider.Store(cfg.TranscribeProvider)
@@ -205,6 +211,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleExplain(w, r)
 	case p == "/api/ask" && r.Method == http.MethodPost:
 		s.handleAsk(w, r)
+	case p == "/api/screenshot" && r.Method == http.MethodPost:
+		s.handleScreenshot(w, r)
+	case p == "/api/screenshot/release" && r.Method == http.MethodPost:
+		s.handleScreenshotRelease(w, r)
 	case p == "/api/pron" && r.Method == http.MethodGet:
 		s.handlePron(w, r)
 	case p == "/api/credits" && r.Method == http.MethodGet:
@@ -289,8 +299,8 @@ func writeRoot(w http.ResponseWriter) {
 		"Chrome extension, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 
-// maxJSONBody caps the JSON request bodies of /api/explain, /api/ask and
-// /api/memoir/check.
+// maxJSONBody caps the JSON request bodies of /api/explain, /api/ask,
+// /api/screenshot/release and /api/memoir/check.
 const maxJSONBody = 5 * 1024 * 1024
 
 // writeJSON serialises v as JSON with Cache-Control: no-store.

@@ -95,7 +95,7 @@ func TestLoopbackGuard(t *testing.T) {
 // handler that would spend an account.
 func TestLoopbackGuardCoversPosts(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"/api/transcribe/stream", "/api/transcribe-verbatim", "/api/explain", "/api/ask", "/api/memoir/check"} {
+	for _, path := range []string{"/api/transcribe/stream", "/api/transcribe-verbatim", "/api/explain", "/api/ask", "/api/screenshot", "/api/screenshot/release", "/api/memoir/check"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Host = "127.0.0.1:8770"
 		req.Header.Set("Origin", "https://evil.example")
@@ -450,6 +450,10 @@ func TestBilledRoutesDemandTheClientsContentType(t *testing.T) {
 		{"/api/explain", ""},
 		{"/api/ask", "text/plain;charset=UTF-8"},
 		{"/api/ask", ""},
+		{"/api/screenshot", "text/plain;charset=UTF-8"},
+		{"/api/screenshot", ""},
+		{"/api/screenshot/release", "text/plain;charset=UTF-8"},
+		{"/api/screenshot/release", ""},
 		{"/api/memoir/check", "application/x-www-form-urlencoded"},
 		{"/api/transcribe/stream", "text/plain"},
 		{"/api/transcribe/stream", ""},
@@ -1135,4 +1139,136 @@ func TestTranscribeVerbatimErrorKeepsClientCompatibility(t *testing.T) {
 	if out.OpenRouterStatus != 400 || out.AzureStatus != 400 {
 		t.Errorf("got %+v, want both status fields 400", out)
 	}
+}
+
+// /api/ask attaches the stored screenshots in the order of their ids and tells
+// the prompt how many there are. The client keeps only ids, never image bytes.
+func TestAskCarriesScreenshotsInOrder(t *testing.T) {
+	m := &captureModel{reply: "The first screenshot shows a chart."}
+	shots := newScreenshotStore(time.Hour, 1<<20, 4)
+	s := &Server{
+		cfg:          config.Config{AskProvider: config.ProviderCerebras},
+		askProviders: []string{config.ProviderCerebras},
+		askLLMs: map[string]llm.Streamer{
+			config.ProviderCerebras: testLLM(m),
+		},
+		shots: shots,
+	}
+	first, err := shots.put([]byte("first"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := shots.put([]byte("second"), "image/jpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"question":"What do the screenshots show?","screenshots":[%q,%q],"timeline":[{"kind":"text","phrase":"the chart"},{"kind":"screenshot","screenshot":%q},{"kind":"text","phrase":"the legend"},{"kind":"screenshot","screenshot":%q}]}`, first, second, first, second)
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "first screenshot") {
+		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
+	}
+	promptReq, _ := m.body.Load().(string)
+	for _, want := range []string{
+		"# SCREENSHOTS",
+		"The user attached 2 screenshot(s) to this message.",
+		"data:image/png;base64,Zmlyc3Q=",
+		"data:image/jpeg;base64,c2Vjb25k",
+		"# CONTEXT TIMELINE",
+		"1. Selected text:",
+		"the chart",
+		"2. Screenshot 1",
+		"3. Selected text:",
+		"the legend",
+		"4. Screenshot 2",
+	} {
+		if !strings.Contains(promptReq, want) {
+			t.Errorf("model request missing %q", want)
+		}
+	}
+	if i, j := strings.Index(promptReq, "Zmlyc3Q="), strings.Index(promptReq, "c2Vjb25k"); i < 0 || j < 0 || i > j {
+		t.Errorf("image order is wrong: %d > %d", i, j)
+	}
+}
+
+// A screenshot id that has been released (or expired) is a clear in-stream
+// error, not an empty answer and not a panic.
+func TestAskReportsMissingScreenshot(t *testing.T) {
+	m := &captureModel{reply: "should not run"}
+	shots := newScreenshotStore(time.Hour, 1<<20, 4)
+	s := &Server{
+		cfg:          config.Config{AskProvider: config.ProviderCerebras},
+		askProviders: []string{config.ProviderCerebras},
+		askLLMs: map[string]llm.Streamer{
+			config.ProviderCerebras: testLLM(m),
+		},
+		shots: shots,
+	}
+	id, err := shots.put([]byte("gone"), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shots.release([]string{id})
+	body := fmt.Sprintf(`{"question":"What was in it?","screenshots":[%q]}`, id)
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	out := rec.Body.String()
+	if !strings.Contains(out, "event: error") || !strings.Contains(out, "no longer available") {
+		t.Fatalf("body %q", out)
+	}
+	if m.body.Load() != nil {
+		t.Errorf("model was called with a missing screenshot")
+	}
+}
+
+// The client refuses the 11th capture, and the server repeats the cap because
+// a stale tab or a hand-written request can still send it. The model must not
+// be called with an over-limit card.
+func TestAskRefusesMoreThanTenScreenshots(t *testing.T) {
+	m := &captureModel{reply: "should not run"}
+	shots := newScreenshotStore(time.Hour, 8<<20, 20)
+	s := &Server{
+		cfg:          config.Config{AskProvider: config.ProviderCerebras},
+		askProviders: []string{config.ProviderCerebras},
+		askLLMs: map[string]llm.Streamer{
+			config.ProviderCerebras: testLLM(m),
+		},
+		shots: shots,
+	}
+	ids := make([]string, 0, maxAskImages+1)
+	for i := 0; i <= maxAskImages; i++ {
+		id, err := shots.put([]byte{byte(i)}, "image/png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	body := fmt.Sprintf(`{"question":"Too many?","screenshots":%s}`, mustJSON(t, ids))
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(body))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	out := rec.Body.String()
+	if !strings.Contains(out, "at most 10 screenshots") {
+		t.Fatalf("body %q", out)
+	}
+	if m.body.Load() != nil {
+		t.Errorf("model was called with too many screenshots")
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

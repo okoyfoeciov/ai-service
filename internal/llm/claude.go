@@ -74,10 +74,22 @@ func NewClaude(cfg ClaudeConfig, hc *http.Client) *Claude {
 // Stream sends prompt as one user message and calls onText for each fragment
 // of the answer. Thinking is dropped: callers want the answer only.
 func (c *Claude) Stream(ctx context.Context, prompt string, onText func(string)) Result {
+	return c.StreamImages(ctx, prompt, nil, onText)
+}
+
+// StreamImages is Stream with images attached to the same user message. The
+// images keep their slice order, which is the order the reader captured them;
+// the prompt says how to read that order.
+func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image, onText func(string)) Result {
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(images)+1)
+	blocks = append(blocks, anthropic.NewTextBlock(prompt))
+	for _, img := range images {
+		blocks = append(blocks, anthropic.NewImageBlockBase64(img.MediaType, img.Data))
+	}
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(c.cfg.Model),
 		MaxTokens: c.cfg.MaxTokens,
-		Messages:  []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(prompt))},
+		Messages:  []anthropic.MessageParam{anthropic.NewUserMessage(blocks...)},
 		Thinking:  anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}},
 	}
 	if c.cfg.Effort != "" {
