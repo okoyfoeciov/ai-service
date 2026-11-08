@@ -51,6 +51,7 @@ type claudeServer struct {
 	calls    atomic.Int32
 	req      *http.Request
 	sent     map[string]any
+	sentAll  []map[string]any
 }
 
 func newClaudeServer(t *testing.T, statuses []int, bodies ...string) *claudeServer {
@@ -63,7 +64,10 @@ func newClaudeServer(t *testing.T, statuses []int, bodies ...string) *claudeServ
 		}
 		cs.req = r
 		b, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(b, &cs.sent)
+		sent := map[string]any{}
+		_ = json.Unmarshal(b, &sent)
+		cs.sent = sent
+		cs.sentAll = append(cs.sentAll, sent)
 		for k, v := range cs.header {
 			w.Header()[k] = v
 		}
@@ -126,6 +130,128 @@ func TestClaudeStreamsAnswerAndDropsThinking(t *testing.T) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+// Search is a server tool on the Ask client only: it rides in the request's
+// tools array with a direct caller and a capped search count.
+func TestClaudeWebSearchToolOnlyWhenEnabled(t *testing.T) {
+	cs := newClaudeServer(t, []int{200}, claudeSSE(
+		evStart("claude-opus-5-5"), evText("ok"), evStop("end_turn"), evMessageStop))
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
+		MaxTokens: 100, Effort: "medium", WebSearch: true, WebSearchMaxUses: 2,
+	}, cs.Client())
+	if res := c.Stream(context.Background(), "latest news", nil); !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	tools, _ := cs.sent["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools %v", cs.sent["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "web_search_20250305" || tool["name"] != "web_search" || tool["max_uses"] != float64(2) {
+		t.Errorf("tool %v", tool)
+	}
+	callers, _ := tool["allowed_callers"].([]any)
+	if len(callers) != 1 || callers[0] != "direct" {
+		t.Errorf("allowed_callers %v", tool["allowed_callers"])
+	}
+}
+
+// The Ask handler learns from these callbacks when Claude's native search
+// starts and when its results arrive, so the card can show "Searching the web…"
+// before the first answer text exists.
+func TestClaudeReportsWebSearch(t *testing.T) {
+	cs := newClaudeServer(t, []int{200}, claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+		[2]string{"content_block_start", `{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"answer"}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":2}`},
+		evStop("end_turn"), evMessageStop))
+
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
+		MaxTokens: 100, Effort: "medium", WebSearch: true, WebSearchMaxUses: 2,
+	}, cs.Client())
+	var states []bool
+	res := c.StreamWithSearch(context.Background(), "latest news", nil, func(active bool) {
+		states = append(states, active)
+	})
+	if !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	if len(states) != 2 || states[0] != true || states[1] != false {
+		t.Fatalf("search states %v, want [true false]", states)
+	}
+}
+
+// Text streamed before a pause is still a real answer when the continuation
+// finishes with no new text; the final segment must not report empty-stream.
+func TestClaudePauseKeepsEarlierTextWhenFinalSegmentIsEmpty(t *testing.T) {
+	first := claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll look that up."}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		evStop("pause_turn"), evMessageStop)
+	second := claudeSSE(evStart("claude-opus-5-5"), evStop("end_turn"), evMessageStop)
+
+	cs := newClaudeServer(t, []int{200, 200}, first, second)
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
+		MaxTokens: 100, Effort: "medium", WebSearch: true, WebSearchMaxUses: 2,
+	}, cs.Client())
+	var sb strings.Builder
+	res := c.Stream(context.Background(), "latest news", func(s string) { sb.WriteString(s) })
+	if !res.OK || sb.String() != "I'll look that up." {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+}
+
+// A paused search turn is resumed with the paused assistant message, not with
+// a fresh user message. The second request must keep the same tool.
+func TestClaudeContinuesAfterPauseTurn(t *testing.T) {
+	first := claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll look that up."}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		evStop("pause_turn"), evMessageStop)
+	second := claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The answer is 42."}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		evStop("end_turn"), evMessageStop)
+
+	cs := newClaudeServer(t, []int{200, 200}, first, second)
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5",
+		MaxTokens: 100, Effort: "medium", WebSearch: true, WebSearchMaxUses: 2,
+	}, cs.Client())
+	var sb strings.Builder
+	res := c.Stream(context.Background(), "latest news", func(s string) { sb.WriteString(s) })
+	if !res.OK || !strings.Contains(sb.String(), "The answer is 42.") {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	if cs.calls.Load() != 2 || len(cs.sentAll) != 2 {
+		t.Fatalf("calls %d, bodies %d", cs.calls.Load(), len(cs.sentAll))
+	}
+	msgs, _ := cs.sentAll[1]["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("continuation messages %v", cs.sentAll[1]["messages"])
+	}
+	assistant, _ := msgs[1].(map[string]any)
+	if assistant["role"] != "assistant" || !strings.Contains(string(mustJSON(assistant)), "I'll look that up.") {
+		t.Errorf("continuation assistant %v", assistant)
+	}
+	if tools, _ := cs.sentAll[1]["tools"].([]any); len(tools) != 1 {
+		t.Errorf("continuation tools %v", cs.sentAll[1]["tools"])
+	}
+}
 
 func TestClaudeOmitsEffortWhenUnset(t *testing.T) {
 	cs := newClaudeServer(t, []int{200}, claudeSSE(evStart("m"), evText("x"), evStop("end_turn"), evMessageStop))

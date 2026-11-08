@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-service/internal/config"
 	"ai-service/internal/llm"
 	"ai-service/internal/prompt"
 )
@@ -42,11 +43,6 @@ func (s *Server) SetAskProvider(provider string) bool {
 	return false
 }
 
-// askStreamer is the client for the currently selected provider.
-func (s *Server) askStreamer() llm.Streamer {
-	return s.askLLMs[s.AskProvider()]
-}
-
 // The Ask routes send every round's screenshots, so these caps keep one card
 // inside Cerebras' per-request image/payload limits. The client also refuses
 // to capture beyond maxAskImages per Ask card.
@@ -63,10 +59,17 @@ const (
 //
 // The SSE contract is /api/explain's: `chunk` events carry answer fragments,
 // an optional `error` event carries a user-readable message, and `done` is
-// always the last event. HTTP status stays 200 after the stream opens.
+// always the last event. Every Ask starts with a `search` event
+// ({active:false,enabled:bool}); Claude's search choice then sends
+// {active:true/false,enabled:true} around a native search. OpenRouter's search
+// choice sets enabled:true but has no active transitions, and the no-search
+// choices set enabled:false. HTTP status stays 200 after the stream opens.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	// Resolve the tray choice once. A tray switch while this request is being
+	// decoded must not pair the old prompt with the new provider's client.
 	provider := s.AskProvider()
+	streamer := s.askLLMs[provider]
 	model := s.cfg.AskModelFor(provider)
 	sw := &statusWriter{ResponseWriter: w}
 	w = sw
@@ -151,10 +154,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	defer send("done", map[string]any{})
 
 	ctx := r.Context()
-	streamer := s.askStreamer()
 	if streamer == nil {
 		outcome = "no_provider"
-		errMsg = "Neither ASK_CLAUDE_API_KEY nor ASK_CEREBRAS_API_KEY is set."
+		errMsg = "None of ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY is set."
 		send("error", map[string]any{"message": errMsg})
 		return
 	}
@@ -211,20 +213,42 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	p := prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
+	var p string
+	if provider == config.ProviderOpenRouter || provider == config.ProviderClaude {
+		p = prompt.BuildAskWeb(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
+	} else {
+		p = prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
+	}
+	// Tell the card whether this choice has a search tool at all, so its idle
+	// indicator says "Thinking" for the no-search choices instead of guessing
+	// from words in the answer.
+	searchEnabled := provider == config.ProviderClaude || provider == config.ProviderOpenRouter
+	send("search", map[string]any{"active": false, "enabled": searchEnabled})
 	onText := func(t string) {
 		send("chunk", map[string]any{"text": t})
 	}
+	// Claude's native search runs before it writes the answer. Tell the card
+	// when that happens, so its indicator can say "Searching the web…" during
+	// the silent part instead of guessing from a pause in the text.
+	onSearch := func(active bool) {
+		send("search", map[string]any{"active": active, "enabled": true})
+	}
 	var result llm.Result
 	if len(images) > 0 {
-		imageStreamer, ok := streamer.(llm.ImageStreamer)
-		if !ok {
-			outcome = "no_image_support"
-			errMsg = "The selected Ask model does not accept screenshots."
-			send("error", map[string]any{"message": errMsg})
-			return
+		if searchStreamer, ok := streamer.(llm.SearchImageStreamer); ok {
+			result = searchStreamer.StreamImagesWithSearch(ctx, p, images, onText, onSearch)
+		} else {
+			imageStreamer, ok := streamer.(llm.ImageStreamer)
+			if !ok {
+				outcome = "no_image_support"
+				errMsg = "The selected Ask model does not accept screenshots."
+				send("error", map[string]any{"message": errMsg})
+				return
+			}
+			result = imageStreamer.StreamImages(ctx, p, images, onText)
 		}
-		result = imageStreamer.StreamImages(ctx, p, images, onText)
+	} else if searchStreamer, ok := streamer.(llm.SearchStreamer); ok {
+		result = searchStreamer.StreamWithSearch(ctx, p, onText, onSearch)
 	} else {
 		result = streamer.Stream(ctx, p, onText)
 	}

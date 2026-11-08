@@ -27,6 +27,11 @@ type ClaudeConfig struct {
 	// for the log only: Claude clients with the same model would otherwise log
 	// identical lines.
 	Route string
+	// WebSearch enables Claude's server-side web search tool. Only /api/ask
+	// sets it; Explain and Memoir must not.
+	WebSearch bool
+	// WebSearchMaxUses caps searches in one turn when WebSearch is on.
+	WebSearchMaxUses int64
 }
 
 // Claude streams an answer from the Claude Platform's Messages API with the
@@ -34,10 +39,11 @@ type ClaudeConfig struct {
 // use either.
 //
 // The request carries the model, max_tokens, adaptive thinking and the effort,
-// and nothing else: no tools, no sampling settings, and no refusal fallback. A
-// fallback would answer from another model after a refusal, which is the silent
-// re-routing this service is set up to avoid; a refusal is reported as an error
-// instead. Adaptive thinking is asked for explicitly because leaving the field
+// plus Claude's web-search tool only on the search-enabled /api/ask choice. It
+// carries no sampling settings and no refusal fallback. A fallback would answer
+// from another model after a refusal, which is the silent re-routing this
+// service is set up to avoid; a refusal is reported as an error instead.
+// Adaptive thinking is asked for explicitly because leaving the field
 // out means "no thinking" on some older models (Opus 4.8, 4.7) and "thinking"
 // on Opus 5.5; the explicit form is the same on every model that has it.
 type Claude struct {
@@ -74,13 +80,26 @@ func NewClaude(cfg ClaudeConfig, hc *http.Client) *Claude {
 // Stream sends prompt as one user message and calls onText for each fragment
 // of the answer. Thinking is dropped: callers want the answer only.
 func (c *Claude) Stream(ctx context.Context, prompt string, onText func(string)) Result {
-	return c.StreamImages(ctx, prompt, nil, onText)
+	return c.StreamImagesWithSearch(ctx, prompt, nil, onText, nil)
 }
 
 // StreamImages is Stream with images attached to the same user message. The
 // images keep their slice order, which is the order the reader captured them;
 // the prompt says how to read that order.
 func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image, onText func(string)) Result {
+	return c.StreamImagesWithSearch(ctx, prompt, images, onText, nil)
+}
+
+// StreamWithSearch is Stream with a server-tool search status callback.
+func (c *Claude) StreamWithSearch(ctx context.Context, prompt string, onText func(string), onSearch func(bool)) Result {
+	return c.StreamImagesWithSearch(ctx, prompt, nil, onText, onSearch)
+}
+
+// StreamImagesWithSearch is StreamImages with a search status callback. The
+// callback fires when Claude opens a web_search server_tool_use block
+// (onSearch(true)) and when the corresponding web_search_tool_result starts
+// arriving (onSearch(false)).
+func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, images []Image, onText func(string), onSearch func(bool)) Result {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(images)+1)
 	blocks = append(blocks, anthropic.NewTextBlock(prompt))
 	for _, img := range images {
@@ -95,12 +114,50 @@ func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image
 	if c.cfg.Effort != "" {
 		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(c.cfg.Effort)}
 	}
+	if c.cfg.WebSearch {
+		uses := c.cfg.WebSearchMaxUses
+		if uses <= 0 {
+			uses = 2
+		}
+		params.Tools = []anthropic.ToolUnionParam{{
+			OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
+				MaxUses:        anthropic.Int(uses),
+				AllowedCallers: []string{"direct"},
+			},
+		}}
+	}
 
-	for attempt := 0; ; attempt++ {
+	// A paused search turn is continued by appending the assistant message it
+	// returned and asking again with the same tools (Messages API pause_turn).
+	// The cap is the same kind of backstop as the HTTP retry budget: it stops a
+	// provider loop from running forever.
+	messages := params.Messages
+	pauses := 0
+	attempt := 0
+	totalText := 0
+	searches := &searchTracker{notify: onSearch}
+	textOut := onText
+	if onText != nil {
+		textOut = func(s string) {
+			totalText += len(s)
+			onText(s)
+		}
+	}
+	for {
+		params.Messages = messages
 		stream := c.client.Messages.NewStreaming(ctx, params)
-		res, httpErr := c.read(ctx, stream, onText)
+		res, msg, httpErr := c.read(ctx, stream, textOut, searches, totalText)
 		_ = stream.Close()
 		if httpErr == nil {
+			if res.Code == "pause-turn" {
+				if msg == nil || pauses >= maxPauseTurns {
+					log.Printf("llm[%s]: paused %d times without finishing", c.logName(), pauses)
+					return Result{Code: "stream-cut", Message: "The answer was cut off. Try again."}
+				}
+				messages = append(messages, msg.ToParam())
+				pauses++
+				continue
+			}
 			return res
 		}
 
@@ -108,6 +165,7 @@ func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image
 		wait, retry := retryPlan(httpErr.StatusCode, httpErr.Response.Header, attempt)
 		if retry {
 			log.Printf("llm[%s]: HTTP %d, retrying: %s", c.logName(), httpErr.StatusCode, truncate(string(raw), 200))
+			attempt++
 			if !sleep(ctx, wait) {
 				return Result{Code: "cancelled"}
 			}
@@ -121,28 +179,84 @@ func (c *Claude) StreamImages(ctx context.Context, prompt string, images []Image
 	}
 }
 
+// maxPauseTurns caps how many times one answer may be resumed after a
+// pause_turn, like the HTTP retry budget. A web search turn can pause more than
+// once; a provider loop must not run forever.
+const maxPauseTurns = 4
+
+// searchTracker keeps the search status correct when Claude runs more than one
+// search in parallel: the answer is still searching until the last result
+// arrives. It lives across pause_turn continuations.
+type searchTracker struct {
+	pending map[string]bool
+	active  bool
+	notify  func(bool)
+}
+
+func (s *searchTracker) start(id string) {
+	if s == nil || s.notify == nil {
+		return
+	}
+	if s.pending == nil {
+		s.pending = make(map[string]bool)
+	}
+	s.pending[id] = true
+	if !s.active {
+		s.active = true
+		s.notify(true)
+	}
+}
+
+func (s *searchTracker) finish(id string) {
+	if s == nil || s.notify == nil {
+		return
+	}
+	delete(s.pending, id)
+	if s.active && len(s.pending) == 0 {
+		s.active = false
+		s.notify(false)
+	}
+}
+
 // read consumes the stream. It returns a non-nil *anthropic.Error, and no
 // Result, when the API answered the request itself with an HTTP error: Stream
 // decides whether to retry that. Everything else, including an error event
 // inside an open stream, is a Result. As in Client.read, the answer is judged at
 // the end, so no caller takes a partial answer for a whole one.
+//
+// The accumulated Message is returned with the Result. StreamImages needs it
+// only for pause_turn: the Messages API continues that turn when the paused
+// assistant message is sent back unchanged.
 func (c *Claude) read(ctx context.Context, stream interface {
 	Next() bool
 	Current() anthropic.MessageStreamEventUnion
 	Err() error
-}, onText func(string)) (Result, *anthropic.Error) {
+}, onText func(string), searches *searchTracker, priorText int) (Result, *anthropic.Message, *anthropic.Error) {
 	var (
 		textChars int
 		stop      anthropic.StopReason
 		details   anthropic.RefusalStopDetails
+		accErr    error
 	)
+	acc := &anthropic.Message{}
 	for stream.Next() {
-		switch ev := stream.Current().AsAny().(type) {
+		ev := stream.Current()
+		if err := acc.Accumulate(ev); err != nil && accErr == nil {
+			accErr = err
+		}
+		switch ev := ev.AsAny().(type) {
 		case anthropic.MessageStartEvent:
 			// Say which model really answered, next to the one asked for: the
 			// two lines in the log are the check that a request went where the
 			// config says.
 			log.Printf("llm[%s]: asked %s, answered by %s (message %s)", c.logName(), c.cfg.Model, ev.Message.Model, ev.Message.ID)
+		case anthropic.ContentBlockStartEvent:
+			switch {
+			case ev.ContentBlock.Type == "server_tool_use" && ev.ContentBlock.Name == "web_search":
+				searches.start(ev.ContentBlock.ID)
+			case ev.ContentBlock.Type == "web_search_tool_result":
+				searches.finish(ev.ContentBlock.ToolUseID)
+			}
 		case anthropic.ContentBlockDeltaEvent:
 			if td, ok := ev.Delta.AsAny().(anthropic.TextDelta); ok && td.Text != "" {
 				textChars += len(td.Text)
@@ -160,18 +274,18 @@ func (c *Claude) read(ctx context.Context, stream interface {
 
 	err := stream.Err()
 	if ctx.Err() != nil {
-		return Result{Code: "cancelled"}, nil // the caller went away; not a provider failure
+		return Result{Code: "cancelled"}, nil, nil // the caller went away; not a provider failure
 	}
 	var apiErr *anthropic.Error
 	isAPI := errors.As(err, &apiErr)
 	if isAPI && apiErr.Response != nil && apiErr.StatusCode >= 400 {
-		return Result{}, apiErr // the request itself was refused
+		return Result{}, nil, apiErr // the request itself was refused
 	}
 	if err != nil && !isAPI && stop == "" && textChars == 0 {
 		// Nothing arrived: the host was not reached, or the connection broke
 		// before the first event.
 		log.Printf("llm[%s]: request failed: %v", c.logName(), err)
-		return Result{Code: "network", Message: ClaudeProvider + " is unreachable (" + err.Error() + ")."}, nil
+		return Result{Code: "network", Message: ClaudeProvider + " is unreachable (" + err.Error() + ")."}, nil, nil
 	}
 	// The answer is whole once a stop reason has arrived, even if the connection
 	// then breaks before message_stop.
@@ -179,29 +293,39 @@ func (c *Claude) read(ctx context.Context, stream interface {
 		if isAPI {
 			msg := errMessage([]byte(apiErr.RawJSON()))
 			log.Printf("llm[%s]: error in stream: %s", c.logName(), msg)
-			return Result{Code: "upstream", Message: ClaudeProvider + " error: " + msg}, nil
+			return Result{Code: "upstream", Message: ClaudeProvider + " error: " + msg}, nil, nil
 		}
 		log.Printf("llm[%s]: stream cut after %d chars: %v", c.logName(), textChars, err)
-		return Result{Code: "stream-cut", Message: "The answer was cut off. Try again."}, nil
+		return Result{Code: "stream-cut", Message: "The answer was cut off. Try again."}, nil, nil
 	}
 	switch stop {
 	case anthropic.StopReasonMaxTokens:
 		log.Printf("llm[%s]: stopped at the token limit after %d chars", c.logName(), textChars)
-		return Result{Code: "truncated", Message: "The answer hit the length limit and was cut off. Try again."}, nil
+		return Result{Code: "truncated", Message: "The answer hit the length limit and was cut off. Try again."}, nil, nil
 	case anthropic.StopReasonModelContextWindowExceeded:
 		log.Printf("llm[%s]: stopped at the context window limit after %d chars", c.logName(), textChars)
-		return Result{Code: "truncated", Message: "The request was too long for the model."}, nil
+		return Result{Code: "truncated", Message: "The request was too long for the model."}, nil, nil
 	case anthropic.StopReasonRefusal:
 		log.Printf("llm[%s]: declined (category %q): %s", c.logName(), details.Category, details.Explanation)
-		return Result{Code: "refusal", Message: "Claude declined to answer this request."}, nil
+		return Result{Code: "refusal", Message: "Claude declined to answer this request."}, nil, nil
+	case anthropic.StopReasonPauseTurn:
+		if err != nil {
+			log.Printf("llm[%s]: paused turn ended with a stream error: %v", c.logName(), err)
+			return Result{Code: "stream-cut", Message: "The answer was cut off. Try again."}, nil, nil
+		}
+		if accErr != nil {
+			log.Printf("llm[%s]: paused turn could not be accumulated: %v", c.logName(), accErr)
+			return Result{Code: "upstream", Message: ClaudeProvider + " could not resume the search. Try again."}, nil, nil
+		}
+		return Result{Code: "pause-turn"}, acc, nil
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
-	default: // tool_use, pause_turn: nothing here asks for either
+	default: // tool_use: nothing here asks for one
 		log.Printf("llm[%s]: unexpected stop reason %q", c.logName(), stop)
-		return Result{Code: "upstream", Message: ClaudeProvider + " stopped unexpectedly (" + string(stop) + "). Try again."}, nil
+		return Result{Code: "upstream", Message: ClaudeProvider + " stopped unexpectedly (" + string(stop) + "). Try again."}, nil, nil
 	}
-	if textChars == 0 {
+	if textChars == 0 && priorText == 0 {
 		log.Printf("llm[%s]: empty answer (stop %q)", c.logName(), stop)
-		return Result{Code: "empty-stream"}, nil
+		return Result{Code: "empty-stream"}, nil, nil
 	}
-	return Result{OK: true}, nil
+	return Result{OK: true}, acc, nil
 }

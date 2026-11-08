@@ -40,7 +40,7 @@ func clearExplainEnv(t *testing.T) {
 func clearAskEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"ASK_CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY",
+		"ASK_CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY", "ASK_OPENROUTER_API_KEY",
 		"ASK_EFFORT", "ASK_REASONING_EFFORT",
 	} {
 		t.Setenv(k, "")
@@ -159,6 +159,7 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 		"CLAUDE_API_KEY":           "cl",
 		"ASK_CLAUDE_API_KEY":       "cl",
 		"ASK_CEREBRAS_API_KEY":     "ce",
+		"ASK_OPENROUTER_API_KEY":   "or",
 		"MEMOIR_CLAUDE_API_KEY":    "cl",
 	} {
 		t.Setenv(k, v)
@@ -170,7 +171,8 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
-	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") {
+	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") ||
+		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search on") {
 		t.Errorf("ask route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") {
@@ -188,10 +190,12 @@ func TestLoadAskProvider(t *testing.T) {
 		wantMissingAsk bool
 		wantOK         bool
 	}{
-		{"neither key", nil, nil, "", "", true, true},
-		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"no key", nil, nil, "", "", true, true},
+		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderClaudeNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
 		{"cerebras", map[string]string{"ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderCerebras}, ProviderCerebras, "qwen-3.8-27b", false, true},
-		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderOpenRouter, "deepseek/deepseek-v4.1-flash-1017", false, true},
+		{"claude and cerebras", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"all three", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderCerebras, ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,9 +226,15 @@ func TestLoadAskProvider(t *testing.T) {
 					c.AskProvider, c.AskModelFor(c.AskProvider),
 					tc.wantProvider, tc.wantModel)
 			}
+			if got := c.AskModelFor(ProviderClaudeNoSearch); got != "claude-opus-5-5" {
+				t.Errorf("Claude no-search model %q", got)
+			}
+			if got := c.AskModelFor(ProviderOpenRouterNoSearch); got != "deepseek/deepseek-v4.1-flash-1017" {
+				t.Errorf("OpenRouter no-search model %q", got)
+			}
 			gotMissing := false
 			for _, m := range missing {
-				if strings.HasPrefix(m, "ASK_CLAUDE_API_KEY or") {
+				if strings.HasPrefix(m, "ASK_CLAUDE_API_KEY") {
 					gotMissing = true
 				}
 			}
@@ -250,6 +260,20 @@ func TestAskKeysAreIndependentOfExplainKeys(t *testing.T) {
 	if err != nil || c.AskProvider != ProviderCerebras || c.AskProviders[0] != ProviderCerebras {
 		t.Fatalf("ask %q providers %v err %v", c.AskProvider, c.AskProviders, err)
 	}
+	// The explain OpenRouter key must not select OpenRouter for Ask.
+	t.Setenv("OPENROUTER_API_KEY", "explain-openrouter")
+	c, _, err = Load()
+	if err != nil || c.AskProvider != ProviderCerebras || len(c.AskProviders) != 1 {
+		t.Fatalf("ask %q providers %v err %v after setting only the explain OpenRouter key",
+			c.AskProvider, c.AskProviders, err)
+	}
+	t.Setenv("ASK_OPENROUTER_API_KEY", "ask-openrouter")
+	c, _, err = Load()
+	if err != nil || len(c.AskProviders) != 3 || c.AskProviders[1] != ProviderOpenRouter ||
+		c.AskProviders[2] != ProviderOpenRouterNoSearch {
+		t.Fatalf("ask %q providers %v err %v after adding the ask OpenRouter key",
+			c.AskProvider, c.AskProviders, err)
+	}
 }
 
 func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
@@ -262,7 +286,8 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.AskRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") || !strings.Contains(got, "medium") {
+	if got := c.AskRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") ||
+		!strings.Contains(got, "medium") || !strings.Contains(got, "web search on") {
 		t.Errorf("route %q", got)
 	}
 
@@ -272,15 +297,27 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.AskRoute()
-	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "2 providers", "tray picker", "starting on Claude Platform"} {
+	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "3 choices", "tray picker", "starting on Claude Platform", "web search off"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("route %q missing %q", got, want)
+		}
+	}
+
+	t.Setenv("ASK_OPENROUTER_API_KEY", "or")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = c.AskRoute()
+	for _, want := range []string{"OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "web search on", "web search off", "5 choices"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}
 	}
 
 	if got := (Config{}).AskRoute(); !strings.Contains(got, "ASK_CLAUDE_API_KEY") ||
-		!strings.Contains(got, "ASK_CEREBRAS_API_KEY") {
-		t.Errorf("unconfigured route %q does not name both keys", got)
+		!strings.Contains(got, "ASK_CEREBRAS_API_KEY") || !strings.Contains(got, "ASK_OPENROUTER_API_KEY") {
+		t.Errorf("unconfigured route %q does not name all three keys", got)
 	}
 }
 

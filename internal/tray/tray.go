@@ -1,6 +1,6 @@
-// Package tray is the provider picker shown in the desktop's menu bar / status
-// area. It has one section per route with more than one provider; with one
-// provider on every route there is nothing to pick and the tray does not run.
+// Package tray is the choice picker shown in the desktop's menu bar / status
+// area. It has one section per route with more than one choice; with one choice
+// on every route there is nothing to pick and the tray does not run.
 //
 // The tray is not part of the HTTP API. It runs in the service process and
 // flips the same provider fields the handlers read, so clients keep calling the
@@ -121,9 +121,15 @@ func providerLabel(kind, provider string) string {
 	case PickAsk:
 		switch provider {
 		case config.ProviderClaude:
+			return "Claude Platform Opus 5.5 (search)"
+		case config.ProviderClaudeNoSearch:
 			return "Claude Platform Opus 5.5"
 		case config.ProviderCerebras:
 			return "Cerebras Qwen 3.8 27B"
+		case config.ProviderOpenRouter:
+			return "OpenRouter DeepSeek V4.1 Flash 1017 (search)"
+		case config.ProviderOpenRouterNoSearch:
+			return "OpenRouter DeepSeek V4.1 Flash 1017"
 		}
 	}
 	return provider

@@ -57,6 +57,11 @@ func TestPickerSectionsAreConditional(t *testing.T) {
 		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{PickTranscribe}},
 		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, []string{PickExplain}},
 		{"two ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderCerebras}, []string{PickAsk}},
+		{"three ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderCerebras, config.ProviderOpenRouter}, []string{PickAsk}},
+		{"five ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{
+			config.ProviderClaude, config.ProviderClaudeNoSearch, config.ProviderCerebras,
+			config.ProviderOpenRouter, config.ProviderOpenRouterNoSearch,
+		}, []string{PickAsk}},
 		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderCerebras}, []string{PickTranscribe, PickExplain, PickAsk}},
 	}
 	for _, tc := range cases {
@@ -90,8 +95,11 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
-		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5"},
+		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search)"},
+		{PickAsk, config.ProviderClaudeNoSearch, "Claude Platform Opus 5.5"},
 		{PickAsk, config.ProviderCerebras, "Cerebras Qwen 3.8 27B"},
+		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search)"},
+		{PickAsk, config.ProviderOpenRouterNoSearch, "OpenRouter DeepSeek V4.1 Flash 1017"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {

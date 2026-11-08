@@ -1,9 +1,9 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
-// endpoints: OpenRouter (Google Gemini 3.8 Flash) for /api/explain and Cerebras
-// (Qwen 3.8 27B) for /api/ask and Memoir. Any route can instead run on Claude,
-// which has its own type (see claude.go) because the Messages API streams
-// differently.
+// endpoints: OpenRouter for /api/explain (Gemini) and /api/ask (DeepSeek), and
+// Cerebras (Qwen 3.8 27B) for /api/ask and Memoir. Any route can instead run on
+// Claude, which has its own type (see claude.go) because the Messages API
+// streams differently.
 //
 // Both chat-completions providers speak the same streaming shape: SSE `data:`
 // lines holding chunk objects, `: comment` keep-alives, and `data: [DONE]` at
@@ -58,6 +58,20 @@ func (r Result) UserMessage() string {
 // satisfy it.
 type Streamer interface {
 	Stream(ctx context.Context, prompt string, onText func(string)) Result
+}
+
+// SearchStreamer is a Streamer that can report a server-side web search to the
+// handler. onSearch(true) means a search started; onSearch(false) means its
+// results arrived and the model is working on the answer. The callback is
+// optional: a text-only client that does not implement this simply never sends
+// the search status.
+type SearchStreamer interface {
+	StreamWithSearch(ctx context.Context, prompt string, onText func(string), onSearch func(bool)) Result
+}
+
+// SearchImageStreamer is SearchStreamer for a prompt that carries images.
+type SearchImageStreamer interface {
+	StreamImagesWithSearch(ctx context.Context, prompt string, images []Image, onText func(string), onSearch func(bool)) Result
 }
 
 type Client struct {

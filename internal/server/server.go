@@ -103,14 +103,16 @@ func New(cfg config.Config, st *store.Store) *Server {
 	return s
 }
 
-func newClaude(key, model, route string, hc *http.Client) llm.Streamer {
+func newClaude(key, model, route string, webSearch bool, hc *http.Client) llm.Streamer {
 	return llm.NewClaude(llm.ClaudeConfig{
-		APIKey:    key,
-		BaseURL:   claudeURL,
-		Model:     model,
-		MaxTokens: maxAnswerTokens,
-		Effort:    config.ClaudeEffort,
-		Route:     route,
+		APIKey:           key,
+		BaseURL:          claudeURL,
+		Model:            model,
+		MaxTokens:        maxAnswerTokens,
+		Effort:           config.ClaudeEffort,
+		Route:            route,
+		WebSearch:        webSearch,
+		WebSearchMaxUses: int64(config.ClaudeAskWebSearches),
 	}, hc)
 }
 
@@ -119,7 +121,7 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 	for _, provider := range cfg.ExplainProviders {
 		switch provider {
 		case config.ProviderClaude:
-			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", hc)
+			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", false, hc)
 		case config.ProviderOpenRouter:
 			clients[provider] = llm.New(llm.Config{
 				Provider: "OpenRouter",
@@ -142,12 +144,50 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 	for _, provider := range cfg.AskProviders {
 		switch provider {
 		case config.ProviderClaude:
-			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", hc)
+			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", true, hc)
+		case config.ProviderClaudeNoSearch:
+			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", false, hc)
 		case config.ProviderCerebras:
 			clients[provider] = newCerebras(cfg.AskCerebrasAPIKey, cfg.AskModelFor(provider), hc)
+		case config.ProviderOpenRouter:
+			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), true, hc)
+		case config.ProviderOpenRouterNoSearch:
+			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), false, hc)
 		}
 	}
 	return clients
+}
+
+// newOpenRouterAsk builds the Ask client for DeepSeek V4.1 Flash 1017. Its
+// thinking level is reasoning.effort (not explain's token budget). With
+// webSearch it carries OpenRouter's web search server tool: the model may
+// search when the question needs current information, and OpenRouter runs the
+// search itself. DeepSeek has no native search, so the tool uses Exa.
+func newOpenRouterAsk(key, model string, webSearch bool, hc *http.Client) llm.Streamer {
+	params := map[string]any{
+		"max_tokens": maxAnswerTokens,
+		"reasoning": map[string]any{
+			"effort":  config.OpenRouterAskReasoningEffort,
+			"exclude": true,
+		},
+	}
+	if webSearch {
+		params["tools"] = []map[string]any{{
+			"type": "openrouter:web_search",
+			"parameters": map[string]any{
+				"engine":      "exa",
+				"max_results": config.OpenRouterAskWebResults,
+				"max_uses":    config.OpenRouterAskWebSearches,
+			},
+		}}
+	}
+	return llm.New(llm.Config{
+		Provider: "OpenRouter",
+		URL:      openRouterURL,
+		APIKey:   key,
+		Model:    model,
+		Params:   params,
+	}, hc)
 }
 
 func newCerebras(key, model string, hc *http.Client) llm.Streamer {
@@ -166,7 +206,7 @@ func newCerebras(key, model string, hc *http.Client) llm.Streamer {
 func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {
 	switch cfg.MemoirProvider {
 	case config.ProviderClaude:
-		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, "memoir", hc)
+		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, "memoir", false, hc)
 	case config.ProviderCerebras:
 		return newCerebras(cfg.MemoirCerebrasAPIKey, cfg.MemoirModel, hc)
 	}

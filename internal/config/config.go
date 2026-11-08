@@ -20,6 +20,12 @@ const (
 	ProviderOpenRouter = "openrouter"
 	ProviderCerebras   = "cerebras"
 	ProviderClaude     = "claude"
+
+	// Ask variants without the provider's web search tool. The plain provider
+	// names above stay the search-enabled choices, so a saved tray pick keeps
+	// working.
+	ProviderClaudeNoSearch     = "claude-no-search"
+	ProviderOpenRouterNoSearch = "openrouter-no-search"
 )
 
 type Config struct {
@@ -58,14 +64,16 @@ type Config struct {
 	// picker.
 	ExplainProvider string
 
-	// Ask (/api/ask) runs on Claude Platform or Cerebras. Both may be
-	// configured at once; the tray picker then chooses which one answers.
+	// Ask (/api/ask) runs on Claude Platform, Cerebras or OpenRouter. All may
+	// be configured at once; the tray picker then chooses which one answers.
 	// These keys are deliberately separate from the explain and Memoir keys,
 	// so each route can keep its own provider and credential.
-	AskClaudeAPIKey   string
-	AskCerebrasAPIKey string
-	// AskProviders lists every configured ask provider in a fixed order
-	// (Claude, Cerebras). It is empty when neither key is set.
+	AskClaudeAPIKey     string
+	AskCerebrasAPIKey   string
+	AskOpenRouterAPIKey string
+	// AskProviders lists every configured ask choice in a fixed order
+	// (Claude search/no-search, Cerebras, OpenRouter search/no-search). It is
+	// empty when no key is set.
 	AskProviders []string
 	// AskProvider is the provider /api/ask starts on: the first entry of
 	// AskProviders, unless main restores a selection saved by the tray picker.
@@ -91,9 +99,10 @@ type Config struct {
 // every start and every tray switch must answer with the same model and the
 // same reasoning depth.
 const (
-	defaultOpenRouterModel = "google/gemini-3.8-flash"
-	defaultCerebrasModel   = "qwen-3.8-27b"
-	defaultClaudeModel     = "claude-opus-5-5"
+	defaultOpenRouterModel    = "google/gemini-3.8-flash"
+	defaultOpenRouterAskModel = "deepseek/deepseek-v4.1-flash-1017"
+	defaultCerebrasModel      = "qwen-3.8-27b"
+	defaultClaudeModel        = "claude-opus-5-5"
 
 	// ClaudeEffort is Claude's output_config.effort (low, medium, high, xhigh
 	// or max), the only thinking control a Claude model takes. Current models
@@ -107,6 +116,22 @@ const (
 	// OpenRouterReasoningTokens is OpenRouter's thinking budget
 	// (reasoning.max_tokens, Gemini's thinkingBudget). Thinking is never shown.
 	OpenRouterReasoningTokens = 1024
+	// OpenRouterAskReasoningEffort is the Ask model's thinking level
+	// (reasoning.effort). DeepSeek V4.1 Flash 1017 supports max, high, low and
+	// none, and defaults to high.
+	OpenRouterAskReasoningEffort = "high"
+	// OpenRouterAskWebResults is the most results one web search may return.
+	// Ten is the most Exa includes in OpenRouter's base per-request price.
+	// DeepSeek has no native search, so OpenRouter runs it on Exa.
+	OpenRouterAskWebResults = 10
+	// OpenRouterAskWebSearches caps how many searches one Ask request may run.
+	// Two leaves room for a multi-hop question while keeping cost and latency
+	// bounded even when the model wants to search repeatedly.
+	OpenRouterAskWebSearches = 2
+	// ClaudeAskWebSearches caps Claude's direct web searches in one Ask turn.
+	// A pause_turn continuation remains the same turn, so the API counts it
+	// against this same budget.
+	ClaudeAskWebSearches = 2
 )
 
 // Load reads config from the environment. It also returns the missing API
@@ -130,8 +155,9 @@ func Load() (Config, []string, error) {
 		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
 		ClaudeAPIKey:     os.Getenv("CLAUDE_API_KEY"),
 
-		AskClaudeAPIKey:   os.Getenv("ASK_CLAUDE_API_KEY"),
-		AskCerebrasAPIKey: os.Getenv("ASK_CEREBRAS_API_KEY"),
+		AskClaudeAPIKey:     os.Getenv("ASK_CLAUDE_API_KEY"),
+		AskCerebrasAPIKey:   os.Getenv("ASK_CEREBRAS_API_KEY"),
+		AskOpenRouterAPIKey: os.Getenv("ASK_OPENROUTER_API_KEY"),
 
 		MemoirCerebrasAPIKey: os.Getenv("MEMOIR_CEREBRAS_API_KEY"),
 		MemoirClaudeAPIKey:   os.Getenv("MEMOIR_CLAUDE_API_KEY"),
@@ -203,7 +229,7 @@ func Load() (Config, []string, error) {
 	var missing []string
 	for _, k := range []struct{ name, val string }{
 		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
-		{"ASK_CLAUDE_API_KEY or ASK_CEREBRAS_API_KEY", c.AskProvider},
+		{"ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY or ASK_OPENROUTER_API_KEY", c.AskProvider},
 		{"MEMOIR_CEREBRAS_API_KEY or MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
 		{"OPENROUTER_TRANSCRIBE_API_KEY", c.OpenRouterTranscribeAPIKey},
 	} {
@@ -258,15 +284,20 @@ func (c Config) ExplainModelFor(provider string) string {
 	return ""
 }
 
-// resolveAsk collects the /api/ask providers. Both keys may be set; the tray
-// picker then switches between them. An empty key counts as unset, because
+// resolveAsk collects the /api/ask choices. Every key may be set; the tray
+// picker then switches between them. A provider with a search tool gets two
+// entries, search and no-search, so the reader can choose a plain answer
+// without changing credentials. An empty key counts as unset, because
 // .env.example ships empty lines. Models are fixed per provider.
 func (c *Config) resolveAsk() error {
 	if c.AskClaudeAPIKey != "" {
-		c.AskProviders = append(c.AskProviders, ProviderClaude)
+		c.AskProviders = append(c.AskProviders, ProviderClaude, ProviderClaudeNoSearch)
 	}
 	if c.AskCerebrasAPIKey != "" {
 		c.AskProviders = append(c.AskProviders, ProviderCerebras)
+	}
+	if c.AskOpenRouterAPIKey != "" {
+		c.AskProviders = append(c.AskProviders, ProviderOpenRouter, ProviderOpenRouterNoSearch)
 	}
 	if len(c.AskProviders) > 0 {
 		c.AskProvider = c.AskProviders[0]
@@ -277,10 +308,12 @@ func (c *Config) resolveAsk() error {
 // AskModelFor returns the fixed model id for provider.
 func (c Config) AskModelFor(provider string) string {
 	switch provider {
-	case ProviderClaude:
+	case ProviderClaude, ProviderClaudeNoSearch:
 		return defaultClaudeModel
 	case ProviderCerebras:
 		return defaultCerebrasModel
+	case ProviderOpenRouter, ProviderOpenRouterNoSearch:
+		return defaultOpenRouterAskModel
 	}
 	return ""
 }
@@ -391,28 +424,40 @@ func (c Config) AskRoute() string {
 	for _, p := range c.AskProviders {
 		switch p {
 		case ProviderClaude:
-			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.AskModelFor(p), ClaudeEffort))
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search on", c.AskModelFor(p), ClaudeEffort))
+		case ProviderClaudeNoSearch:
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search off", c.AskModelFor(p), ClaudeEffort))
 		case ProviderCerebras:
 			parts = append(parts, fmt.Sprintf("Cerebras, model %s, reasoning %s", c.AskModelFor(p), CerebrasReasoningEffort))
+		case ProviderOpenRouter:
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
+		case ProviderOpenRouterNoSearch:
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search off", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (neither ASK_CLAUDE_API_KEY nor ASK_CEREBRAS_API_KEY is set)"
+		return "none (none of ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
 	return strings.Join(parts, " and ") +
-		fmt.Sprintf(" (%d providers; tray picker, starting on %s)", len(parts), askProviderName(c.AskProvider))
+		fmt.Sprintf(" (%d choices; tray picker, starting on %s)", len(parts), askProviderName(c.AskProvider))
 }
 
 // askProviderName is the short human name used in the startup log.
 func askProviderName(provider string) string {
 	switch provider {
 	case ProviderClaude:
-		return "Claude Platform"
+		return "Claude Platform (search)"
+	case ProviderClaudeNoSearch:
+		return "Claude Platform (no search)"
 	case ProviderCerebras:
 		return "Cerebras"
+	case ProviderOpenRouter:
+		return "OpenRouter (search)"
+	case ProviderOpenRouterNoSearch:
+		return "OpenRouter (no search)"
 	}
 	return provider
 }

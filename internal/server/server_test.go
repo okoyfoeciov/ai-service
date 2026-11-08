@@ -440,6 +440,269 @@ func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 	}
 }
 
+// The OpenRouter Ask client is DeepSeek V4.1 Flash 1017 at thinking level
+// high, and it carries the web search server tool. Its reasoning control is
+// effort, not explain's token budget, and the tool runs on Exa because
+// DeepSeek has no native search.
+func TestAskOpenRouterUsesDeepSeekHighEffortWithWebSearch(t *testing.T) {
+	m := &captureModel{reply: "ok"}
+	cfg := config.Config{
+		AskProviders:        []string{config.ProviderOpenRouter},
+		AskOpenRouterAPIKey: "or",
+	}
+	clients := newAskLLMs(cfg, &http.Client{Transport: m})
+	streamer := clients[config.ProviderOpenRouter]
+	if streamer == nil {
+		t.Fatal("no OpenRouter ask client")
+	}
+	if res := streamer.Stream(context.Background(), "hi", nil); !res.OK {
+		t.Fatalf("stream failed: %+v", res)
+	}
+
+	raw, _ := m.body.Load().(string)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("request body %q: %v", raw, err)
+	}
+	if got := body["model"]; got != "deepseek/deepseek-v4.1-flash-1017" {
+		t.Errorf("model %v", got)
+	}
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" || reasoning["exclude"] != true {
+		t.Errorf("reasoning %v", body["reasoning"])
+	}
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("tools %v", body["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "openrouter:web_search" {
+		t.Errorf("tool %v", tool)
+	}
+	params, _ := tool["parameters"].(map[string]any)
+	if params["engine"] != "exa" || params["max_results"] != float64(10) || params["max_uses"] != float64(2) {
+		t.Errorf("web search parameters %v", params)
+	}
+}
+
+// Claude's web search tool belongs to /api/ask only. The Explain client must
+// keep its old tool-less request.
+func TestClaudeWebSearchIsAskOnly(t *testing.T) {
+	body := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	cases := []struct {
+		name   string
+		stream func(*http.Client) llm.Streamer
+	}{
+		{"ask", func(hc *http.Client) llm.Streamer {
+			cfg := config.Config{AskProviders: []string{config.ProviderClaude}, AskClaudeAPIKey: "k"}
+			return newAskLLMs(cfg, hc)[config.ProviderClaude]
+		}},
+		{"ask no search", func(hc *http.Client) llm.Streamer {
+			cfg := config.Config{AskProviders: []string{config.ProviderClaudeNoSearch}, AskClaudeAPIKey: "k"}
+			return newAskLLMs(cfg, hc)[config.ProviderClaudeNoSearch]
+		}},
+		{"explain", func(hc *http.Client) llm.Streamer {
+			cfg := config.Config{ExplainProviders: []string{config.ProviderClaude}, ClaudeAPIKey: "k"}
+			return newExplainLLMs(cfg, hc)[config.ProviderClaude]
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := &claudeToolCapture{body: body}
+			streamer := tc.stream(&http.Client{Transport: capture})
+			if res := streamer.Stream(context.Background(), "hi", nil); !res.OK {
+				t.Fatalf("stream failed: %+v", res)
+			}
+			raw, _ := capture.sent.Load().(string)
+			var req map[string]any
+			if err := json.Unmarshal([]byte(raw), &req); err != nil {
+				t.Fatalf("request body %q: %v", raw, err)
+			}
+			tools, _ := req["tools"].([]any)
+			if tc.name == "ask" {
+				if len(tools) != 1 {
+					t.Fatalf("ask tools %v", req["tools"])
+				}
+				tool, _ := tools[0].(map[string]any)
+				if tool["type"] != "web_search_20250305" || tool["max_uses"] != float64(2) {
+					t.Errorf("ask tool %v", tool)
+				}
+				return
+			}
+			if len(tools) != 0 {
+				t.Errorf("explain request carries tools %v", req["tools"])
+			}
+		})
+	}
+}
+
+// /api/ask turns Claude's search callbacks into SSE `search` events, and the
+// prompt carries the web-search guidance.
+func TestAskSendsClaudeSearchStatus(t *testing.T) {
+	body := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":1}` + "\n\n" +
+		"event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"the answer"}}` + "\n\n" +
+		"event: content_block_stop\n" +
+		`data: {"type":"content_block_stop","index":2}` + "\n\n" +
+		"event: message_delta\n" +
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+
+	capture := &claudeToolCapture{body: body}
+	cfg := config.Config{AskProvider: config.ProviderClaude, AskProviders: []string{config.ProviderClaude}, AskClaudeAPIKey: "k"}
+	s := &Server{
+		cfg:          cfg,
+		askProviders: cfg.AskProviders,
+		askLLMs:      newAskLLMs(cfg, &http.Client{Transport: capture}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(`{"question":"latest news"}`))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	out := rec.Body.String()
+	for _, want := range []string{
+		`event: search`,
+		`"active":true`,
+		`"active":false`,
+		`"enabled":true`,
+		`event: chunk`,
+		`the answer`,
+		`event: done`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stream missing %q:\n%s", want, out)
+		}
+	}
+	if got := strings.Count(out, `"active":true`); got != 1 {
+		t.Errorf("stream has %d active=true events, want 1:\n%s", got, out)
+	}
+	if got := strings.Count(out, `"active":false`); got != 2 {
+		t.Errorf("stream has %d active=false events, want 2 (initial + result):\n%s", got, out)
+	}
+	if strings.Index(out, "event: search") > strings.Index(out, "event: chunk") {
+		t.Errorf("search event came after the first chunk:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "event: done\ndata: {}\n\n") {
+		t.Errorf("stream does not end with done:\n%s", out)
+	}
+	raw, _ := capture.sent.Load().(string)
+	if !strings.Contains(raw, "# WEB SEARCH") {
+		t.Errorf("request prompt lacks the web-search section: %s", raw)
+	}
+}
+
+// claudeToolCapture answers a Messages API streaming request and records the
+// JSON body, so a test can see which tools the server built.
+type claudeToolCapture struct {
+	body string
+	sent atomic.Value
+}
+
+func (c *claudeToolCapture) RoundTrip(req *http.Request) (*http.Response, error) {
+	b, _ := io.ReadAll(req.Body)
+	c.sent.Store(string(b))
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    req,
+	}, nil
+}
+
+// The no-search Ask choice keeps DeepSeek's model and high reasoning but sends
+// no tools array at all.
+func TestAskOpenRouterNoSearchOmitsTools(t *testing.T) {
+	m := &captureModel{reply: "ok"}
+	cfg := config.Config{
+		AskProviders:        []string{config.ProviderOpenRouterNoSearch},
+		AskOpenRouterAPIKey: "or",
+	}
+	streamer := newAskLLMs(cfg, &http.Client{Transport: m})[config.ProviderOpenRouterNoSearch]
+	if streamer == nil {
+		t.Fatal("no OpenRouter no-search ask client")
+	}
+	if res := streamer.Stream(context.Background(), "hi", nil); !res.OK {
+		t.Fatalf("stream failed: %+v", res)
+	}
+	raw, _ := m.body.Load().(string)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("request body %q: %v", raw, err)
+	}
+	if body["model"] != "deepseek/deepseek-v4.1-flash-1017" {
+		t.Errorf("model %v", body["model"])
+	}
+	if reasoning, _ := body["reasoning"].(map[string]any); reasoning["effort"] != "high" {
+		t.Errorf("reasoning %v", body["reasoning"])
+	}
+	if _, ok := body["tools"]; ok {
+		t.Errorf("no-search request carries tools %v", body["tools"])
+	}
+}
+
+// The no-search OpenRouter choice goes through /api/ask with the plain Ask
+// prompt, no tools, and an initial search event saying search is unavailable.
+func TestAskOpenRouterNoSearchUsesPlainPrompt(t *testing.T) {
+	m := &captureModel{reply: "plain answer"}
+	cfg := config.Config{
+		AskProvider:         config.ProviderOpenRouterNoSearch,
+		AskProviders:        []string{config.ProviderOpenRouterNoSearch},
+		AskOpenRouterAPIKey: "or",
+	}
+	s := &Server{
+		cfg:          cfg,
+		askProviders: cfg.AskProviders,
+		askLLMs:      newAskLLMs(cfg, &http.Client{Transport: m}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(`{"question":"what is this?"}`))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	out := rec.Body.String()
+	if !strings.Contains(out, `"enabled":false`) || !strings.Contains(out, "plain answer") {
+		t.Errorf("stream %q", out)
+	}
+	raw, _ := m.body.Load().(string)
+	if strings.Contains(raw, "# WEB SEARCH") {
+		t.Errorf("no-search prompt carries web-search guidance: %s", raw)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("request body %q: %v", raw, err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Errorf("no-search request carries tools %v", body["tools"])
+	}
+}
+
 // A web page can POST cross-site without a preflight only with text/plain or a
 // form type, and a sandboxed iframe's Origin is "null", which the guard lets
 // through. The billed routes therefore demand the type the clients really send.
