@@ -407,6 +407,12 @@ any client change, because comart keeps calling the same routes.
   `org.kde.StatusNotifierItem-<pid>` name makes the GNOME AppIndicator watcher
   discover the same item twice after a shell restart, which shows two identical
   tray icons.
+- GNOME has no per-icon tray-order setting: the AppIndicator extension inserts
+  every icon at index 1 when it registers, so the last icon to register gets
+  that slot. The optional extension in `contrib/gnome-shell/` keeps this icon
+  at index 1 (second from the left) while the Voice Typing extension keeps
+  index 0. It is installed and enabled on its own, not by the service's
+  `install.sh`; see `contrib/gnome-shell/ai-service-tray@james.local/README.md`.
 - The tray is part of the service process, not an HTTP route. It writes only the
   two cache rows above; no new listening socket, no extra file.
 
@@ -591,6 +597,7 @@ internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
 internal/llm        streaming model clients: chat completions (OpenRouter, Cerebras) and Claude
+contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 1
 install.sh, uninstall.sh, run.sh
 ```
 

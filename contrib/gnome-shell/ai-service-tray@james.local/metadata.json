@@ -1,0 +1,9 @@
+{
+  "uuid": "ai-service-tray@james.local",
+  "name": "ai-service tray position",
+  "description": "Keep the ai-service StatusNotifierItem at index 1 of the right-hand status area, second from the left.",
+  "shell-version": [
+    "48"
+  ],
+  "version": 1
+}
