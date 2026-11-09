@@ -77,7 +77,8 @@ the build, the env file and the restart):
    `ASSEMBLYAI_API_KEY` and/or `DEEPGRAM_API_KEY` for `/api/transcribe/stream`
    (at least one is required),
    `OPENROUTER_TRANSCRIBE_API_KEY` for `/api/transcribe-verbatim` (optional),
-   one or both of `OPENROUTER_API_KEY` and `CLAUDE_API_KEY`;
+   `OPENROUTER_API_KEY` and/or `CLAUDE_API_KEY` for `/api/explain` (the
+   shared `ASK_CEREBRAS_API_KEY` below also serves it);
    one or more of `ASK_CLAUDE_API_KEY`, `ASK_CEREBRAS_API_KEY` and
    `ASK_OPENROUTER_API_KEY`; and one of `MEMOIR_CLAUDE_API_KEY` or
    `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS dialog; on Linux a zenity
@@ -87,12 +88,12 @@ the build, the env file and the restart):
    out. An empty answer for `OPENROUTER_TRANSCRIBE_API_KEY` leaves verbatim
    unconfigured. For explain, OpenRouter is asked first; an empty answer there
    moves on to Claude. For ask, Claude is asked first; empty answers move on to
-   Cerebras and then OpenRouter. A Claude or OpenRouter ask key gives both a
-   web (search + fetch) and a no-search tray choice. If only one or two keys on
-   a route are
-   present, the missing ones can be added by hand to add that provider. For
-   the Memoir key it asks for Claude
-   first; an empty answer there moves on to Cerebras. It stops if more than one
+   Cerebras and then OpenRouter, and that Cerebras key also adds Cerebras to
+   explain. A Claude or OpenRouter ask key gives both a
+   web (search + fetch) and a no-search tray choice. If only some of a route's
+   keys are present, the missing ones can be added by hand to add that
+   provider. For the Memoir key it asks for Claude first; an empty answer there
+   moves on to Cerebras. It stops if more than one
    variable of the Memoir route is already set, if `PARAKEET_URL` is
    still there, if the retired `GROQ_API_KEY` or `GROQ_MODEL` is there, if the
    retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
@@ -198,10 +199,10 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this and/or `CLAUDE_API_KEY`; with both, the tray picker chooses. |
-| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this, `CLAUDE_API_KEY` and/or `ASK_CEREBRAS_API_KEY`; with more than one, the tray picker chooses. |
+| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this, `OPENROUTER_API_KEY` and/or `ASK_CEREBRAS_API_KEY`; with more than one, the tray picker chooses. |
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_CEREBRAS_API_KEY` or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
-| `ASK_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/ask`. It creates one choice. Set this and/or `ASK_CLAUDE_API_KEY` or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `MEMOIR_CEREBRAS_API_KEY` so each route keeps its own provider. |
+| `ASK_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/ask` and `/api/explain`: it creates one Ask choice and one Explain choice. Set this and/or `ASK_CLAUDE_API_KEY` or `ASK_OPENROUTER_API_KEY` for Ask; the Cerebras key is shared with Explain on purpose. Separate from `MEMOIR_CEREBRAS_API_KEY` so Memoir keeps its own provider. |
 | `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_CLAUDE_API_KEY` or `ASK_CEREBRAS_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
 | `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/check`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
@@ -351,8 +352,8 @@ manager keeps retrying every 10 s) when a route has no usable provider:
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the routes it chose, for example
 `transcribe route: AssemblyAI live, model universal-3-5-pro`,
-`explain route: Claude Platform, model claude-opus-5-5, effort medium` (or both
-explain providers with `2 providers; tray picker, starting on …`),
+`explain route: Claude Platform, model claude-opus-5-5, effort medium` (or every
+explain provider with `N providers; tray picker, starting on …`),
 `ask route: …`, and the same for `memoir route: …`, and every Claude request
 whose stream starts logs the model it asked for next to the model the API says
 answered (`llm[Claude/explain]`, `llm[Claude/ask]` or `llm[Claude/memoir]`).
@@ -367,7 +368,8 @@ appears when `/api/transcribe/stream`, `/api/explain` or `/api/ask` has at
 least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5 and OpenRouter Gemini 3.8 Flash.
+- **Explain with** — Claude Platform Opus 5.5, OpenRouter Gemini 3.8 Flash and
+  Cerebras Qwen 3.8 27B.
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch), Claude Platform
   Opus 5.5, Cerebras Qwen 3.8 27B, OpenRouter DeepSeek V4.1 Flash 1017
   (search + fetch), and OpenRouter DeepSeek V4.1 Flash 1017.
@@ -486,6 +488,7 @@ Request limits:
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
+| `/api/explain` | Cerebras, if `ASK_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | Claude Platform, no-search choice | `claude-opus-5-5` | effort `medium`; no web tools |
 | `/api/ask` | Cerebras, if `ASK_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
@@ -497,9 +500,10 @@ Request limits:
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
-When both `/api/explain` keys are set, its tray section chooses between the
-Claude and OpenRouter rows. The same holds for `/api/ask`, whose keys and
-tray section are independent of explain's; its Claude and OpenRouter keys each
+When more than one `/api/explain` key is set, its tray section chooses between
+the Claude, OpenRouter and Cerebras rows; `ASK_CEREBRAS_API_KEY` supplies the
+last one and is shared with Ask. The Ask keys and tray section are otherwise
+independent of explain's; its Claude and OpenRouter keys each
 offer a web (search + fetch) and a no-search choice.
 
 OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
@@ -508,8 +512,8 @@ the token budget and reasoning, which `internal/config` fixes for every route:
 OpenRouter explain takes `max_tokens` and `reasoning: {max_tokens: 1024, exclude}`;
 OpenRouter ask takes `max_tokens` and `reasoning: {effort: "high", exclude}`, and
 its web choice also adds the `openrouter:web_search` and `openrouter:web_fetch`
-server tools; Cerebras
-takes `max_completion_tokens` and `reasoning_effort: medium`.
+server tools; Cerebras takes `max_completion_tokens` and
+`reasoning_effort: medium` on explain, ask and Memoir.
 
 `/api/ask` also carries screenshots. All three Ask models are vision-capable:
 Cerebras documents `qwen-3.8-27b` base64 PNG/JPEG image inputs, Claude accepts

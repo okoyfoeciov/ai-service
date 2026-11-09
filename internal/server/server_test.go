@@ -839,13 +839,14 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 
 func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	s := New(config.Config{
-		OpenRouterAPIKey: "or",
-		ClaudeAPIKey:     "cl",
-		ExplainProviders: []string{config.ProviderClaude, config.ProviderOpenRouter},
-		ExplainProvider:  config.ProviderClaude,
+		OpenRouterAPIKey:      "or",
+		ClaudeAPIKey:          "cl",
+		ExplainCerebrasAPIKey: "ce",
+		ExplainProviders:      []string{config.ProviderClaude, config.ProviderOpenRouter, config.ProviderCerebras},
+		ExplainProvider:       config.ProviderClaude,
 	}, nil)
 
-	if got := s.ExplainProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter {
+	if got := s.ExplainProviders(); len(got) != 3 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter || got[2] != config.ProviderCerebras {
 		t.Fatalf("providers %v", got)
 	}
 	if got := s.ExplainProvider(); got != config.ProviderClaude {
@@ -856,6 +857,15 @@ func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	}
 	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderOpenRouter]); got != "*llm.Client" {
 		t.Errorf("openrouter client is %s", got)
+	}
+	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderCerebras]); got != "*llm.Client" {
+		t.Errorf("cerebras client is %s", got)
+	}
+	if !s.SetExplainProvider(config.ProviderCerebras) {
+		t.Error("could not select the configured Cerebras provider")
+	}
+	if got := s.ExplainProvider(); got != config.ProviderCerebras {
+		t.Errorf("provider %q after switch, want %q", got, config.ProviderCerebras)
 	}
 	if !s.SetExplainProvider(config.ProviderOpenRouter) {
 		t.Error("could not select the configured OpenRouter provider")

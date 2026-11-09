@@ -56,6 +56,7 @@ func TestPickerSectionsAreConditional(t *testing.T) {
 		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil},
 		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{PickTranscribe}},
 		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, []string{PickExplain}},
+		{"three explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter, config.ProviderCerebras}, []string{config.ProviderClaude}, []string{PickExplain}},
 		{"two ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderCerebras}, []string{PickAsk}},
 		{"three ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderCerebras, config.ProviderOpenRouter}, []string{PickAsk}},
 		{"five ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{
@@ -94,6 +95,7 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.5 Pro"},
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
+		{PickExplain, config.ProviderCerebras, "Cerebras Qwen 3.8 27B"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
 		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
 		{PickAsk, config.ProviderClaudeNoSearch, "Claude Platform Opus 5.5"},

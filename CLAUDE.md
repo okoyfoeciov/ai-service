@@ -11,11 +11,12 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
-use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform,
-Cerebras or OpenRouter (DeepSeek V4.1 Flash 1017), each at once with its own
-tray picker. A Claude or OpenRouter Ask key creates a web (search + fetch) and
-a no-search choice; the no-search choice sends no tools and uses the plain Ask
-prompt. All
+use Claude Platform, OpenRouter or Cerebras, and `/api/ask` may use Claude
+Platform, Cerebras or OpenRouter (DeepSeek V4.1 Flash 1017), each at once with
+its own tray picker. The Cerebras key is shared: `ASK_CEREBRAS_API_KEY` enables
+Cerebras on both explain and ask. A Claude or OpenRouter Ask key creates a web
+(search + fetch) and a no-search choice; the no-search choice sends no tools and
+uses the plain Ask prompt. All
 three Ask providers accept images, which `/api/ask` sends after the prompt in
 capture order; the image bytes live in `/api/screenshot`'s in-memory store, and
 the client sends ids. The web choices carry OpenRouter's
@@ -25,7 +26,8 @@ request). `/api/memoir/check` still has two and
 refuses both. Every Memoir variable
 starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
 keys are `ASK_CLAUDE_API_KEY`, `ASK_CEREBRAS_API_KEY` and
-`ASK_OPENROUTER_API_KEY`; the transcription
+`ASK_OPENROUTER_API_KEY`, and `ASK_CEREBRAS_API_KEY` also enables Cerebras for
+`/api/explain`; the transcription
 keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
 `/api/explain`'s). Both streaming providers need `ffmpeg` on `PATH`:

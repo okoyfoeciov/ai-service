@@ -125,6 +125,8 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 		switch provider {
 		case config.ProviderClaude:
 			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", false, hc)
+		case config.ProviderCerebras:
+			clients[provider] = newCerebras(cfg.ExplainCerebrasAPIKey, cfg.ExplainModelFor(provider), hc)
 		case config.ProviderOpenRouter:
 			clients[provider] = llm.New(llm.Config{
 				Provider: "OpenRouter",

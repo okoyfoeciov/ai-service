@@ -28,7 +28,7 @@ func clearTranscribeEnv(t *testing.T) {
 func clearExplainEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"OPENROUTER_API_KEY", "CLAUDE_API_KEY",
+		"OPENROUTER_API_KEY", "CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY",
 		"EXPLAIN_EFFORT", "EXPLAIN_REASONING_TOKENS",
 	} {
 		t.Setenv(k, "")
@@ -69,7 +69,10 @@ func TestLoadExplainProvider(t *testing.T) {
 		{"neither key", nil, nil, "", "", true, true},
 		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
 		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"cerebras", map[string]string{"ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderCerebras}, ProviderCerebras, "qwen-3.8-27b", false, true},
 		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"openrouter and cerebras", map[string]string{"OPENROUTER_API_KEY": "or", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderOpenRouter, ProviderCerebras}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
+		{"all three", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderOpenRouter, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -102,7 +105,7 @@ func TestLoadExplainProvider(t *testing.T) {
 			}
 			gotMissing := false
 			for _, m := range missing {
-				if strings.HasPrefix(m, "OPENROUTER_API_KEY or") {
+				if strings.HasPrefix(m, "OPENROUTER_API_KEY") {
 					gotMissing = true
 				}
 			}
@@ -138,6 +141,28 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 			t.Errorf("route %q missing %q", got, want)
 		}
 	}
+
+	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = c.ExplainRoute()
+	for _, want := range []string{"Claude", "OpenRouter", "Cerebras", "qwen-3.8-27b", "3 providers", "tray picker", "starting on Claude Platform"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("route %q missing %q", got, want)
+		}
+	}
+
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("CLAUDE_API_KEY", "")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ExplainRoute(); !strings.Contains(got, "Cerebras") || !strings.Contains(got, "qwen-3.8-27b") || !strings.Contains(got, "reasoning medium") {
+		t.Errorf("cerebras-only route %q", got)
+	}
 }
 
 // Thinking depth is fixed in code, like the models. Leftover tuning variables
@@ -168,7 +193,8 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") {
+	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") ||
+		!strings.Contains(got, "reasoning medium") {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") ||
@@ -273,6 +299,29 @@ func TestAskKeysAreIndependentOfExplainKeys(t *testing.T) {
 		c.AskProviders[2] != ProviderOpenRouterNoSearch {
 		t.Fatalf("ask %q providers %v err %v after adding the ask OpenRouter key",
 			c.AskProvider, c.AskProviders, err)
+	}
+}
+
+// The Cerebras key is deliberately shared: ASK_CEREBRAS_API_KEY configures both
+// /api/ask and /api/explain. Adding it to an install that already has an explain
+// key must not change the provider /api/explain starts on.
+func TestAskCerebrasKeyAlsoConfiguresExplain(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearAskEnv(t)
+	clearMemoirEnv(t)
+	t.Setenv("OPENROUTER_API_KEY", "or")
+	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
+	c, _, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ExplainProvider != ProviderOpenRouter || len(c.ExplainProviders) != 2 ||
+		c.ExplainProviders[0] != ProviderOpenRouter || c.ExplainProviders[1] != ProviderCerebras {
+		t.Fatalf("explain provider %q providers %v", c.ExplainProvider, c.ExplainProviders)
+	}
+	if c.AskProvider != ProviderCerebras || len(c.AskProviders) != 1 || c.AskProviders[0] != ProviderCerebras {
+		t.Fatalf("ask provider %q providers %v", c.AskProvider, c.AskProviders)
 	}
 }
 
