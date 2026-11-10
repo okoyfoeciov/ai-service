@@ -31,10 +31,12 @@ const (
 )
 
 var (
-	// errScreenshotCancelled is the user closing or cancelling the portal UI.
+	// errScreenshotCancelled is the user closing or cancelling the selection UI.
 	errScreenshotCancelled = errors.New("screenshot cancelled")
-	// errScreenshotUnsupported is a platform without the portal.
-	errScreenshotUnsupported = errors.New("screen capture is only supported on Linux")
+	// errScreenshotBusy is a second capture while a selection is still open.
+	errScreenshotBusy = errors.New("a screenshot is already being taken")
+	// errScreenshotUnsupported is a platform without a capture backend.
+	errScreenshotUnsupported = errors.New("screen capture is only supported on Linux and macOS")
 )
 
 // handleScreenshot asks the desktop for one interactive region capture, stores
@@ -78,6 +80,11 @@ func (s *Server) handleScreenshot(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errScreenshotCancelled):
 			outcome = "cancelled"
 			jsonError(w, "Screenshot cancelled.", http.StatusConflict)
+		case errors.Is(err, errScreenshotBusy):
+			outcome = "busy"
+			// Not 409: comart reads every 409 as the reader cancelling and stays
+			// silent, which would hide this from them.
+			jsonError(w, "A screenshot is already being taken.", http.StatusTooManyRequests)
 		case errors.Is(err, errScreenshotUnsupported):
 			outcome = "unsupported"
 			jsonError(w, err.Error(), http.StatusNotImplemented)

@@ -84,10 +84,16 @@ outcome, item, context and earlier-round counts. Tray switches log
   names images from `/api/screenshot` in capture order, and its optional
   `timeline` interleaves selected text and those screenshots in the order the
   reader added them. `BuildAsk` renders that order under `# CONTEXT TIMELINE`.
-- **`/api/screenshot` is Linux/GNOME only.** It opens
+- **`/api/screenshot` is Linux/GNOME and macOS.** On Linux it opens
   `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG
   the portal saves under `~/Pictures/Screenshots`, keeps it in memory under an
-  unguessable id, and deletes the file immediately. `POST /api/screenshot/release`, not the TTL,
+  unguessable id, and deletes the file immediately. On macOS it runs
+  `/usr/sbin/screencapture -i -s -x -t png` into a private 0700 temp directory
+  (`-s` blocks Space's window mode, so it is one drag, captured on mouse
+  release). That directory is removed on every path, the process is
+  SIGTERMed then killed when the request ends, only one capture runs at a time
+  (429 otherwise; comart reads 409 as a cancel), and stale directories from a killed service are swept. The
+  service binary needs Screen Recording permission in System Settings. `POST /api/screenshot/release`, not the TTL,
   is the normal cleanup: a non-Ask Stop releases that take's ids, and the Ask
   card's dismissal releases every round. The TTL is the backstop. One Ask
   card is capped at 10 screenshots and 8 MiB of base64 on the server, matching

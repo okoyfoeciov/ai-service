@@ -19,7 +19,7 @@ kept in step with the real one by hand.
 
 The comart API is deliberately stable: no CORS, no auth, and only the routes
 the clients actually call. `/api/ask` is comart's spoken-question route, and
-`/api/screenshot` is its Linux screen-capture route (the image is kept here
+`/api/screenshot` is its screen-capture route on Linux and macOS (the image is kept here
 under an id and released by the client); Memoir's `/api/memoir/check` and
 daily-dictation's `/api/transcribe-verbatim` are the other deliberate
 additions. Change a route only together with the client that calls it.
@@ -33,7 +33,7 @@ additions. Change a route only together with the client that calls it.
 | `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true|false}`) and, for Claude's web choice, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter's web choice sets `enabled:true` but sends no active transitions; the no-search choices and Cerebras set `enabled:false`. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. All three ask providers accept images; the prompt labels them in capture order and treats their text as data. The Claude and OpenRouter web choices can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs DeepSeek's on Exa. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/screenshot` | comart | Linux/GNOME only. Opens the desktop portal's interactive area selection, stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The portal's file is deleted as soon as it is read, including on a failed or oversized read. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to stay inside Cerebras' request limit. |
+| `POST /api/screenshot` | comart | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to stay inside Cerebras' request limit. |
 | `POST /api/screenshot/release` | comart | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
 | `POST /api/transcribe/stream` | comart; daily-dictation; voice-typing (`?timestamps=0`) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` (and `first_word_ms` when it is known) or `{"error": …}`. |
@@ -451,8 +451,8 @@ A web page can send a cross-site POST without a CORS preflight only as
 `text/plain` or a form type, and a sandboxed iframe (`Origin: null`) passes the
 guard. The Content-Type rule closes that gap.
 
-`/api/screenshot` can only ask the desktop portal to open its interactive
-selection; it cannot read screen pixels without the person at the machine
+`/api/screenshot` can only ask the desktop (the portal on Linux,
+`screencapture` on macOS) to open its interactive selection; it cannot read screen pixels without the person at the machine
 choosing an area. The capture is stored in memory, never served back over HTTP,
 and deleted by `/api/screenshot/release` or the idle TTL.
 
@@ -595,7 +595,7 @@ cmd/ai-service/    main: config, cache, server, graceful shutdown
 internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers, the in-memory
-                    screenshot store and its Linux/GNOME D-Bus portal
+                    screenshot store, its Linux/GNOME D-Bus portal and macOS screencapture
 internal/tray       the provider pickers for /api/transcribe/stream, /api/explain and /api/ask (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
