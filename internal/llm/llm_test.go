@@ -190,7 +190,7 @@ func TestStreamImagesUsesOrderedContentParts(t *testing.T) {
 
 // Native client tools: the first turn requests search_images, the backend
 // executes it, and the second turn answers with the tool result in the chat
-// messages. This is the OpenAI-style loop OpenRouter and Cerebras use.
+// messages. This is the OpenAI-style loop OpenRouter uses.
 func TestStreamWithToolsRunsTheNativeToolLoop(t *testing.T) {
 	ft := &fakeTransport{
 		statuses: []int{200, 200},

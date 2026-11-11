@@ -196,11 +196,10 @@ ask_key() {
 
 # /api/transcribe/stream runs on ASSEMBLYAI_API_KEY and/or DEEPGRAM_API_KEY;
 # /api/transcribe-verbatim uses OPENROUTER_TRANSCRIBE_API_KEY. /api/explain
-# takes OPENROUTER_API_KEY, CLAUDE_API_KEY and/or ASK_CEREBRAS_API_KEY (the
-# Cerebras key is shared with /api/ask); /api/ask takes ASK_CLAUDE_API_KEY,
-# ASK_CEREBRAS_API_KEY and/or ASK_OPENROUTER_API_KEY, plus the optional
-# BRAVE_SEARCH_API_KEY for image tools; Memoir takes MEMOIR_CLAUDE_API_KEY or
-# MEMOIR_CEREBRAS_API_KEY. The blocks below handle all four routes.
+# takes OPENROUTER_API_KEY and/or CLAUDE_API_KEY; /api/ask takes
+# ASK_CLAUDE_API_KEY and/or ASK_OPENROUTER_API_KEY, plus the optional
+# BRAVE_SEARCH_API_KEY for image tools; Memoir takes MEMOIR_CLAUDE_API_KEY.
+# The blocks below handle all four routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
@@ -215,10 +214,8 @@ else
   fi
   chmod 600 "$ENVFILE"
   # /api/transcribe/stream has two providers, AssemblyAI and Deepgram.
-  # /api/explain has three keys, Claude, OpenRouter and Cerebras (the last
-  # shared with /api/ask), and /api/ask has three keys, Claude, Cerebras and
-  # OpenRouter. Memoir still refuses more than one, so stop before restarting
-  # the service into a configuration it would reject.
+  # /api/explain has two keys, Claude and OpenRouter, and /api/ask has two
+  # keys, Claude and OpenRouter.
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
   fi
@@ -230,13 +227,6 @@ else
   fi
   if env_set AZURE_SPEECH_KEY || env_set AZURE_SPEECH_ENDPOINT; then
     die "ai-service.env still sets AZURE_SPEECH_KEY or AZURE_SPEECH_ENDPOINT. The direct Azure Speech path was removed; /api/transcribe-verbatim now uses OPENROUTER_TRANSCRIBE_API_KEY. Delete the retired lines (or comment them out), then re-run."
-  fi
-  if env_set MEMOIR_CEREBRAS_API_KEY && env_set MEMOIR_CLAUDE_API_KEY; then
-    die "ai-service.env sets both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY, so it is unclear which provider answers /api/memoir/check and the service would refuse to start. Keep one and set the other to empty (KEY=) or comment it out, then re-run."
-  fi
-  # The old name is not read any more, and the service refuses to start with it.
-  if env_set CEREBRAS_API_KEY; then
-    die "ai-service.env still sets CEREBRAS_API_KEY, which was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir variable starts with MEMOIR_) and makes the service refuse to start. Rename it, or comment the line out to stop using Cerebras, then re-run."
   fi
   # /api/transcribe/stream needs at least one of AssemblyAI or Deepgram;
   # /api/transcribe-verbatim uses OpenRouter's MAI-Transcribe-2. Ask for the
@@ -274,9 +264,8 @@ else
   fi
   explain_count=0
   explain_start=""
-  # The start order matches resolveExplain: Claude, then OpenRouter, then
-  # Cerebras. ASK_CEREBRAS_API_KEY is shared with /api/ask.
-  for explain_key_name in CLAUDE_API_KEY OPENROUTER_API_KEY ASK_CEREBRAS_API_KEY; do
+  # The start order matches resolveExplain: Claude, then OpenRouter.
+  for explain_key_name in CLAUDE_API_KEY OPENROUTER_API_KEY; do
     if env_set "$explain_key_name"; then
       explain_count=$((explain_count + 1))
       if [ -z "$explain_start" ]; then
@@ -287,7 +276,6 @@ else
   case "$explain_start" in
     CLAUDE_API_KEY) explain_start_name="the Claude Platform" ;;
     OPENROUTER_API_KEY) explain_start_name="OpenRouter" ;;
-    ASK_CEREBRAS_API_KEY) explain_start_name="Cerebras" ;;
     *) explain_start_name="" ;;
   esac
   if [ "$explain_count" -ge 2 ]; then
@@ -298,14 +286,12 @@ else
     say "[d] add another explain key by hand to enable the explain picker"
   else
     # None: ask for OpenRouter first, and an empty answer there means Claude.
-    # ASK_CEREBRAS_API_KEY also serves explain, but it is asked for with the
-    # Ask keys below.
     ask_key OPENROUTER_API_KEY "word explanations via OpenRouter. Leave it empty to use a Claude key instead" 1 ||
       ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
   fi
   ask_count=0
   ask_start=""
-  for ask_key_name in ASK_CLAUDE_API_KEY ASK_CEREBRAS_API_KEY ASK_OPENROUTER_API_KEY; do
+  for ask_key_name in ASK_CLAUDE_API_KEY ASK_OPENROUTER_API_KEY; do
     if env_set "$ask_key_name"; then
       ask_count=$((ask_count + 1))
       if [ -z "$ask_start" ]; then
@@ -315,7 +301,6 @@ else
   done
   case "$ask_start" in
     ASK_CLAUDE_API_KEY) ask_start_name="the Claude Platform (search + fetch)" ;;
-    ASK_CEREBRAS_API_KEY) ask_start_name="Cerebras" ;;
     ASK_OPENROUTER_API_KEY) ask_start_name="OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)" ;;
     *) ask_start_name="" ;;
   esac
@@ -336,15 +321,11 @@ else
     esac
     say "[d] add another ASK_* key by hand to add that provider"
   else
-    # None: ask for Claude first, then Cerebras, then OpenRouter. All empty
-    # leaves /api/ask unconfigured; the handler names the missing keys.
-    ask_key ASK_CLAUDE_API_KEY "spoken questions via the Claude Platform. Leave it empty to use a Cerebras key instead" 1 ||
-      ask_key ASK_CEREBRAS_API_KEY "spoken questions via Cerebras. Leave it empty to use an OpenRouter key instead" 1 ||
+    # None: ask for Claude first, then OpenRouter. All empty leaves /api/ask
+    # unconfigured; the handler names the missing keys.
+    ask_key ASK_CLAUDE_API_KEY "spoken questions via the Claude Platform. Leave it empty to use an OpenRouter key instead" 1 ||
       ask_key ASK_OPENROUTER_API_KEY "spoken questions via OpenRouter DeepSeek V4.1 Flash 1017 (thinking high, web search + fetch on). Leave it empty to skip" 1 ||
-      say "[d] ai-service.env: ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY left empty — /api/ask stays unconfigured"
-  fi
-  if env_set ASK_CEREBRAS_API_KEY; then
-    say "[d] ai-service.env: ASK_CEREBRAS_API_KEY is shared — it serves /api/ask and /api/explain"
+      say "[d] ai-service.env: ASK_CLAUDE_API_KEY and ASK_OPENROUTER_API_KEY left empty — /api/ask stays unconfigured"
   fi
   if ! env_set BRAVE_SEARCH_API_KEY; then
     ask_key BRAVE_SEARCH_API_KEY "native Ask image search via Brave (optional; enables search_images and show_images on every Ask choice). Leave it empty to skip" 1 ||
@@ -355,12 +336,9 @@ else
   fi
   if env_set MEMOIR_CLAUDE_API_KEY; then
     say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/check runs on the Claude Platform"
-  elif env_set MEMOIR_CEREBRAS_API_KEY; then
-    say "[d] ai-service.env: MEMOIR_CEREBRAS_API_KEY is set — /api/memoir/check runs on Cerebras"
   else
-    # Neither: ask for Claude first (the default), and an empty answer means Cerebras.
-    ask_key MEMOIR_CLAUDE_API_KEY "Memoir via the Claude Platform. Leave it empty to use a Cerebras key instead" 1 ||
-      ask_key MEMOIR_CEREBRAS_API_KEY "Memoir via Cerebras"
+    ask_key MEMOIR_CLAUDE_API_KEY "Memoir via the Claude Platform. Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY left empty — /api/memoir/check stays unconfigured"
   fi
 fi
 

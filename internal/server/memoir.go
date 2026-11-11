@@ -65,7 +65,7 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.memoirLLM == nil {
-		jsonError(w, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set.", http.StatusServiceUnavailable)
+		jsonError(w, "MEMOIR_CLAUDE_API_KEY is not set.", http.StatusServiceUnavailable)
 		return
 	}
 

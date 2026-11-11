@@ -14,9 +14,9 @@ import (
 	"ai-service/internal/llm"
 )
 
-// claudeImageCandidates is the owner's split: OpenRouter and Cerebras see all
-// ten Brave results, Claude sees the top five with their pixels. Five 500px
-// thumbnails is a sensible image-token budget; ten metadata rows is cheap.
+// claudeImageCandidates is the owner's split: OpenRouter sees all ten Brave
+// results, Claude sees the top five with their pixels. Five 500px thumbnails is
+// a sensible image-token budget; ten metadata rows is cheap.
 const claudeImageCandidates = 5
 
 // askImageTools are the two native client tools. search_images never displays
@@ -237,7 +237,7 @@ func (st *askImageState) show(input json.RawMessage) llm.ToolResult {
 
 // downloadBraveImages fetches the top candidates' Brave-proxied thumbnails for
 // Claude's tool result. Failures are skipped; the metadata still reaches the
-// model. OpenRouter and Cerebras never call this.
+// model. OpenRouter never calls this.
 func downloadBraveImages(ctx context.Context, c *brave.Client, cands []brave.Candidate) []llm.ToolImage {
 	out := make([]llm.ToolImage, len(cands))
 	var wg sync.WaitGroup

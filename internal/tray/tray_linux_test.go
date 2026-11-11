@@ -25,7 +25,7 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 	c := &fakeController{
 		transcribe: []string{config.ProviderAssemblyAI, config.ProviderDeepgram},
 		explain:    []string{config.ProviderClaude, config.ProviderOpenRouter},
-		ask:        []string{config.ProviderClaude, config.ProviderCerebras},
+		ask:        []string{config.ProviderClaude, config.ProviderOpenRouter},
 		currentT:   config.ProviderAssemblyAI,
 		currentE:   config.ProviderClaude,
 		currentA:   config.ProviderClaude,
@@ -42,7 +42,7 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 	wantLabels := []string{
 		"Transcribe with", "AssemblyAI Universal-3.5 Pro", "Deepgram Nova-3",
 		"Explain with", "Claude Platform Opus 5.5", "OpenRouter Gemini 3.8 Flash",
-		"Ask with", "Claude Platform Opus 5.5 (search + fetch)", "Cerebras Qwen 3.8 27B",
+		"Ask with", "Claude Platform Opus 5.5 (search + fetch)", "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)",
 	}
 	for i, want := range wantLabels {
 		child := root.V2[i].Value().(layout)
@@ -53,7 +53,7 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 
 	// id 5 is explain Claude (already current), id 6 is explain OpenRouter,
 	// id 3 is Deepgram, id 8 is ask Claude (already current), id 9 is ask
-	// Cerebras.
+	// OpenRouter.
 	m.pick(5)
 	if len(picked) != 0 {
 		t.Fatalf("picking the current provider called back: %v", picked)
@@ -67,15 +67,15 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 		t.Fatalf("picking the current ask provider called back: %v", picked)
 	}
 	m.pick(9)
-	if c.currentA != config.ProviderCerebras {
-		t.Fatalf("ask provider %q, want %q", c.currentA, config.ProviderCerebras)
+	if c.currentA != config.ProviderOpenRouter {
+		t.Fatalf("ask provider %q, want %q", c.currentA, config.ProviderOpenRouter)
 	}
 	m.pick(3)
 	if c.currentT != config.ProviderDeepgram {
 		t.Fatalf("transcribe provider %q, want %q", c.currentT, config.ProviderDeepgram)
 	}
 	if len(picked) != 3 || picked[0] != PickExplain+"/"+config.ProviderOpenRouter ||
-		picked[1] != PickAsk+"/"+config.ProviderCerebras ||
+		picked[1] != PickAsk+"/"+config.ProviderOpenRouter ||
 		picked[2] != PickTranscribe+"/"+config.ProviderDeepgram {
 		t.Fatalf("picks %v", picked)
 	}

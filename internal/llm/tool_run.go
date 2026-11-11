@@ -40,7 +40,7 @@ type turnResult struct {
 // whether to call them; this client executes each call through exec, appends
 // the OpenAI-compatible assistant/tool messages, and continues the same turn.
 func (c *Client) StreamWithTools(ctx context.Context, prompt string, images []Image, tools []ToolDef, exec ToolExecutor, onText func(string), onSearch func(bool)) Result {
-	_ = onSearch // OpenRouter's server tools handle their own status; Cerebras has none.
+	_ = onSearch // OpenRouter's server tools handle their own status.
 	messages := []map[string]any{chatUserMessage(prompt, images)}
 	allTools := mergeToolDefs(c.cfg.Params["tools"], tools)
 	totalText := 0

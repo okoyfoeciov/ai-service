@@ -28,7 +28,7 @@ func clearTranscribeEnv(t *testing.T) {
 func clearExplainEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"OPENROUTER_API_KEY", "CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY",
+		"OPENROUTER_API_KEY", "CLAUDE_API_KEY",
 		"EXPLAIN_EFFORT", "EXPLAIN_REASONING_TOKENS",
 	} {
 		t.Setenv(k, "")
@@ -40,7 +40,7 @@ func clearExplainEnv(t *testing.T) {
 func clearAskEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"ASK_CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY", "ASK_OPENROUTER_API_KEY",
+		"ASK_CLAUDE_API_KEY", "ASK_OPENROUTER_API_KEY",
 		"BRAVE_SEARCH_API_KEY", "ASK_EFFORT", "ASK_REASONING_EFFORT",
 	} {
 		t.Setenv(k, "")
@@ -48,10 +48,9 @@ func clearAskEnv(t *testing.T) {
 }
 
 // clearMemoirEnv does the same for the variables that decide the Memoir route.
-// The retired CEREBRAS_API_KEY is in the list too: it would make Load refuse.
 func clearMemoirEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"MEMOIR_CEREBRAS_API_KEY", "MEMOIR_CLAUDE_API_KEY", "CEREBRAS_API_KEY", "MEMOIR_MODEL", "MEMOIR_EFFORT", "MEMOIR_REASONING_EFFORT"} {
+	for _, k := range []string{"MEMOIR_CLAUDE_API_KEY", "MEMOIR_MODEL", "MEMOIR_EFFORT", "MEMOIR_REASONING_EFFORT"} {
 		t.Setenv(k, "")
 	}
 }
@@ -69,10 +68,7 @@ func TestLoadExplainProvider(t *testing.T) {
 		{"neither key", nil, nil, "", "", true, true},
 		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
 		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"cerebras", map[string]string{"ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderCerebras}, ProviderCerebras, "qwen-3.8-27b", false, true},
 		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"openrouter and cerebras", map[string]string{"OPENROUTER_API_KEY": "or", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderOpenRouter, ProviderCerebras}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
-		{"all three", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderOpenRouter, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,26 +138,14 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 		}
 	}
 
-	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
-	c, _, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got = c.ExplainRoute()
-	for _, want := range []string{"Claude", "OpenRouter", "Cerebras", "qwen-3.8-27b", "3 providers", "tray picker", "starting on Claude Platform"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("route %q missing %q", got, want)
-		}
-	}
-
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("CLAUDE_API_KEY", "")
 	c, _, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.ExplainRoute(); !strings.Contains(got, "Cerebras") || !strings.Contains(got, "qwen-3.8-27b") || !strings.Contains(got, "reasoning medium") {
-		t.Errorf("cerebras-only route %q", got)
+	if got := c.ExplainRoute(); !strings.Contains(got, "OPENROUTER_API_KEY") || !strings.Contains(got, "CLAUDE_API_KEY") {
+		t.Errorf("unconfigured route %q does not name both keys", got)
 	}
 }
 
@@ -183,7 +167,6 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 		"OPENROUTER_API_KEY":       "or",
 		"CLAUDE_API_KEY":           "cl",
 		"ASK_CLAUDE_API_KEY":       "cl",
-		"ASK_CEREBRAS_API_KEY":     "ce",
 		"ASK_OPENROUTER_API_KEY":   "or",
 		"MEMOIR_CLAUDE_API_KEY":    "cl",
 	} {
@@ -193,11 +176,10 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") ||
-		!strings.Contains(got, "reasoning medium") {
+	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
-	if got := c.AskRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "reasoning medium") ||
+	if got := c.AskRoute(); !strings.Contains(got, "effort medium") ||
 		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search + fetch on") {
 		t.Errorf("ask route %q does not use the fixed thinking controls", got)
 	}
@@ -218,10 +200,8 @@ func TestLoadAskProvider(t *testing.T) {
 	}{
 		{"no key", nil, nil, "", "", true, true},
 		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderClaudeNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"cerebras", map[string]string{"ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderCerebras}, ProviderCerebras, "qwen-3.8-27b", false, true},
 		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderOpenRouter, "deepseek/deepseek-v4.1-flash-1017", false, true},
-		{"claude and cerebras", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderCerebras}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"all three", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_CEREBRAS_API_KEY": "ce", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderCerebras, ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -281,47 +261,24 @@ func TestAskKeysAreIndependentOfExplainKeys(t *testing.T) {
 	if err != nil || c.ExplainProvider != ProviderClaude || c.AskProvider != "" {
 		t.Fatalf("explain %q ask %q err %v", c.ExplainProvider, c.AskProvider, err)
 	}
-	t.Setenv("ASK_CEREBRAS_API_KEY", "ask-cerebras")
+	t.Setenv("ASK_CLAUDE_API_KEY", "ask-claude")
 	c, _, err = Load()
-	if err != nil || c.AskProvider != ProviderCerebras || c.AskProviders[0] != ProviderCerebras {
+	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 2 {
 		t.Fatalf("ask %q providers %v err %v", c.AskProvider, c.AskProviders, err)
 	}
 	// The explain OpenRouter key must not select OpenRouter for Ask.
 	t.Setenv("OPENROUTER_API_KEY", "explain-openrouter")
 	c, _, err = Load()
-	if err != nil || c.AskProvider != ProviderCerebras || len(c.AskProviders) != 1 {
+	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 2 {
 		t.Fatalf("ask %q providers %v err %v after setting only the explain OpenRouter key",
 			c.AskProvider, c.AskProviders, err)
 	}
 	t.Setenv("ASK_OPENROUTER_API_KEY", "ask-openrouter")
 	c, _, err = Load()
-	if err != nil || len(c.AskProviders) != 3 || c.AskProviders[1] != ProviderOpenRouter ||
-		c.AskProviders[2] != ProviderOpenRouterNoSearch {
+	if err != nil || len(c.AskProviders) != 4 || c.AskProviders[2] != ProviderOpenRouter ||
+		c.AskProviders[3] != ProviderOpenRouterNoSearch {
 		t.Fatalf("ask %q providers %v err %v after adding the ask OpenRouter key",
 			c.AskProvider, c.AskProviders, err)
-	}
-}
-
-// The Cerebras key is deliberately shared: ASK_CEREBRAS_API_KEY configures both
-// /api/ask and /api/explain. Adding it to an install that already has an explain
-// key must not change the provider /api/explain starts on.
-func TestAskCerebrasKeyAlsoConfiguresExplain(t *testing.T) {
-	clearTranscribeEnv(t)
-	clearExplainEnv(t)
-	clearAskEnv(t)
-	clearMemoirEnv(t)
-	t.Setenv("OPENROUTER_API_KEY", "or")
-	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
-	c, _, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.ExplainProvider != ProviderOpenRouter || len(c.ExplainProviders) != 2 ||
-		c.ExplainProviders[0] != ProviderOpenRouter || c.ExplainProviders[1] != ProviderCerebras {
-		t.Fatalf("explain provider %q providers %v", c.ExplainProvider, c.ExplainProviders)
-	}
-	if c.AskProvider != ProviderCerebras || len(c.AskProviders) != 1 || c.AskProviders[0] != ProviderCerebras {
-		t.Fatalf("ask provider %q providers %v", c.AskProvider, c.AskProviders)
 	}
 }
 
@@ -340,46 +297,21 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Errorf("route %q", got)
 	}
 
-	t.Setenv("ASK_CEREBRAS_API_KEY", "ce")
-	c, _, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := c.AskRoute()
-	for _, want := range []string{"Claude", "Cerebras", "qwen-3.8-27b", "3 choices", "tray picker", "starting on Claude Platform", "web search + fetch off"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("route %q missing %q", got, want)
-		}
-	}
-
 	t.Setenv("ASK_OPENROUTER_API_KEY", "or")
 	c, _, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	got = c.AskRoute()
-	for _, want := range []string{"OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "web search + fetch on", "web search + fetch off", "5 choices"} {
+	got := c.AskRoute()
+	for _, want := range []string{"Claude", "OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "4 choices", "tray picker", "starting on Claude Platform", "web search + fetch on", "web search + fetch off"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}
 	}
 
 	if got := (Config{}).AskRoute(); !strings.Contains(got, "ASK_CLAUDE_API_KEY") ||
-		!strings.Contains(got, "ASK_CEREBRAS_API_KEY") || !strings.Contains(got, "ASK_OPENROUTER_API_KEY") {
-		t.Errorf("unconfigured route %q does not name all three keys", got)
-	}
-}
-
-func TestLoadRefusesBothMemoirKeys(t *testing.T) {
-	clearTranscribeEnv(t)
-	clearExplainEnv(t)
-	clearMemoirEnv(t)
-	clearAskEnv(t)
-	t.Setenv("MEMOIR_CEREBRAS_API_KEY", "ce")
-	t.Setenv("MEMOIR_CLAUDE_API_KEY", "cl")
-	_, _, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "MEMOIR_CEREBRAS_API_KEY") || !strings.Contains(err.Error(), "MEMOIR_CLAUDE_API_KEY") {
-		t.Fatalf("err %v, want one naming both keys", err)
+		!strings.Contains(got, "ASK_OPENROUTER_API_KEY") {
+		t.Errorf("unconfigured route %q does not name both keys", got)
 	}
 }
 
@@ -390,13 +322,10 @@ func TestLoadMemoirProvider(t *testing.T) {
 		wantProvider, wantModel   string
 		wantMissingMemoir, wantOK bool
 	}{
-		{"neither key", nil, "", "", true, true},
-		{"cerebras default model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce"}, ProviderCerebras, "qwen-3.8-27b", false, true},
-		{"cerebras custom model", map[string]string{"MEMOIR_CEREBRAS_API_KEY": "ce", "MEMOIR_MODEL": "llama-9"}, ProviderCerebras, "llama-9", false, true},
+		{"no key", nil, "", "", true, true},
 		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", false, true},
 		{"claude custom", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "claude-sonnet-5-5"}, ProviderClaude, "claude-sonnet-5-5", false, true},
-		{"claude with a cerebras model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "qwen-3.8-27b"}, "", "", false, false},
-		{"the retired CEREBRAS_API_KEY", map[string]string{"CEREBRAS_API_KEY": "ce", "MEMOIR_CLAUDE_API_KEY": "cl"}, "", "", false, false},
+		{"claude with a non-Claude model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "not-a-claude-model"}, "", "", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -442,10 +371,9 @@ func TestMemoirKeysAreIndependentOfExplainKeys(t *testing.T) {
 	if err != nil || c.MemoirProvider != "" || c.ExplainProvider != ProviderClaude {
 		t.Fatalf("memoir %q explain %q err %v", c.MemoirProvider, c.ExplainProvider, err)
 	}
-	t.Setenv("MEMOIR_CEREBRAS_API_KEY", "ce")
-	t.Setenv("MEMOIR_CLAUDE_API_KEY", "")
+	t.Setenv("MEMOIR_CLAUDE_API_KEY", "memoir-claude")
 	c, _, err = Load()
-	if err != nil || c.MemoirProvider != ProviderCerebras {
+	if err != nil || c.MemoirProvider != ProviderClaude {
 		t.Fatalf("memoir %q err %v", c.MemoirProvider, err)
 	}
 }

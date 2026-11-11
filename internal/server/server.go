@@ -31,7 +31,7 @@ type Server struct {
 	// explainProvider is the one /api/explain uses now. The tray picker may
 	// change it while requests are running, hence atomic. askLLMs,
 	// askProviders and askProvider do the same for /api/ask. memoirLLM is
-	// Memoir's one client (Cerebras or Claude).
+	// Memoir's one client.
 	explainLLMs      map[string]llm.Streamer
 	explainProviders []string
 	explainProvider  atomic.Value // string
@@ -62,11 +62,10 @@ type Server struct {
 	inflight sync.WaitGroup
 }
 
-// Model endpoints. OpenRouter and Cerebras speak OpenAI's streaming chat
-// completions; Claude is the Messages API at its API root.
+// Model endpoints. OpenRouter speaks OpenAI's streaming chat completions;
+// Claude is the Messages API at its API root.
 const (
 	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
-	cerebrasURL   = "https://api.cerebras.ai/v1/chat/completions"
 	claudeURL     = "https://api.anthropic.com"
 	// maxAnswerTokens bounds one answer, thinking included. Both prompts need
 	// far less; the cap only stops a runaway reply.
@@ -132,8 +131,6 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 		switch provider {
 		case config.ProviderClaude:
 			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", false, hc)
-		case config.ProviderCerebras:
-			clients[provider] = newCerebras(cfg.ExplainCerebrasAPIKey, cfg.ExplainModelFor(provider), hc)
 		case config.ProviderOpenRouter:
 			clients[provider] = llm.New(llm.Config{
 				Provider: "OpenRouter",
@@ -159,8 +156,6 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", true, hc)
 		case config.ProviderClaudeNoSearch:
 			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", false, hc)
-		case config.ProviderCerebras:
-			clients[provider] = newCerebras(cfg.AskCerebrasAPIKey, cfg.AskModelFor(provider), hc)
 		case config.ProviderOpenRouter:
 			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), true, hc)
 		case config.ProviderOpenRouterNoSearch:
@@ -214,25 +209,9 @@ func newOpenRouterAsk(key, model string, web bool, hc *http.Client) llm.Streamer
 	}, hc)
 }
 
-func newCerebras(key, model string, hc *http.Client) llm.Streamer {
-	return llm.New(llm.Config{
-		Provider: "Cerebras",
-		URL:      cerebrasURL,
-		APIKey:   key,
-		Model:    model,
-		Params: map[string]any{
-			"max_completion_tokens": maxAnswerTokens,
-			"reasoning_effort":      config.CerebrasReasoningEffort,
-		},
-	}, hc)
-}
-
 func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {
-	switch cfg.MemoirProvider {
-	case config.ProviderClaude:
+	if cfg.MemoirProvider == config.ProviderClaude {
 		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, "memoir", false, hc)
-	case config.ProviderCerebras:
-		return newCerebras(cfg.MemoirCerebrasAPIKey, cfg.MemoirModel, hc)
 	}
 	return nil
 }
@@ -296,8 +275,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // loopbackOnly is the guard ServeHTTP runs before every route. Binding
 // 127.0.0.1 keeps other machines out, but not pages open in this machine's
 // browser: DNS rebinding could read responses, and any site can fire blind
-// cross-site POSTs that bill the OpenRouter, Claude, Cerebras or AssemblyAI
-// accounts. The Host and any http(s) Origin must name loopback; an absent or
+// cross-site POSTs that bill the OpenRouter, Claude or AssemblyAI accounts.
+// The Host and any http(s) Origin must name loopback; an absent or
 // "null" Origin, or a non-web one (chrome-extension:// for comart, file:// for
 // Cairn's Electron renderer), passes: loopback stays the trust boundary.
 func loopbackOnly(r *http.Request) bool {

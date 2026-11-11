@@ -146,7 +146,7 @@ func TestMemoirCheckCapCountsUTF16(t *testing.T) {
 		wantStatus int
 		wantError  string
 	}{
-		{"12000 curly quotes", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set."},
+		{"12000 curly quotes", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "MEMOIR_CLAUDE_API_KEY is not set."},
 		{"12001 curly quotes", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
 	}
 	for _, tc := range cases {
@@ -241,7 +241,7 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 // fakeModel answers a chat completion with reply as the model's whole answer,
-// streamed the way OpenRouter and Cerebras stream it.
+// streamed the way OpenRouter streams it.
 type fakeModel struct{ reply string }
 
 func (f fakeModel) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -375,10 +375,10 @@ func TestExplainPrefetchStopsOnCancel(t *testing.T) {
 func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 	m := &captureModel{reply: "It means the officer formally accuses the suspect."}
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderCerebras},
-		askProviders: []string{config.ProviderCerebras},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
+		askProviders: []string{config.ProviderOpenRouterNoSearch},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderCerebras: testLLM(m),
+			config.ProviderOpenRouterNoSearch: testLLM(m),
 		},
 	}
 	body := `{"question":"What does charge mean here?","items":[{"phrase":"charge","words":["charge"]}],"contexts":[{"phrase":"charge","text":"The officer will charge the suspect at noon."}]}`
@@ -411,10 +411,10 @@ func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 	m := &captureModel{reply: "Yes — by the second reading."}
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderCerebras},
-		askProviders: []string{config.ProviderCerebras},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
+		askProviders: []string{config.ProviderOpenRouterNoSearch},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderCerebras: testLLM(m),
+			config.ProviderOpenRouterNoSearch: testLLM(m),
 		},
 	}
 	body := `{"question":"Which one did you mean?","history":[{"question":"What are the two readings?","answer":"A narrow one and a broad one."}]}`
@@ -839,14 +839,13 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 
 func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	s := New(config.Config{
-		OpenRouterAPIKey:      "or",
-		ClaudeAPIKey:          "cl",
-		ExplainCerebrasAPIKey: "ce",
-		ExplainProviders:      []string{config.ProviderClaude, config.ProviderOpenRouter, config.ProviderCerebras},
-		ExplainProvider:       config.ProviderClaude,
+		OpenRouterAPIKey: "or",
+		ClaudeAPIKey:     "cl",
+		ExplainProviders: []string{config.ProviderClaude, config.ProviderOpenRouter},
+		ExplainProvider:  config.ProviderClaude,
 	}, nil)
 
-	if got := s.ExplainProviders(); len(got) != 3 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter || got[2] != config.ProviderCerebras {
+	if got := s.ExplainProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter {
 		t.Fatalf("providers %v", got)
 	}
 	if got := s.ExplainProvider(); got != config.ProviderClaude {
@@ -857,15 +856,6 @@ func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 	}
 	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderOpenRouter]); got != "*llm.Client" {
 		t.Errorf("openrouter client is %s", got)
-	}
-	if got := fmt.Sprintf("%T", s.explainLLMs[config.ProviderCerebras]); got != "*llm.Client" {
-		t.Errorf("cerebras client is %s", got)
-	}
-	if !s.SetExplainProvider(config.ProviderCerebras) {
-		t.Error("could not select the configured Cerebras provider")
-	}
-	if got := s.ExplainProvider(); got != config.ProviderCerebras {
-		t.Errorf("provider %q after switch, want %q", got, config.ProviderCerebras)
 	}
 	if !s.SetExplainProvider(config.ProviderOpenRouter) {
 		t.Error("could not select the configured OpenRouter provider")
@@ -880,13 +870,12 @@ func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 
 func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	s := New(config.Config{
-		AskClaudeAPIKey:   "cl",
-		AskCerebrasAPIKey: "ce",
-		AskProviders:      []string{config.ProviderClaude, config.ProviderCerebras},
-		AskProvider:       config.ProviderClaude,
+		AskClaudeAPIKey: "cl",
+		AskProviders:    []string{config.ProviderClaude, config.ProviderClaudeNoSearch},
+		AskProvider:     config.ProviderClaude,
 	}, nil)
 
-	if got := s.AskProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderCerebras {
+	if got := s.AskProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderClaudeNoSearch {
 		t.Fatalf("providers %v", got)
 	}
 	if got := s.AskProvider(); got != config.ProviderClaude {
@@ -895,14 +884,14 @@ func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaude]); got != "*llm.Claude" {
 		t.Errorf("claude client is %s", got)
 	}
-	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderCerebras]); got != "*llm.Client" {
-		t.Errorf("cerebras client is %s", got)
+	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaudeNoSearch]); got != "*llm.Claude" {
+		t.Errorf("claude no-search client is %s", got)
 	}
-	if !s.SetAskProvider(config.ProviderCerebras) {
-		t.Error("could not select the configured Cerebras provider")
+	if !s.SetAskProvider(config.ProviderClaudeNoSearch) {
+		t.Error("could not select the configured Claude no-search choice")
 	}
-	if got := s.AskProvider(); got != config.ProviderCerebras {
-		t.Errorf("provider %q after switch, want %q", got, config.ProviderCerebras)
+	if got := s.AskProvider(); got != config.ProviderClaudeNoSearch {
+		t.Errorf("provider %q after switch, want %q", got, config.ProviderClaudeNoSearch)
 	}
 	if s.SetAskProvider("not-configured") {
 		t.Error("selected a provider that has no key")
@@ -910,7 +899,7 @@ func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 }
 
 // New builds Memoir's client from the provider config.Load picked, and leaves
-// it nil (so the handlers report the missing key) when neither key is set.
+// it nil (so the handlers report the missing key) when no key is set.
 func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -919,7 +908,6 @@ func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 		wantTyp string
 	}{
 		{"no key", config.Config{}, true, ""},
-		{"cerebras", config.Config{MemoirProvider: config.ProviderCerebras, MemoirCerebrasAPIKey: "k", MemoirModel: "qwen-3.8-27b"}, false, "*llm.Client"},
 		{"claude", config.Config{MemoirProvider: config.ProviderClaude, MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5"}, false, "*llm.Claude"},
 	}
 	for _, tc := range cases {
@@ -1450,10 +1438,10 @@ func TestAskCarriesScreenshotsInOrder(t *testing.T) {
 	m := &captureModel{reply: "The first screenshot shows a chart."}
 	shots := newScreenshotStore(time.Hour, 1<<20, 4)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderCerebras},
-		askProviders: []string{config.ProviderCerebras},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
+		askProviders: []string{config.ProviderOpenRouterNoSearch},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderCerebras: testLLM(m),
+			config.ProviderOpenRouterNoSearch: testLLM(m),
 		},
 		shots: shots,
 	}
@@ -1503,10 +1491,10 @@ func TestAskReportsMissingScreenshot(t *testing.T) {
 	m := &captureModel{reply: "should not run"}
 	shots := newScreenshotStore(time.Hour, 1<<20, 4)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderCerebras},
-		askProviders: []string{config.ProviderCerebras},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
+		askProviders: []string{config.ProviderOpenRouterNoSearch},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderCerebras: testLLM(m),
+			config.ProviderOpenRouterNoSearch: testLLM(m),
 		},
 		shots: shots,
 	}
@@ -1537,10 +1525,10 @@ func TestAskRefusesMoreThanTenScreenshots(t *testing.T) {
 	m := &captureModel{reply: "should not run"}
 	shots := newScreenshotStore(time.Hour, 8<<20, 20)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderCerebras},
-		askProviders: []string{config.ProviderCerebras},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
+		askProviders: []string{config.ProviderOpenRouterNoSearch},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderCerebras: testLLM(m),
+			config.ProviderOpenRouterNoSearch: testLLM(m),
 		},
 		shots: shots,
 	}

@@ -44,8 +44,8 @@ func (s *Server) SetAskProvider(provider string) bool {
 }
 
 // The Ask routes send every round's screenshots, so these caps keep one card
-// inside Cerebras' per-request image/payload limits. The client also refuses
-// to capture beyond maxAskImages per Ask card.
+// inside the Ask models' per-request image/payload limits. The client also
+// refuses to capture beyond maxAskImages per Ask card.
 const (
 	maxAskImages      = 10
 	maxAskImageBase64 = 8 << 20
@@ -157,7 +157,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if streamer == nil {
 		outcome = "no_provider"
-		errMsg = "None of ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY is set."
+		errMsg = "Neither ASK_CLAUDE_API_KEY nor ASK_OPENROUTER_API_KEY is set."
 		send("error", map[string]any{"message": errMsg})
 		return
 	}

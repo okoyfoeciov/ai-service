@@ -18,7 +18,6 @@ const (
 	ProviderDeepgram   = "deepgram"
 
 	ProviderOpenRouter = "openrouter"
-	ProviderCerebras   = "cerebras"
 	ProviderClaude     = "claude"
 
 	// Ask variants without the provider's web tools. The plain provider names
@@ -49,56 +48,47 @@ type Config struct {
 	// the tray picker.
 	TranscribeProvider string
 
-	// Word explanations (/api/explain) run on Claude Platform, Cerebras or
-	// OpenRouter. All may be configured at once; the tray picker then chooses
-	// which one answers. At least one key is needed for the feature, but a
-	// missing key only makes the handler report it at request time.
+	// Word explanations (/api/explain) run on Claude Platform or OpenRouter.
+	// Both may be configured at once; the tray picker then chooses which one
+	// answers. At least one key is needed for the feature, but a missing key
+	// only makes the handler report it at request time.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
-	// ExplainCerebrasAPIKey is read from ASK_CEREBRAS_API_KEY. The Cerebras key
-	// is deliberately shared by /api/ask and /api/explain, so one key enables
-	// both routes; the Claude and OpenRouter keys stay route-specific.
-	ExplainCerebrasAPIKey string
 	// ExplainProviders lists every configured explain provider in a fixed
-	// order (Claude, OpenRouter, Cerebras). It is empty when no key is set.
+	// order (Claude, OpenRouter). It is empty when no key is set.
 	ExplainProviders []string
 	// ExplainProvider is the provider /api/explain starts on: the first entry
 	// of ExplainProviders, unless main restores a selection saved by the tray
 	// picker.
 	ExplainProvider string
 
-	// Ask (/api/ask) runs on Claude Platform, Cerebras or OpenRouter. All may
-	// be configured at once; the tray picker then chooses which one answers.
+	// Ask (/api/ask) runs on Claude Platform or OpenRouter. Both may be
+	// configured at once; the tray picker then chooses which one answers.
 	// The Claude and OpenRouter keys are deliberately separate from the explain
-	// and Memoir keys, so each route can keep its own credential. The Cerebras
-	// key is the exception: ASK_CEREBRAS_API_KEY also serves /api/explain.
+	// and Memoir keys, so each route can keep its own credential.
 	AskClaudeAPIKey     string
-	AskCerebrasAPIKey   string
 	AskOpenRouterAPIKey string
 	// BraveSearchAPIKey enables the native image-search tools on every Ask
 	// choice. It is optional: without it, /api/ask answers exactly as before
 	// and simply offers no image tools.
 	BraveSearchAPIKey string
 	// AskProviders lists every configured ask choice in a fixed order
-	// (Claude web/no-web, Cerebras, OpenRouter web/no-web). It is empty when
-	// no key is set.
+	// (Claude web/no-web, OpenRouter web/no-web). It is empty when no key is
+	// set.
 	AskProviders []string
 	// AskProvider is the provider /api/ask starts on: the first entry of
 	// AskProviders, unless main restores a selection saved by the tray picker.
 	AskProvider string
 
-	// Memoir (/api/memoir/check) runs on Cerebras or on the Claude Platform,
-	// whichever key is set, by the same rule as /api/explain: both set is a
-	// startup error. Every Memoir variable starts with MEMOIR_, because the
-	// plain CLAUDE_API_KEY already belongs to /api/explain.
-	MemoirCerebrasAPIKey string
-	MemoirClaudeAPIKey   string
-	// MemoirProvider is ProviderCerebras or ProviderClaude, or "" when neither
-	// key is set (the Memoir handlers then report the missing key).
+	// Memoir (/api/memoir/check) runs on the Claude Platform. Every Memoir
+	// variable starts with MEMOIR_, because the plain CLAUDE_API_KEY already
+	// belongs to /api/explain.
+	MemoirClaudeAPIKey string
+	// MemoirProvider is ProviderClaude, or "" when the key is not set (the
+	// Memoir handlers then report the missing key).
 	MemoirProvider string
-	// MemoirModel is the model id sent to the active provider: a Cerebras id
-	// (qwen-3.8-27b) or a Claude id (claude-opus-5-5). When MEMOIR_MODEL is
-	// unset it defaults per provider.
+	// MemoirModel is the Claude model id sent to /api/memoir/check
+	// (claude-opus-5-5). When MEMOIR_MODEL is unset it defaults to that.
 	MemoirModel string
 }
 
@@ -109,7 +99,6 @@ type Config struct {
 const (
 	defaultOpenRouterModel    = "google/gemini-3.8-flash"
 	defaultOpenRouterAskModel = "deepseek/deepseek-v4.1-flash-1017"
-	defaultCerebrasModel      = "qwen-3.8-27b"
 	defaultClaudeModel        = "claude-opus-5-5"
 
 	// ClaudeEffort is Claude's output_config.effort (low, medium, high, xhigh
@@ -117,10 +106,6 @@ const (
 	// reject a separate thinking-token budget, while max_tokens still caps the
 	// answer.
 	ClaudeEffort = "medium"
-	// CerebrasReasoningEffort is Cerebras' reasoning_effort. Keep it on: with
-	// "none" Qwen can break Memoir's JSON contract and edit text it must leave
-	// alone.
-	CerebrasReasoningEffort = "medium"
 	// OpenRouterReasoningTokens is OpenRouter's thinking budget
 	// (reasoning.max_tokens, Gemini's thinkingBudget). Thinking is never shown.
 	OpenRouterReasoningTokens = 1024
@@ -169,9 +154,8 @@ const (
 // variable of the Memoir route set, neither ASSEMBLYAI_API_KEY nor
 // DEEPGRAM_API_KEY set, a retired transcription variable still present
 // (PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY,
-// AZURE_SPEECH_ENDPOINT, GROQ_API_KEY, GROQ_MODEL), a Memoir Claude key with a
-// model id that is not Claude's, or the retired CEREBRAS_API_KEY still present.
-// The caller exits on it.
+// AZURE_SPEECH_ENDPOINT, GROQ_API_KEY, GROQ_MODEL), or a Memoir Claude key
+// with a model id that is not Claude's. The caller exits on it.
 func Load() (Config, []string, error) {
 	c := Config{
 		ListenAddr:                 env("LISTEN_ADDR", "127.0.0.1:8770"),
@@ -181,17 +165,13 @@ func Load() (Config, []string, error) {
 
 		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
 		ClaudeAPIKey:     os.Getenv("CLAUDE_API_KEY"),
-		// The Cerebras key is shared with /api/ask by design.
-		ExplainCerebrasAPIKey: os.Getenv("ASK_CEREBRAS_API_KEY"),
 
 		AskClaudeAPIKey:     os.Getenv("ASK_CLAUDE_API_KEY"),
-		AskCerebrasAPIKey:   os.Getenv("ASK_CEREBRAS_API_KEY"),
 		AskOpenRouterAPIKey: os.Getenv("ASK_OPENROUTER_API_KEY"),
 		BraveSearchAPIKey:   os.Getenv("BRAVE_SEARCH_API_KEY"),
 
-		MemoirCerebrasAPIKey: os.Getenv("MEMOIR_CEREBRAS_API_KEY"),
-		MemoirClaudeAPIKey:   os.Getenv("MEMOIR_CLAUDE_API_KEY"),
-		MemoirModel:          os.Getenv("MEMOIR_MODEL"),
+		MemoirClaudeAPIKey: os.Getenv("MEMOIR_CLAUDE_API_KEY"),
+		MemoirModel:        os.Getenv("MEMOIR_MODEL"),
 	}
 
 	// Parakeet was removed. Ignoring a leftover URL silently would leave a
@@ -246,21 +226,15 @@ func Load() (Config, []string, error) {
 	if err := c.resolveAsk(); err != nil {
 		return c, nil, err
 	}
-	// The old name is not read any more. Ignoring it silently would leave a
-	// key in the file that does nothing while Memoir reports it is missing.
-	if os.Getenv("CEREBRAS_API_KEY") != "" {
-		return c, nil, fmt.Errorf("CEREBRAS_API_KEY was renamed MEMOIR_CEREBRAS_API_KEY (every Memoir " +
-			"variable starts with MEMOIR_). Rename it, or comment the line out to stop using Cerebras, in ai-service.env")
-	}
 	if err := c.resolveMemoir(); err != nil {
 		return c, nil, err
 	}
 
 	var missing []string
 	for _, k := range []struct{ name, val string }{
-		{"OPENROUTER_API_KEY, CLAUDE_API_KEY or ASK_CEREBRAS_API_KEY", c.ExplainProvider},
-		{"ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY or ASK_OPENROUTER_API_KEY", c.AskProvider},
-		{"MEMOIR_CEREBRAS_API_KEY or MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
+		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
+		{"ASK_CLAUDE_API_KEY or ASK_OPENROUTER_API_KEY", c.AskProvider},
+		{"MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
 		{"OPENROUTER_TRANSCRIBE_API_KEY", c.OpenRouterTranscribeAPIKey},
 	} {
 		if k.val == "" {
@@ -288,8 +262,7 @@ func (c *Config) resolveTranscribe() error {
 }
 
 // resolveExplain collects the /api/explain providers. Any key may be set; the
-// tray picker then switches between them. Cerebras deliberately shares
-// ASK_CEREBRAS_API_KEY with /api/ask. An empty key counts as unset, because
+// tray picker then switches between them. An empty key counts as unset, because
 // .env.example ships empty lines. Models are fixed per provider.
 func (c *Config) resolveExplain() error {
 	if c.ClaudeAPIKey != "" {
@@ -297,12 +270,6 @@ func (c *Config) resolveExplain() error {
 	}
 	if c.OpenRouterAPIKey != "" {
 		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter)
-	}
-	// Cerebras goes last so that adding ASK_CEREBRAS_API_KEY to an existing
-	// install does not change the provider /api/explain starts on; it only
-	// adds a tray choice.
-	if c.ExplainCerebrasAPIKey != "" {
-		c.ExplainProviders = append(c.ExplainProviders, ProviderCerebras)
 	}
 	if len(c.ExplainProviders) > 0 {
 		c.ExplainProvider = c.ExplainProviders[0]
@@ -315,8 +282,6 @@ func (c Config) ExplainModelFor(provider string) string {
 	switch provider {
 	case ProviderClaude:
 		return defaultClaudeModel
-	case ProviderCerebras:
-		return defaultCerebrasModel
 	case ProviderOpenRouter:
 		return defaultOpenRouterModel
 	}
@@ -332,9 +297,6 @@ func (c *Config) resolveAsk() error {
 	if c.AskClaudeAPIKey != "" {
 		c.AskProviders = append(c.AskProviders, ProviderClaude, ProviderClaudeNoSearch)
 	}
-	if c.AskCerebrasAPIKey != "" {
-		c.AskProviders = append(c.AskProviders, ProviderCerebras)
-	}
 	if c.AskOpenRouterAPIKey != "" {
 		c.AskProviders = append(c.AskProviders, ProviderOpenRouter, ProviderOpenRouterNoSearch)
 	}
@@ -349,48 +311,33 @@ func (c Config) AskModelFor(provider string) string {
 	switch provider {
 	case ProviderClaude, ProviderClaudeNoSearch:
 		return defaultClaudeModel
-	case ProviderCerebras:
-		return defaultCerebrasModel
 	case ProviderOpenRouter, ProviderOpenRouterNoSearch:
 		return defaultOpenRouterAskModel
 	}
 	return ""
 }
 
-// settleClaudeModel applies the default and check shared by the Claude routes.
-// keyVar and modelVar name the environment variables in errors; otherProvider
-// explains which alternate key the model id belongs to.
-func settleClaudeModel(model *string, keyVar, modelVar, otherProvider string) error {
+// settleClaudeModel applies the default and check used by the Claude routes.
+// keyVar and modelVar name the environment variables in errors.
+func settleClaudeModel(model *string, keyVar, modelVar string) error {
 	if *model == "" {
 		*model = defaultClaudeModel
 	}
 	if !strings.HasPrefix(*model, "claude-") {
 		return fmt.Errorf("%s is set but %s=%q is not a Claude model id "+
-			"(they start with \"claude-\", for example %s). %s. Delete the %s "+
-			"line to use the default", keyVar, modelVar, *model, defaultClaudeModel, otherProvider, modelVar)
+			"(they start with \"claude-\", for example %s). Delete the %s "+
+			"line to use the default", keyVar, modelVar, *model, defaultClaudeModel, modelVar)
 	}
 	return nil
 }
 
-// resolveMemoir picks the Memoir provider from the keys and settles the model,
-// the way resolveExplain does for /api/explain.
+// resolveMemoir settles the Memoir provider key and model.
 func (c *Config) resolveMemoir() error {
-	switch {
-	case c.MemoirCerebrasAPIKey != "" && c.MemoirClaudeAPIKey != "":
-		return fmt.Errorf("both MEMOIR_CEREBRAS_API_KEY and MEMOIR_CLAUDE_API_KEY are set, so it is unclear which " +
-			"provider answers /api/memoir/check. Keep one, and set the other to empty (KEY=) or comment it out in ai-service.env")
-	case c.MemoirClaudeAPIKey != "":
-		c.MemoirProvider = ProviderClaude
-		return settleClaudeModel(&c.MemoirModel, "MEMOIR_CLAUDE_API_KEY",
-			"MEMOIR_MODEL",
-			"A Cerebras id such as qwen-3.8-27b only works with MEMOIR_CEREBRAS_API_KEY")
-	case c.MemoirCerebrasAPIKey != "":
-		c.MemoirProvider = ProviderCerebras
-		if c.MemoirModel == "" {
-			c.MemoirModel = defaultCerebrasModel
-		}
+	if c.MemoirClaudeAPIKey == "" {
+		return nil
 	}
-	return nil
+	c.MemoirProvider = ProviderClaude
+	return settleClaudeModel(&c.MemoirModel, "MEMOIR_CLAUDE_API_KEY", "MEMOIR_MODEL")
 }
 
 // TranscribeRoute is one line saying where /api/transcribe/stream goes, for the startup log.
@@ -432,15 +379,13 @@ func (c Config) ExplainRoute() string {
 		switch p {
 		case ProviderClaude:
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.ExplainModelFor(p), ClaudeEffort))
-		case ProviderCerebras:
-			parts = append(parts, fmt.Sprintf("Cerebras, model %s, reasoning %s", c.ExplainModelFor(p), CerebrasReasoningEffort))
 		case ProviderOpenRouter:
 			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, %d thinking tokens", c.ExplainModelFor(p), OpenRouterReasoningTokens))
 		}
 	}
 	switch len(parts) {
 	case 0:
-		return "none (none of OPENROUTER_API_KEY, CLAUDE_API_KEY and ASK_CEREBRAS_API_KEY is set)"
+		return "none (neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
@@ -453,8 +398,6 @@ func explainProviderName(provider string) string {
 	switch provider {
 	case ProviderClaude:
 		return "Claude Platform"
-	case ProviderCerebras:
-		return "Cerebras"
 	case ProviderOpenRouter:
 		return "OpenRouter"
 	}
@@ -470,8 +413,6 @@ func (c Config) AskRoute() string {
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch on", c.AskModelFor(p), ClaudeEffort))
 		case ProviderClaudeNoSearch:
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch off", c.AskModelFor(p), ClaudeEffort))
-		case ProviderCerebras:
-			parts = append(parts, fmt.Sprintf("Cerebras, model %s, reasoning %s", c.AskModelFor(p), CerebrasReasoningEffort))
 		case ProviderOpenRouter:
 			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		case ProviderOpenRouterNoSearch:
@@ -480,7 +421,7 @@ func (c Config) AskRoute() string {
 	}
 	switch len(parts) {
 	case 0:
-		return "none (none of ASK_CLAUDE_API_KEY, ASK_CEREBRAS_API_KEY and ASK_OPENROUTER_API_KEY is set)"
+		return "none (neither ASK_CLAUDE_API_KEY nor ASK_OPENROUTER_API_KEY is set)"
 	case 1:
 		return parts[0]
 	}
@@ -495,8 +436,6 @@ func askProviderName(provider string) string {
 		return "Claude Platform (search + fetch)"
 	case ProviderClaudeNoSearch:
 		return "Claude Platform (no search)"
-	case ProviderCerebras:
-		return "Cerebras"
 	case ProviderOpenRouter:
 		return "OpenRouter (search + fetch)"
 	case ProviderOpenRouterNoSearch:
@@ -507,13 +446,10 @@ func askProviderName(provider string) string {
 
 // MemoirRoute is one line saying where /api/memoir/check goes, for the startup log.
 func (c Config) MemoirRoute() string {
-	switch c.MemoirProvider {
-	case ProviderClaude:
+	if c.MemoirProvider == ProviderClaude {
 		return fmt.Sprintf("Claude Platform, model %s, effort %s", c.MemoirModel, ClaudeEffort)
-	case ProviderCerebras:
-		return fmt.Sprintf("Cerebras, model %s, reasoning %s", c.MemoirModel, CerebrasReasoningEffort)
 	}
-	return "none (neither MEMOIR_CEREBRAS_API_KEY nor MEMOIR_CLAUDE_API_KEY is set)"
+	return "none (MEMOIR_CLAUDE_API_KEY is not set)"
 }
 
 func env(key, def string) string {

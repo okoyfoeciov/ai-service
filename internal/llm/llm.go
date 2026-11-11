@@ -1,9 +1,8 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
-// endpoints: OpenRouter for /api/explain (Gemini) and /api/ask (DeepSeek), and
-// Cerebras (Qwen 3.8 27B) for /api/explain, /api/ask and Memoir. Any route can
-// instead run on Claude, which has its own type (see claude.go) because the
-// Messages API streams differently.
+// endpoints: OpenRouter for /api/explain (Gemini) and /api/ask (DeepSeek). Any
+// route can instead run on Claude, which has its own type (see claude.go)
+// because the Messages API streams differently.
 //
 // Both chat-completions providers speak the same streaming shape: SSE `data:`
 // lines holding chunk objects, `: comment` keep-alives, and `data: [DONE]` at
@@ -27,7 +26,7 @@ import (
 
 // Config says where one Client sends its requests.
 type Config struct {
-	Provider string // name for logs and error messages ("OpenRouter", "Cerebras")
+	Provider string // name for logs and error messages ("OpenRouter")
 	URL      string // the provider's chat completions endpoint
 	APIKey   string
 	Model    string
@@ -221,7 +220,8 @@ type chunk struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	// Error is OpenAI's {"error":{"message":…}} or a bare {"error":"…"};
-	// Message and Type are the flat {"message":…,"type":…} shape Cerebras uses.
+	// Message and Type are the flat {"message":…,"type":…} shape some
+	// OpenAI-compatible servers use.
 	Error   json.RawMessage `json:"error"`
 	Message string          `json:"message"`
 	Type    string          `json:"type"`
@@ -328,7 +328,7 @@ func (c *Client) read(ctx context.Context, body io.Reader, onText func(string)) 
 }
 
 // errMessage pulls a readable message out of an error body: OpenAI-style
-// {"error":{"message":…}}, Cerebras' flat {"message":…}, or the raw text.
+// {"error":{"message":…}}, a flat {"message":…}, or the raw text.
 func errMessage(raw []byte) string {
 	var j struct {
 		Error   json.RawMessage `json:"error"`

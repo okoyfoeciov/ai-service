@@ -30,10 +30,10 @@ additions. Change a route only together with the client that calls it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
-| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true|false}`) and, for Claude's web choice, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter's web choice sets `enabled:true` but sends no active transitions; the no-search choices and Cerebras set `enabled:false`. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. All three ask providers accept images; the prompt labels them in capture order and treats their text as data. The Claude and OpenRouter web choices can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs DeepSeek's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter and Cerebras receive ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
+| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true|false}`) and, for Claude's web choice, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter's web choice sets `enabled:true` but sends no active transitions; the no-search choices set `enabled:false`. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. The Claude and OpenRouter web choices can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs DeepSeek's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
 | `GET /api/pron?word=&pos=` | comart | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/screenshot` | comart | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to stay inside Cerebras' request limit. |
+| `POST /api/screenshot` | comart | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
 | `POST /api/screenshot/release` | comart | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
 | `POST /api/transcribe/stream` | comart; daily-dictation; voice-typing (`?timestamps=0`) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `GET /api/transcribe/ws?type=<Content-Type>` | comart; daily-dictation | The WebSocket transport for the route above. Chrome refuses a streaming `fetch` request body to loopback from an extension page, so the browser sends the MediaRecorder chunks as binary frames and the text frame `stop` to finish. ai-service forwards the same bytes to `/api/transcribe/stream` over loopback and answers with one text frame: `{"text": …}` (and `first_word_ms` when it is known) or `{"error": …}`. |
@@ -77,30 +77,26 @@ the build, the env file and the restart):
    `ASSEMBLYAI_API_KEY` and/or `DEEPGRAM_API_KEY` for `/api/transcribe/stream`
    (at least one is required),
    `OPENROUTER_TRANSCRIBE_API_KEY` for `/api/transcribe-verbatim` (optional),
-   `OPENROUTER_API_KEY` and/or `CLAUDE_API_KEY` for `/api/explain` (the
-   shared `ASK_CEREBRAS_API_KEY` below also serves it);
-   one or more of `ASK_CLAUDE_API_KEY`, `ASK_CEREBRAS_API_KEY` and
-   `ASK_OPENROUTER_API_KEY`; the optional `BRAVE_SEARCH_API_KEY` for Ask's
-   native image tools; and one of `MEMOIR_CLAUDE_API_KEY` or
-   `MEMOIR_CEREBRAS_API_KEY`. The prompt is a macOS dialog; on Linux a zenity
+   `OPENROUTER_API_KEY` and/or `CLAUDE_API_KEY` for `/api/explain`;
+   `ASK_CLAUDE_API_KEY` and/or `ASK_OPENROUTER_API_KEY`; the optional
+   `BRAVE_SEARCH_API_KEY` for Ask's native image tools; and
+   `MEMOIR_CLAUDE_API_KEY`. The prompt is a macOS dialog; on Linux a zenity
    dialog, or a hidden terminal prompt without a display. For the transcribe
    providers it asks for AssemblyAI first; an empty answer there moves on to
    Deepgram, and an empty answer for either optional provider just leaves it
    out. An empty answer for `OPENROUTER_TRANSCRIBE_API_KEY` leaves verbatim
    unconfigured. For explain, OpenRouter is asked first; an empty answer there
-   moves on to Claude. For ask, Claude is asked first; empty answers move on to
-   Cerebras and then OpenRouter, and that Cerebras key also adds Cerebras to
-   explain. A Claude or OpenRouter ask key gives both a
+   moves on to Claude. For ask, Claude is asked first; an empty answer there
+   moves on to OpenRouter. A Claude or OpenRouter ask key gives both a
    web (search + fetch) and a no-search tray choice. If only some of a route's
    keys are present, the missing ones can be added by hand to add that
-   provider. For the Memoir key it asks for Claude first; an empty answer there
-   moves on to Cerebras. It stops if more than one
-   variable of the Memoir route is already set, if `PARAKEET_URL` is
-   still there, if the retired `GROQ_API_KEY` or `GROQ_MODEL` is there, if the
-   retired `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
-   `AZURE_SPEECH_ENDPOINT` is there, or if the retired `CEREBRAS_API_KEY` is
-   still there. It also checks that `ffmpeg` is on `PATH`, because both live
-   transcription paths decode MediaRecorder WebM/MP4 to PCM.
+   provider. An empty answer for `MEMOIR_CLAUDE_API_KEY` leaves Memoir
+   unconfigured. It stops if `PARAKEET_URL` is still there, if the retired
+   `GROQ_API_KEY` or `GROQ_MODEL` is there, or if the retired
+   `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
+   `AZURE_SPEECH_ENDPOINT` is there. It also checks that `ffmpeg` is on
+   `PATH`, because both live transcription paths decode MediaRecorder WebM/MP4
+   to PCM.
    It never prints a key. Required keys are enforced here: if you cancel, enter
    nothing for a required key, or no prompt can be shown, `install.sh` stops
    before step 4 and does not (re)start the service. An empty
@@ -200,21 +196,19 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this, `CLAUDE_API_KEY` and/or `ASK_CEREBRAS_API_KEY`; with more than one, the tray picker chooses. |
-| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this, `OPENROUTER_API_KEY` and/or `ASK_CEREBRAS_API_KEY`; with more than one, the tray picker chooses. |
-| `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_CEREBRAS_API_KEY` or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
-| `ASK_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/ask` and `/api/explain`: it creates one Ask choice and one Explain choice. Set this and/or `ASK_CLAUDE_API_KEY` or `ASK_OPENROUTER_API_KEY` for Ask; the Cerebras key is shared with Explain on purpose. Separate from `MEMOIR_CEREBRAS_API_KEY` so Memoir keeps its own provider. |
-| `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_CLAUDE_API_KEY` or `ASK_CEREBRAS_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this and/or `CLAUDE_API_KEY`; with both, the tray picker chooses. |
+| `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
+| `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
+| `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It creates a web (search + fetch) and a no-search choice in the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `BRAVE_SEARCH_API_KEY` | (empty) | Optional secret. Brave Search API key for `/api/ask`'s native `search_images` and `show_images` tools. When set, every Ask choice can search for and display images. Empty leaves Ask exactly as before. The image endpoint is queried with `count=10`, `country=ALL`, `search_lang=en`, `safesearch=strict` and `spellcheck=false`. |
-| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this **or** `MEMOIR_CEREBRAS_API_KEY`, never both. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
-| `MEMOIR_CEREBRAS_API_KEY` | (empty) | Secret. Cerebras key for `/api/memoir/check`. Set this **or** `MEMOIR_CLAUDE_API_KEY`, never both. Called `CEREBRAS_API_KEY` before 2026-10-20: the old name makes the service refuse to start. |
-| `MEMOIR_MODEL` | `claude-opus-5-5` on Claude, `qwen-3.8-27b` on Cerebras | Model id for `/api/memoir/check`, for whichever provider the key selects. With a Claude key it must start with `claude-`. |
+| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
+| `MEMOIR_MODEL` | `claude-opus-5-5` | Model id for `/api/memoir/check`. It must start with `claude-`. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
 Models and thinking depth are fixed in `internal/config`, not environment
 settings: Claude uses `output_config.effort` `medium`; OpenRouter uses a
 1024-token thinking budget for `/api/explain` and `reasoning.effort` `high`
-for `/api/ask`; and Cerebras uses `reasoning_effort` `medium`. A Claude or
+for `/api/ask`. A Claude or
 OpenRouter Ask key creates two tray choices: the web-enabled one also sends
 the provider's web tools (Claude's basic direct search and fetch, max 2 of
 each with 30k tokens per fetch; OpenRouter Exa, up to 10 results and two
@@ -344,12 +338,7 @@ manager keeps retrying every 10 s) when a route has no usable provider:
   `AZURE_SPEECH_ENDPOINT` is still set. MAI-Transcribe-2 now goes through
   OpenRouter, and `/api/transcribe-verbatim` reads
   `OPENROUTER_TRANSCRIBE_API_KEY`;
-- both `MEMOIR_CEREBRAS_API_KEY` and `MEMOIR_CLAUDE_API_KEY` are set (same rule:
-  leave the unused one empty or commented out);
-- `MEMOIR_CLAUDE_API_KEY` is set and `MEMOIR_MODEL` is not a `claude-…` id (for
-  example a leftover `qwen-3.8-27b`);
-- the retired `CEREBRAS_API_KEY` is still set. It is `MEMOIR_CEREBRAS_API_KEY`
-  now; the old name would otherwise sit in the file doing nothing.
+- `MEMOIR_CLAUDE_API_KEY` is set and `MEMOIR_MODEL` is not a `claude-…` id.
 
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the routes it chose, for example
@@ -370,11 +359,10 @@ appears when `/api/transcribe/stream`, `/api/explain` or `/api/ask` has at
 least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5, OpenRouter Gemini 3.8 Flash and
-  Cerebras Qwen 3.8 27B.
+- **Explain with** — Claude Platform Opus 5.5 and OpenRouter Gemini 3.8 Flash.
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch), Claude Platform
-  Opus 5.5, Cerebras Qwen 3.8 27B, OpenRouter DeepSeek V4.1 Flash 1017
-  (search + fetch), and OpenRouter DeepSeek V4.1 Flash 1017.
+  Opus 5.5, OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch), and
+  OpenRouter DeepSeek V4.1 Flash 1017.
 
 A single Claude or OpenRouter Ask key already gives two choices, so its picker
 appears without a second credential. A saved `ask:provider` value of `claude`
@@ -473,8 +461,7 @@ Request limits:
 **Still not protected:**
 
 - Any program running on this machine, under any local user, can call every
-  route and spend the OpenRouter, AssemblyAI, Deepgram, Claude and Cerebras
-  quota.
+  route and spend the OpenRouter, AssemblyAI, Deepgram and Claude quota.
   There is no rate limit.
 - A web page can still send blind GET requests (for example an `<img>` tag):
   no Origin header is sent, so the guard lets them through. The page cannot
@@ -490,32 +477,27 @@ Request limits:
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
-| `/api/explain` | Cerebras, if `ASK_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | Claude Platform, no-search choice | `claude-opus-5-5` | effort `medium`; no web tools |
-| `/api/ask` | Cerebras, if `ASK_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; web search + fetch on |
 | `/api/ask` | OpenRouter, no-search choice | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; no web tools |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
-| `/api/memoir/check` | Cerebras, if `MEMOIR_CEREBRAS_API_KEY` is set | `qwen-3.8-27b` | `medium` |
 | `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
 When more than one `/api/explain` key is set, its tray section chooses between
-the Claude, OpenRouter and Cerebras rows; `ASK_CEREBRAS_API_KEY` supplies the
-last one and is shared with Ask. The Ask keys and tray section are otherwise
+the Claude and OpenRouter rows. The Ask keys and tray section are otherwise
 independent of explain's; its Claude and OpenRouter keys each
 offer a web (search + fetch) and a no-search choice.
 
-OpenRouter and Cerebras speak OpenAI's streaming chat completions, so one client
-(`internal/llm`'s `Client`) serves both. The only difference is the request fields for
-the token budget and reasoning, which `internal/config` fixes for every route:
+OpenRouter speaks OpenAI's streaming chat completions, so one client
+(`internal/llm`'s `Client`) serves it. The request fields for the token budget
+and reasoning are fixed for every route in `internal/config`:
 OpenRouter explain takes `max_tokens` and `reasoning: {max_tokens: 1024, exclude}`;
 OpenRouter ask takes `max_tokens` and `reasoning: {effort: "high", exclude}`, and
 its web choice also adds the `openrouter:web_search` and `openrouter:web_fetch`
-server tools; Cerebras takes `max_completion_tokens` and
-`reasoning_effort: medium` on explain, ask and Memoir.
+server tools.
 
 **Ask's native image tools.** When `BRAVE_SEARCH_API_KEY` is set, every Ask
 choice carries `search_images` and `show_images` as client tools alongside the
@@ -525,18 +507,18 @@ metadata and never displays anything. `show_images` is the only tool that
 sends a `ready` event, so the reader's gallery is exactly the model's
 selection; `search_images` reports `searching`, `empty` or `error` without
 displaying a picture. Claude's tool result can carry image blocks, so it receives the top
-five 500px thumbnails and chooses visually; OpenRouter and Cerebras receive ten
-metadata rows. Each Ask round is capped at four `search_images` calls. The
+five 500px thumbnails and chooses visually; OpenRouter receives ten metadata
+rows. Each Ask round is capped at four `search_images` calls. The
 Claude loop has one provider quirk: if Claude calls a client tool and a
 `web_search`/`web_fetch` server tool in the same turn, the server tool is
 deferred, and the user message that carries the client `tool_result` must
 contain only tool-result blocks (no text). `internal/llm/claude.go` sends that
-shape; OpenRouter executes its server tools itself, and Cerebras has none.
+shape; OpenRouter executes its server tools itself.
 
-`/api/ask` also carries screenshots. All three Ask models are vision-capable:
-Cerebras documents `qwen-3.8-27b` base64 PNG/JPEG image inputs, Claude accepts
-image blocks, and OpenRouter lists `deepseek/deepseek-v4.1-flash-1017` as
-`text+image->text`. The clients therefore send one user message with the prompt
+`/api/ask` also carries screenshots. Both Ask models are vision-capable:
+Claude accepts image blocks, and OpenRouter lists
+`deepseek/deepseek-v4.1-flash-1017` as `text+image->text`. The clients therefore
+send one user message with the prompt
 text followed by the images in capture order; the prompt says how to read that
 order. A future Ask provider must implement `llm.ImageStreamer`; otherwise a
 request with screenshots reports that the model does not accept them.
@@ -571,18 +553,9 @@ How a call works:
   is already whole. So neither the panel nor Memoir's parser takes a partial
   answer for a whole one.
 
-**Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged;
-Memoir moved to Claude Opus 5.5 on 2026-10-20 and Qwen stays as the Cerebras
-option):
-on Memoir, Qwen at `medium` was as good as the previous, much larger model and
-answered 3–5× faster (check: 1.6 s median). On explain, Gemini 3.8 Flash clearly beat Qwen
-at every reasoning level: Qwen got pronunciations wrong. **Never run Memoir on
-Cerebras with reasoning off:** Qwen then breaks the JSON contract, edits other people's
-quoted words and leaves unlisted edits in `corrected`.
-
-As of 2026-10, Cerebras allows 150k tokens a minute on this account. An explain
-prompt is about 10k tokens and a Memoir prompt 2–4k, so only a burst of
-parallel requests reaches it; the retry covers a short one.
+**Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged):
+on explain, Gemini 3.8 Flash clearly beat the alternatives at every reasoning
+level. Memoir runs on Claude Opus 5.5.
 
 ## Merriam-Webster
 
@@ -618,7 +591,7 @@ internal/tray       the provider pickers for /api/transcribe/stream, /api/explai
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
-internal/llm        streaming model clients: chat completions (OpenRouter, Cerebras) and Claude
+internal/llm        streaming model clients: chat completions (OpenRouter) and Claude
 contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 1
 install.sh, uninstall.sh, run.sh
 ```

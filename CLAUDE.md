@@ -11,29 +11,26 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
-use Claude Platform, OpenRouter or Cerebras, and `/api/ask` may use Claude
-Platform, Cerebras or OpenRouter (DeepSeek V4.1 Flash 1017), each at once with
-its own tray picker. The Cerebras key is shared: `ASK_CEREBRAS_API_KEY` enables
-Cerebras on both explain and ask. A Claude or OpenRouter Ask key creates a web
+use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform or
+OpenRouter (DeepSeek V4.1 Flash 1017), each at once with its own tray picker.
+A Claude or OpenRouter Ask key creates a web
 (search + fetch) and a no-search choice; the no-search choice sends no tools and
-uses the plain Ask prompt. All
-three Ask providers accept images, which `/api/ask` sends after the prompt in
-capture order; the image bytes live in `/api/screenshot`'s in-memory store, and
-the client sends ids. The web choices carry OpenRouter's
-`openrouter:web_search` and `openrouter:web_fetch` server tools or Claude's
-basic web search and fetch tools (direct calls, at most two of each per
-request). When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also carries
-the native client tools `search_images` and `show_images`: the main model
-decides whether to call them, Brave returns ten filtered candidates (Claude
-sees the top five as image blocks; OpenRouter/Cerebras see ten metadata rows),
+uses the plain Ask prompt. Both Ask providers accept images, which `/api/ask`
+sends after the prompt in capture order; the image bytes live in
+`/api/screenshot`'s in-memory store, and the client sends ids. The web choices
+carry OpenRouter's `openrouter:web_search` and `openrouter:web_fetch` server
+tools or Claude's basic web search and fetch tools (direct calls, at most two of
+each per request). When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also
+carries the native client tools `search_images` and `show_images`: the main
+model decides whether to call them, Brave returns ten filtered candidates
+(Claude sees the top five as image blocks; OpenRouter sees ten metadata rows),
 and `show_images` sends the model's chosen IDs to the card as an `images` SSE
-event. Four `search_images` calls per Ask round. `/api/memoir/check` still has two and
-refuses both. Every Memoir variable
+event. Four `search_images` calls per Ask round. `/api/memoir/check` runs on the
+Claude Platform. Every Memoir variable
 starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
-keys are `ASK_CLAUDE_API_KEY`, `ASK_CEREBRAS_API_KEY` and
-`ASK_OPENROUTER_API_KEY`; `BRAVE_SEARCH_API_KEY` is optional and adds the Ask
-image tools; and `ASK_CEREBRAS_API_KEY` also enables Cerebras for
-`/api/explain`; the transcription
+keys are `ASK_CLAUDE_API_KEY` and `ASK_OPENROUTER_API_KEY`;
+`BRAVE_SEARCH_API_KEY` is optional and adds the Ask image tools; the
+transcription
 keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
 `/api/explain`'s). Both streaming providers need `ffmpeg` on `PATH`:
@@ -135,11 +132,9 @@ outcome, item, context and earlier-round counts. Tray switches log
   keep web pages out. Do not weaken them.
 - Models and thinking depth are fixed in `internal/config`, not environment
   settings: Claude effort `medium`, OpenRouter explain 1024 thinking tokens,
-  OpenRouter ask `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), Claude
+  OpenRouter ask `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), and Claude
   ask with or without the basic direct web search and fetch tools (max 2 of
-  each when on), and Cerebras `reasoning_effort: medium`. Keep Cerebras
-  reasoning on: without
-  it Qwen breaks Memoir's JSON contract and edits text it must leave alone.
+  each when on).
 - `internal/prompt/part1.txt`, `part2.txt` and `internal/memoir/check.txt` are
   product prompts. `TestPromptParity` pins `check.txt` by hash. Do not edit it
   in passing.

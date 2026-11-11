@@ -132,7 +132,7 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 	streamer := s.explainStreamer()
 	if streamer == nil {
 		outcome = "no_provider"
-		errMsg = "None of OPENROUTER_API_KEY, CLAUDE_API_KEY and ASK_CEREBRAS_API_KEY is set."
+		errMsg = "Neither OPENROUTER_API_KEY nor CLAUDE_API_KEY is set."
 		send("error", map[string]any{"message": errMsg})
 		return
 	}
