@@ -91,7 +91,12 @@ outcome, item, context and earlier-round counts. Tray switches log
   the native image tools (`{"round":n,"status":"searching"|"empty"|"error"|"ready",…}`);
   `search_images` reports the first three without displaying, `show_images`
   reports `ready`. The stream carries URLs, not image bytes; comart preloads
-  the Brave thumbnail and the original image.
+  the Brave thumbnail and the original image. The Ask prompt also tells the
+  model to put chart JavaScript in a fenced `chartjs` block; comart extracts
+  that block from the answer and runs it in its own sandbox, so ai-service
+  carries no chart route, tool or renderer. Web choices are told to cite a web
+  source; no-search choices are told they have no web tools and must not cite a
+  URL they cannot see.
 - **`/api/screenshot` is Linux/GNOME and macOS.** On Linux it opens
   `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG
   the portal saves under `~/Pictures/Screenshots`, keeps it in memory under an

@@ -515,6 +515,15 @@ deferred, and the user message that carries the client `tool_result` must
 contain only tool-result blocks (no text). `internal/llm/claude.go` sends that
 shape; OpenRouter executes its server tools itself.
 
+**Ask's chart code.** The Ask prompt tells the model to put chart JavaScript in
+a fenced block tagged `chartjs` when the reader asks for a chart or graph. The
+code runs in the comart extension's own sandboxed page with Chart.js; ai-service
+does not parse, transpile, render or execute it, and there is no chart route or
+tool here. The block remains part of the answer text, so follow-up history
+carries the previous code. Web Ask choices are told to cite a web source;
+no-search choices are told they have no web tools and must not cite a URL they
+cannot see.
+
 `/api/ask` also carries screenshots. Both Ask models are vision-capable:
 Claude accepts image blocks, and OpenRouter lists
 `deepseek/deepseek-v4.1-flash-1017` as `text+image->text`. The clients therefore
