@@ -187,3 +187,77 @@ func TestStreamImagesUsesOrderedContentParts(t *testing.T) {
 		t.Errorf("text-only content = %v, want the plain string", msg2["content"])
 	}
 }
+
+// Native client tools: the first turn requests search_images, the backend
+// executes it, and the second turn answers with the tool result in the chat
+// messages. This is the OpenAI-style loop OpenRouter and Cerebras use.
+func TestStreamWithToolsRunsTheNativeToolLoop(t *testing.T) {
+	ft := &fakeTransport{
+		statuses: []int{200, 200},
+		bodies: []string{
+			sse(
+				`{"choices":[{"delta":{"content":"Let me look. "}}]}`,
+				`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_images","arguments":"{\"query\":\"map of Uruguay\"}"}}]},"finish_reason":"tool_calls"}]}`,
+				`[DONE]`,
+			),
+			sse(`{"choices":[{"delta":{"content":"Here is the map."},"finish_reason":"stop"}]}`, `[DONE]`),
+		},
+	}
+	c := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m",
+		Params: map[string]any{
+			"max_tokens": 10,
+			"tools":      []map[string]any{{"type": "openrouter:web_search"}},
+		}}, &http.Client{Transport: ft})
+	tools := []ToolDef{{
+		Name: "search_images", Description: "search", Schema: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}},
+			"required": []string{"query"},
+		},
+	}}
+	var calls []string
+	var sb strings.Builder
+	res := c.StreamWithTools(context.Background(), "show me the map", nil, tools,
+		func(ctx context.Context, name string, input json.RawMessage, includeImages bool) ToolResult {
+			calls = append(calls, name+":"+string(input))
+			return ToolResult{Text: `{"candidates":[{"id":"img_1"}]}`}
+		}, func(s string) { sb.WriteString(s) }, nil)
+	if !res.OK || sb.String() != "Let me look. Here is the map." {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	if len(calls) != 1 || calls[0] != `search_images:{"query":"map of Uruguay"}` {
+		t.Fatalf("executor calls %v", calls)
+	}
+	if len(ft.sent) != 2 {
+		t.Fatalf("requests %d", len(ft.sent))
+	}
+	toolsSent, _ := ft.sent[0]["tools"].([]any)
+	if len(toolsSent) != 2 {
+		t.Fatalf("first tools %v", ft.sent[0]["tools"])
+	}
+	serverTool, _ := toolsSent[0].(map[string]any)
+	if serverTool["type"] != "openrouter:web_search" {
+		t.Fatalf("server tool lost: %v", serverTool)
+	}
+	firstTool, _ := toolsSent[1].(map[string]any)
+	fn, _ := firstTool["function"].(map[string]any)
+	if firstTool["type"] != "function" || fn["name"] != "search_images" {
+		t.Fatalf("tool %v", firstTool)
+	}
+	msgs, _ := ft.sent[1]["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("second messages %v", ft.sent[1]["messages"])
+	}
+	assistant, _ := msgs[1].(map[string]any)
+	if assistant["role"] != "assistant" || assistant["content"] != "Let me look. " {
+		t.Errorf("assistant %v", assistant)
+	}
+	tcs, _ := assistant["tool_calls"].([]any)
+	if len(tcs) != 1 {
+		t.Fatalf("assistant tool_calls %v", assistant["tool_calls"])
+	}
+	tool, _ := msgs[2].(map[string]any)
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call_1" ||
+		tool["content"] != `{"candidates":[{"id":"img_1"}]}` {
+		t.Errorf("tool result %v", tool)
+	}
+}

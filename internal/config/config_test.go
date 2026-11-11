@@ -41,7 +41,7 @@ func clearAskEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"ASK_CLAUDE_API_KEY", "ASK_CEREBRAS_API_KEY", "ASK_OPENROUTER_API_KEY",
-		"ASK_EFFORT", "ASK_REASONING_EFFORT",
+		"BRAVE_SEARCH_API_KEY", "ASK_EFFORT", "ASK_REASONING_EFFORT",
 	} {
 		t.Setenv(k, "")
 	}

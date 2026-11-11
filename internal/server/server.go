@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ai-service/internal/brave"
 	"ai-service/internal/config"
 	"ai-service/internal/llm"
 	"ai-service/internal/mw"
@@ -43,6 +44,9 @@ type Server struct {
 	// keeps only ids and thumbnails; the bytes are released when the card is
 	// dismissed or the two-hour TTL expires.
 	shots *screenshotStore
+	// images is Brave's Image Search client. Nil when BRAVE_SEARCH_API_KEY is
+	// unset; /api/ask then offers no image tools and behaves as before.
+	images *brave.Client
 
 	httpShort      *http.Client // streaming transcription and the WS transport (10 min backstop)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
@@ -89,6 +93,9 @@ func New(cfg config.Config, st *store.Store) *Server {
 		askProviders:        append([]string(nil), cfg.AskProviders...),
 		askLLMs:             newAskLLMs(cfg, hc),
 		shots:               newScreenshotStore(screenshotTTL, screenshotMaxBytes, screenshotMaxShots),
+	}
+	if cfg.BraveSearchAPIKey != "" {
+		s.images = brave.New(cfg.BraveSearchAPIKey, hc)
 	}
 	if cfg.TranscribeProvider != "" {
 		s.transcribeProvider.Store(cfg.TranscribeProvider)

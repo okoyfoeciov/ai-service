@@ -507,3 +507,132 @@ func TestClaudeStreamImagesUsesImageBlocks(t *testing.T) {
 		}
 	}
 }
+
+// Native client tools on Claude: the first turn returns a tool_use block, the
+// backend executes it, and the second turn answers. The tool_result may carry
+// image blocks, which is how Claude sees the candidate thumbnails.
+func TestClaudeNativeToolLoopSendsToolResultWithImages(t *testing.T) {
+	first := claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll search. "}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"search_images","input":{}}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"map of Uruguay\"}"}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+		evStop("tool_use"),
+		evMessageStop,
+	)
+	second := claudeSSE(
+		evStart("claude-opus-5-5"),
+		[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		[2]string{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Here is the map."}}`},
+		[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		evStop("end_turn"),
+		evMessageStop,
+	)
+	cs := newClaudeServer(t, []int{200, 200}, first, second)
+	c := NewClaude(ClaudeConfig{APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5", MaxTokens: 100, Effort: "medium"}, cs.Client())
+	tools := []ToolDef{{
+		Name: "search_images", Description: "search", Schema: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}},
+			"required": []string{"query"},
+		},
+	}}
+	var include bool
+	var sb strings.Builder
+	res := c.StreamWithTools(context.Background(), "show me the map", nil, tools,
+		func(ctx context.Context, name string, input json.RawMessage, withImages bool) ToolResult {
+			include = withImages
+			if name != "search_images" || string(input) != `{"query":"map of Uruguay"}` {
+				t.Fatalf("tool %s %s", name, input)
+			}
+			return ToolResult{
+				Text: "Found 1 candidate.",
+				Images: []ToolImage{{
+					Image: Image{MediaType: "image/png", Data: "AAA"},
+					Label: "img_1: Map",
+				}},
+			}
+		}, func(s string) { sb.WriteString(s) }, nil)
+	if !res.OK || sb.String() != "I'll search. Here is the map." {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	if !include {
+		t.Error("Claude did not ask for images")
+	}
+	if len(cs.sentAll) != 2 {
+		t.Fatalf("requests %d", len(cs.sentAll))
+	}
+	msgs, _ := cs.sentAll[1]["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages %v", cs.sentAll[1]["messages"])
+	}
+	assistant := string(mustJSON(msgs[1]))
+	if !strings.Contains(assistant, `"tool_use"`) || !strings.Contains(assistant, `"I'll search. "`) {
+		t.Errorf("assistant message %s", assistant)
+	}
+	user := string(mustJSON(msgs[2]))
+	if strings.Index(user, `"tool_result"`) < 0 || strings.Index(user, `"type":"image"`) < 0 ||
+		strings.Index(user, `"data":"AAA"`) < 0 || strings.Index(user, `"img_1: Map"`) < 0 {
+		t.Errorf("tool result %s", user)
+	}
+	// A tool_result must be the first content block in its user message.
+	if !strings.Contains(user, `"content":[{"content":[`) {
+		t.Errorf("tool result is not the first block: %s", user)
+	}
+}
+
+// If Claude calls a client tool and a server tool in the same turn, the server
+// tool is deferred. The user message that carries the client result must hold
+// NO text, or the next request fails with the unresolved server tool.
+func TestClaudeMixedToolsSendOnlyToolResults(t *testing.T) {
+	cs := newClaudeServer(t, []int{200, 200},
+		claudeSSE(
+			evStart("claude-opus-5-5"),
+			[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search","input":{}}}`},
+			[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"search_images","input":{}}}`},
+			[2]string{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"map\"}"}}`},
+			[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+			evStop("tool_use"),
+			evMessageStop,
+		),
+		claudeSSE(
+			evStart("claude-opus-5-5"),
+			[2]string{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_2","content":[]}}`},
+			[2]string{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+			[2]string{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`},
+			[2]string{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}`},
+			[2]string{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+			evStop("end_turn"), evMessageStop,
+		),
+	)
+	c := NewClaude(ClaudeConfig{
+		APIKey: "k", BaseURL: cs.URL, Model: "claude-opus-5-5", MaxTokens: 100, Effort: "medium",
+		WebSearch: true, WebSearchMaxUses: 2,
+	}, cs.Client())
+	tools := []ToolDef{{Name: "search_images", Description: "search", Schema: map[string]any{"type": "object"}}}
+	var sb strings.Builder
+	res := c.StreamWithTools(context.Background(), "map and news", nil, tools,
+		func(ctx context.Context, name string, input json.RawMessage, _ bool) ToolResult {
+			return ToolResult{Text: "candidate"}
+		}, func(s string) { sb.WriteString(s) }, nil)
+	if !res.OK || sb.String() != "answer" {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	msgs, _ := cs.sentAll[1]["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("messages %v", cs.sentAll[1]["messages"])
+	}
+	user := string(mustJSON(msgs[2]))
+	var userMsg struct {
+		Content []map[string]any `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(user), &userMsg); err != nil {
+		t.Fatal(err)
+	}
+	if len(userMsg.Content) != 1 || userMsg.Content[0]["type"] != "tool_result" {
+		t.Errorf("mixed tools sent more than the tool result: %s", user)
+	}
+}

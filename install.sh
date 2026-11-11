@@ -198,9 +198,9 @@ ask_key() {
 # /api/transcribe-verbatim uses OPENROUTER_TRANSCRIBE_API_KEY. /api/explain
 # takes OPENROUTER_API_KEY, CLAUDE_API_KEY and/or ASK_CEREBRAS_API_KEY (the
 # Cerebras key is shared with /api/ask); /api/ask takes ASK_CLAUDE_API_KEY,
-# ASK_CEREBRAS_API_KEY and/or ASK_OPENROUTER_API_KEY; Memoir takes
-# MEMOIR_CLAUDE_API_KEY or MEMOIR_CEREBRAS_API_KEY. The blocks below handle all
-# four routes.
+# ASK_CEREBRAS_API_KEY and/or ASK_OPENROUTER_API_KEY, plus the optional
+# BRAVE_SEARCH_API_KEY for image tools; Memoir takes MEMOIR_CLAUDE_API_KEY or
+# MEMOIR_CEREBRAS_API_KEY. The blocks below handle all four routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
   if [ -f "$ENVFILE" ]; then
@@ -345,6 +345,13 @@ else
   fi
   if env_set ASK_CEREBRAS_API_KEY; then
     say "[d] ai-service.env: ASK_CEREBRAS_API_KEY is shared — it serves /api/ask and /api/explain"
+  fi
+  if ! env_set BRAVE_SEARCH_API_KEY; then
+    ask_key BRAVE_SEARCH_API_KEY "native Ask image search via Brave (optional; enables search_images and show_images on every Ask choice). Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: BRAVE_SEARCH_API_KEY left empty — /api/ask offers no image tools"
+  fi
+  if env_set BRAVE_SEARCH_API_KEY; then
+    say "[d] ai-service.env: BRAVE_SEARCH_API_KEY is set — /api/ask offers native search_images and show_images on every Ask choice"
   fi
   if env_set MEMOIR_CLAUDE_API_KEY; then
     say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/check runs on the Claude Platform"

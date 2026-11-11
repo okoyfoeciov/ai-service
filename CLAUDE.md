@@ -22,11 +22,17 @@ capture order; the image bytes live in `/api/screenshot`'s in-memory store, and
 the client sends ids. The web choices carry OpenRouter's
 `openrouter:web_search` and `openrouter:web_fetch` server tools or Claude's
 basic web search and fetch tools (direct calls, at most two of each per
-request). `/api/memoir/check` still has two and
+request). When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also carries
+the native client tools `search_images` and `show_images`: the main model
+decides whether to call them, Brave returns ten filtered candidates (Claude
+sees the top five as image blocks; OpenRouter/Cerebras see ten metadata rows),
+and `show_images` sends the model's chosen IDs to the card as an `images` SSE
+event. Four `search_images` calls per Ask round. `/api/memoir/check` still has two and
 refuses both. Every Memoir variable
 starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
 keys are `ASK_CLAUDE_API_KEY`, `ASK_CEREBRAS_API_KEY` and
-`ASK_OPENROUTER_API_KEY`, and `ASK_CEREBRAS_API_KEY` also enables Cerebras for
+`ASK_OPENROUTER_API_KEY`; `BRAVE_SEARCH_API_KEY` is optional and adds the Ask
+image tools; and `ASK_CEREBRAS_API_KEY` also enables Cerebras for
 `/api/explain`; the transcription
 keys are `ASSEMBLYAI_API_KEY`, `DEEPGRAM_API_KEY` and
 `OPENROUTER_TRANSCRIBE_API_KEY` (verbatim; plain `OPENROUTER_API_KEY` is
@@ -84,6 +90,11 @@ outcome, item, context and earlier-round counts. Tray switches log
   names images from `/api/screenshot` in capture order, and its optional
   `timeline` interleaves selected text and those screenshots in the order the
   reader added them. `BuildAsk` renders that order under `# CONTEXT TIMELINE`.
+  With `BRAVE_SEARCH_API_KEY` set, the same stream carries `images` events from
+  the native image tools (`{"round":n,"status":"searching"|"empty"|"error"|"ready",…}`);
+  `search_images` reports the first three without displaying, `show_images`
+  reports `ready`. The stream carries URLs, not image bytes; comart preloads
+  the Brave thumbnail and the original image.
 - **`/api/screenshot` is Linux/GNOME and macOS.** On Linux it opens
   `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG
   the portal saves under `~/Pictures/Screenshots`, keeps it in memory under an

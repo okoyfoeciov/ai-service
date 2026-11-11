@@ -220,6 +220,17 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	} else {
 		p = prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
 	}
+	// The image tools are client tools: the main model decides whether to call
+	// them, and the backend executes Brave when it does. They are available on
+	// every Ask choice, including the no-search choices, because they are not
+	// the provider's web search. Without a Brave key the tools are simply not
+	// offered.
+	var tools []llm.ToolDef
+	var toolExec llm.ToolExecutor
+	if s.images != nil {
+		tools = askImageTools()
+		toolExec = s.askImageExecutor(len(body.History), send)
+	}
 	// Tell the card whether this choice has web tools at all, so its idle
 	// indicator says "Thinking" for the no-search choices instead of guessing
 	// from words in the answer.
@@ -236,7 +247,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		send("search", map[string]any{"active": active, "enabled": true})
 	}
 	var result llm.Result
-	if len(images) > 0 {
+	if toolStreamer, ok := streamer.(llm.ToolStreamer); ok && toolExec != nil {
+		result = toolStreamer.StreamWithTools(ctx, p, images, tools, toolExec, onText, onSearch)
+	} else if len(images) > 0 {
 		if searchStreamer, ok := streamer.(llm.SearchImageStreamer); ok {
 			result = searchStreamer.StreamImagesWithSearch(ctx, p, images, onText, onSearch)
 		} else {

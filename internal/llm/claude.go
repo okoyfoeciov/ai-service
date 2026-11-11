@@ -2,12 +2,14 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 // ClaudeProvider names the Claude Platform in logs and error messages.
@@ -104,11 +106,23 @@ func (c *Claude) StreamWithSearch(ctx context.Context, prompt string, onText fun
 	return c.StreamImagesWithSearch(ctx, prompt, nil, onText, onSearch)
 }
 
+// StreamWithTools is StreamImages with native client tools. Claude decides
+// whether to call them; the backend executes each tool_use and returns a
+// tool_result. The loop handles both client tools and pending server tools, as
+// the Messages API's mixed-tool rules require.
+func (c *Claude) StreamWithTools(ctx context.Context, prompt string, images []Image, tools []ToolDef, exec ToolExecutor, onText func(string), onSearch func(bool)) Result {
+	return c.streamImages(ctx, prompt, images, tools, exec, onText, onSearch)
+}
+
 // StreamImagesWithSearch is StreamImages with a web status callback. The
 // callback fires when Claude opens a web_search or web_fetch server_tool_use
 // block (onSearch(true)) and when the corresponding result starts arriving
 // (onSearch(false)).
 func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, images []Image, onText func(string), onSearch func(bool)) Result {
+	return c.streamImages(ctx, prompt, images, nil, nil, onText, onSearch)
+}
+
+func (c *Claude) streamImages(ctx context.Context, prompt string, images []Image, clientTools []ToolDef, exec ToolExecutor, onText func(string), onSearch func(bool)) Result {
 	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(images)+1)
 	blocks = append(blocks, anthropic.NewTextBlock(prompt))
 	for _, img := range images {
@@ -149,16 +163,20 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 		}
 		tools = append(tools, anthropic.ToolUnionParam{OfWebFetchTool20250910: fetch})
 	}
+	for _, def := range clientTools {
+		tools = append(tools, claudeToolParam(def))
+	}
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
 
 	// A paused search or fetch turn is continued by appending the assistant
 	// message it returned and asking again with the same tools (Messages API
-	// pause_turn). The cap is the same kind of backstop as the HTTP retry
-	// budget: it stops a provider loop from running forever.
+	// pause_turn). A client tool_use is a second kind of pause: execute the
+	// tool, return its result, and continue. Both share the same loop.
 	messages := params.Messages
 	pauses := 0
+	toolRounds := 0
 	attempt := 0
 	totalText := 0
 	web := &webToolTracker{notify: onSearch}
@@ -175,7 +193,8 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 		res, msg, httpErr := c.read(ctx, stream, textOut, web, totalText)
 		_ = stream.Close()
 		if httpErr == nil {
-			if res.Code == "pause-turn" {
+			switch res.Code {
+			case "pause-turn":
 				if msg == nil || pauses >= maxPauseTurns {
 					log.Printf("llm[%s]: paused %d times without finishing", c.logName(), pauses)
 					return Result{Code: "stream-cut", Message: "The answer was cut off. Try again."}
@@ -183,8 +202,36 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 				messages = append(messages, msg.ToParam())
 				pauses++
 				continue
+			case "tool-use":
+				if exec == nil || len(clientTools) == 0 || msg == nil {
+					log.Printf("llm[%s]: tool_use without a configured client tool", c.logName())
+					return Result{Code: "upstream", Message: ClaudeProvider + " stopped unexpectedly (tool_use). Try again."}
+				}
+				if toolRounds >= maxToolRounds {
+					log.Printf("llm[%s]: stopped after %d tool rounds", c.logName(), toolRounds)
+					return Result{Code: "tool-loop", Message: "The answer used too many tool calls. Try again."}
+				}
+				calls := claudeClientToolUses(msg)
+				if len(calls) == 0 {
+					log.Printf("llm[%s]: tool_use stop with no client tool block", c.logName())
+					return Result{Code: "upstream", Message: ClaudeProvider + " stopped unexpectedly (tool_use). Try again."}
+				}
+				// Keep the assistant message exactly as received, including any
+				// pending server_tool_use and thinking blocks. Then return only
+				// tool_result blocks: when a server tool is pending, Claude
+				// requires that user message to hold no text.
+				messages = append(messages, msg.ToParam())
+				results := make([]anthropic.ContentBlockParamUnion, 0, len(calls))
+				for _, call := range calls {
+					tr := exec(ctx, call.Name, call.Input, true)
+					results = append(results, claudeToolResultBlock(call.ID, tr))
+				}
+				messages = append(messages, anthropic.NewUserMessage(results...))
+				toolRounds++
+				continue
+			default:
+				return res
 			}
-			return res
 		}
 
 		raw := []byte(httpErr.RawJSON())
@@ -203,6 +250,82 @@ func (c *Claude) StreamImagesWithSearch(ctx context.Context, prompt string, imag
 			Message: httpMessage(ClaudeProvider, httpErr.StatusCode, raw),
 		}
 	}
+}
+
+type claudeToolUse struct {
+	ID    string
+	Name  string
+	Input json.RawMessage
+}
+
+func claudeClientToolUses(msg *anthropic.Message) []claudeToolUse {
+	if msg == nil {
+		return nil
+	}
+	var out []claudeToolUse
+	for _, block := range msg.Content {
+		if b, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
+			out = append(out, claudeToolUse{ID: b.ID, Name: b.Name, Input: b.Input})
+		}
+	}
+	return out
+}
+
+func claudeToolParam(def ToolDef) anthropic.ToolUnionParam {
+	return anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
+		Name:        def.Name,
+		Description: anthropic.String(def.Description),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties:  def.Schema["properties"],
+			Required:    schemaRequired(def.Schema["required"]),
+			ExtraFields: map[string]any{"additionalProperties": false},
+		},
+	}}
+}
+
+func schemaRequired(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func claudeToolResultBlock(toolUseID string, tr ToolResult) anthropic.ContentBlockParamUnion {
+	content := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(tr.Images)+1)
+	if tr.Text != "" {
+		content = append(content, anthropic.ToolResultBlockParamContentUnion{
+			OfText: &anthropic.TextBlockParam{Text: tr.Text},
+		})
+	}
+	for _, img := range tr.Images {
+		if img.Label != "" {
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: img.Label},
+			})
+		}
+		content = append(content, anthropic.ToolResultBlockParamContentUnion{
+			OfImage: &anthropic.ImageBlockParam{
+				Source: anthropic.ImageBlockParamSourceUnion{OfBase64: &anthropic.Base64ImageSourceParam{
+					Data:      img.Data,
+					MediaType: anthropic.Base64ImageSourceMediaType(img.MediaType),
+				}},
+			},
+		})
+	}
+	block := &anthropic.ToolResultBlockParam{ToolUseID: toolUseID, Content: content}
+	if tr.IsError {
+		block.IsError = param.NewOpt(true)
+	}
+	return anthropic.ContentBlockParamUnion{OfToolResult: block}
 }
 
 // maxPauseTurns caps how many times one answer may be resumed after a
@@ -346,8 +469,14 @@ func (c *Claude) read(ctx context.Context, stream interface {
 			return Result{Code: "upstream", Message: ClaudeProvider + " could not resume the search. Try again."}, nil, nil
 		}
 		return Result{Code: "pause-turn"}, acc, nil
+	case anthropic.StopReasonToolUse:
+		if accErr != nil {
+			log.Printf("llm[%s]: tool_use turn could not be accumulated: %v", c.logName(), accErr)
+			return Result{Code: "upstream", Message: ClaudeProvider + " could not run the tool. Try again."}, nil, nil
+		}
+		return Result{Code: "tool-use"}, acc, nil
 	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence:
-	default: // tool_use: nothing here asks for one
+	default:
 		log.Printf("llm[%s]: unexpected stop reason %q", c.logName(), stop)
 		return Result{Code: "upstream", Message: ClaudeProvider + " stopped unexpectedly (" + string(stop) + "). Try again."}, nil, nil
 	}

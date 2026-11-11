@@ -75,6 +75,10 @@ type Config struct {
 	AskClaudeAPIKey     string
 	AskCerebrasAPIKey   string
 	AskOpenRouterAPIKey string
+	// BraveSearchAPIKey enables the native image-search tools on every Ask
+	// choice. It is optional: without it, /api/ask answers exactly as before
+	// and simply offers no image tools.
+	BraveSearchAPIKey string
 	// AskProviders lists every configured ask choice in a fixed order
 	// (Claude web/no-web, Cerebras, OpenRouter web/no-web). It is empty when
 	// no key is set.
@@ -150,6 +154,11 @@ const (
 	// ClaudeAskWebFetchTokens caps the fetched text in Claude's context, for
 	// the same reason as OpenRouter's cap.
 	ClaudeAskWebFetchTokens = 30000
+	// BraveAskImageSearches caps how many image searches the model may run in
+	// one Ask round. Four leaves room for a multi-hop visual question while
+	// keeping Brave requests bounded. The model still decides whether to use
+	// them.
+	BraveAskImageSearches = 4
 )
 
 // Load reads config from the environment. It also returns the missing API
@@ -178,6 +187,7 @@ func Load() (Config, []string, error) {
 		AskClaudeAPIKey:     os.Getenv("ASK_CLAUDE_API_KEY"),
 		AskCerebrasAPIKey:   os.Getenv("ASK_CEREBRAS_API_KEY"),
 		AskOpenRouterAPIKey: os.Getenv("ASK_OPENROUTER_API_KEY"),
+		BraveSearchAPIKey:   os.Getenv("BRAVE_SEARCH_API_KEY"),
 
 		MemoirCerebrasAPIKey: os.Getenv("MEMOIR_CEREBRAS_API_KEY"),
 		MemoirClaudeAPIKey:   os.Getenv("MEMOIR_CLAUDE_API_KEY"),
