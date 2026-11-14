@@ -375,10 +375,10 @@ func TestExplainPrefetchStopsOnCancel(t *testing.T) {
 func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 	m := &captureModel{reply: "It means the officer formally accuses the suspect."}
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
-		askProviders: []string{config.ProviderOpenRouterNoSearch},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouter},
+		askProviders: []string{config.ProviderOpenRouter},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouterNoSearch: testLLM(m),
+			config.ProviderOpenRouter: testLLM(m),
 		},
 	}
 	body := `{"question":"What does charge mean here?","items":[{"phrase":"charge","words":["charge"]}],"contexts":[{"phrase":"charge","text":"The officer will charge the suspect at noon."}]}`
@@ -411,10 +411,10 @@ func TestAskStreamsAnswerFromQuestionAndContext(t *testing.T) {
 func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 	m := &captureModel{reply: "Yes — by the second reading."}
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
-		askProviders: []string{config.ProviderOpenRouterNoSearch},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouter},
+		askProviders: []string{config.ProviderOpenRouter},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouterNoSearch: testLLM(m),
+			config.ProviderOpenRouter: testLLM(m),
 		},
 	}
 	body := `{"question":"Which one did you mean?","history":[{"question":"What are the two readings?","answer":"A narrow one and a broad one."}]}`
@@ -494,9 +494,8 @@ func TestAskOpenRouterUsesDeepSeekHighEffortWithWebTools(t *testing.T) {
 	}
 }
 
-// Claude's web search and fetch tools belong to /api/ask's web-enabled choice
-// only. The no-search Ask choice and the Explain client must keep their
-// tool-less requests.
+// Claude's web search and fetch tools belong to /api/ask only. The Explain
+// client must keep its tool-less requests.
 func TestClaudeWebToolsAreAskOnly(t *testing.T) {
 	body := "event: message_start\n" +
 		`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}` + "\n\n" +
@@ -518,10 +517,6 @@ func TestClaudeWebToolsAreAskOnly(t *testing.T) {
 		{"ask", func(hc *http.Client) llm.Streamer {
 			cfg := config.Config{AskProviders: []string{config.ProviderClaude}, AskClaudeAPIKey: "k"}
 			return newAskLLMs(cfg, hc)[config.ProviderClaude]
-		}},
-		{"ask no search", func(hc *http.Client) llm.Streamer {
-			cfg := config.Config{AskProviders: []string{config.ProviderClaudeNoSearch}, AskClaudeAPIKey: "k"}
-			return newAskLLMs(cfg, hc)[config.ProviderClaudeNoSearch]
 		}},
 		{"explain", func(hc *http.Client) llm.Streamer {
 			cfg := config.Config{ExplainProviders: []string{config.ProviderClaude}, ClaudeAPIKey: "k"}
@@ -665,74 +660,6 @@ func (c *claudeToolCapture) RoundTrip(req *http.Request) (*http.Response, error)
 	}, nil
 }
 
-// The no-search Ask choice keeps DeepSeek's model and high reasoning but sends
-// no tools array at all.
-func TestAskOpenRouterNoSearchOmitsTools(t *testing.T) {
-	m := &captureModel{reply: "ok"}
-	cfg := config.Config{
-		AskProviders:        []string{config.ProviderOpenRouterNoSearch},
-		AskOpenRouterAPIKey: "or",
-	}
-	streamer := newAskLLMs(cfg, &http.Client{Transport: m})[config.ProviderOpenRouterNoSearch]
-	if streamer == nil {
-		t.Fatal("no OpenRouter no-search ask client")
-	}
-	if res := streamer.Stream(context.Background(), "hi", nil); !res.OK {
-		t.Fatalf("stream failed: %+v", res)
-	}
-	raw, _ := m.body.Load().(string)
-	var body map[string]any
-	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		t.Fatalf("request body %q: %v", raw, err)
-	}
-	if body["model"] != "deepseek/deepseek-v4.1-flash-1017" {
-		t.Errorf("model %v", body["model"])
-	}
-	if reasoning, _ := body["reasoning"].(map[string]any); reasoning["effort"] != "high" {
-		t.Errorf("reasoning %v", body["reasoning"])
-	}
-	if _, ok := body["tools"]; ok {
-		t.Errorf("no-search request carries tools %v", body["tools"])
-	}
-}
-
-// The no-search OpenRouter choice goes through /api/ask with the plain Ask
-// prompt, no tools, and an initial search event saying search is unavailable.
-func TestAskOpenRouterNoSearchUsesPlainPrompt(t *testing.T) {
-	m := &captureModel{reply: "plain answer"}
-	cfg := config.Config{
-		AskProvider:         config.ProviderOpenRouterNoSearch,
-		AskProviders:        []string{config.ProviderOpenRouterNoSearch},
-		AskOpenRouterAPIKey: "or",
-	}
-	s := &Server{
-		cfg:          cfg,
-		askProviders: cfg.AskProviders,
-		askLLMs:      newAskLLMs(cfg, &http.Client{Transport: m}),
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(`{"question":"what is this?"}`))
-	req.Host = "127.0.0.1:8770"
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
-
-	out := rec.Body.String()
-	if !strings.Contains(out, `"enabled":false`) || !strings.Contains(out, "plain answer") {
-		t.Errorf("stream %q", out)
-	}
-	raw, _ := m.body.Load().(string)
-	if strings.Contains(raw, "# WEB SEARCH") {
-		t.Errorf("no-search prompt carries web-search guidance: %s", raw)
-	}
-	var body map[string]any
-	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		t.Fatalf("request body %q: %v", raw, err)
-	}
-	if _, ok := body["tools"]; ok {
-		t.Errorf("no-search request carries tools %v", body["tools"])
-	}
-}
-
 // A web page can POST cross-site without a preflight only with text/plain or a
 // form type, and a sandboxed iframe's Origin is "null", which the guard lets
 // through. The billed routes therefore demand the type the clients really send.
@@ -870,12 +797,13 @@ func TestNewBuildsExplainClientsPerProvider(t *testing.T) {
 
 func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	s := New(config.Config{
-		AskClaudeAPIKey: "cl",
-		AskProviders:    []string{config.ProviderClaude, config.ProviderClaudeNoSearch},
-		AskProvider:     config.ProviderClaude,
+		AskClaudeAPIKey:     "cl",
+		AskOpenRouterAPIKey: "or",
+		AskProviders:        []string{config.ProviderClaude, config.ProviderOpenRouter},
+		AskProvider:         config.ProviderClaude,
 	}, nil)
 
-	if got := s.AskProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderClaudeNoSearch {
+	if got := s.AskProviders(); len(got) != 2 || got[0] != config.ProviderClaude || got[1] != config.ProviderOpenRouter {
 		t.Fatalf("providers %v", got)
 	}
 	if got := s.AskProvider(); got != config.ProviderClaude {
@@ -884,14 +812,14 @@ func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaude]); got != "*llm.Claude" {
 		t.Errorf("claude client is %s", got)
 	}
-	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaudeNoSearch]); got != "*llm.Claude" {
-		t.Errorf("claude no-search client is %s", got)
+	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderOpenRouter]); got != "*llm.Client" {
+		t.Errorf("openrouter client is %s", got)
 	}
-	if !s.SetAskProvider(config.ProviderClaudeNoSearch) {
-		t.Error("could not select the configured Claude no-search choice")
+	if !s.SetAskProvider(config.ProviderOpenRouter) {
+		t.Error("could not select the configured OpenRouter provider")
 	}
-	if got := s.AskProvider(); got != config.ProviderClaudeNoSearch {
-		t.Errorf("provider %q after switch, want %q", got, config.ProviderClaudeNoSearch)
+	if got := s.AskProvider(); got != config.ProviderOpenRouter {
+		t.Errorf("provider %q after switch, want %q", got, config.ProviderOpenRouter)
 	}
 	if s.SetAskProvider("not-configured") {
 		t.Error("selected a provider that has no key")
@@ -1438,10 +1366,10 @@ func TestAskCarriesScreenshotsInOrder(t *testing.T) {
 	m := &captureModel{reply: "The first screenshot shows a chart."}
 	shots := newScreenshotStore(time.Hour, 1<<20, 4)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
-		askProviders: []string{config.ProviderOpenRouterNoSearch},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouter},
+		askProviders: []string{config.ProviderOpenRouter},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouterNoSearch: testLLM(m),
+			config.ProviderOpenRouter: testLLM(m),
 		},
 		shots: shots,
 	}
@@ -1491,10 +1419,10 @@ func TestAskReportsMissingScreenshot(t *testing.T) {
 	m := &captureModel{reply: "should not run"}
 	shots := newScreenshotStore(time.Hour, 1<<20, 4)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
-		askProviders: []string{config.ProviderOpenRouterNoSearch},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouter},
+		askProviders: []string{config.ProviderOpenRouter},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouterNoSearch: testLLM(m),
+			config.ProviderOpenRouter: testLLM(m),
 		},
 		shots: shots,
 	}
@@ -1525,10 +1453,10 @@ func TestAskRefusesMoreThanTenScreenshots(t *testing.T) {
 	m := &captureModel{reply: "should not run"}
 	shots := newScreenshotStore(time.Hour, 8<<20, 20)
 	s := &Server{
-		cfg:          config.Config{AskProvider: config.ProviderOpenRouterNoSearch},
-		askProviders: []string{config.ProviderOpenRouterNoSearch},
+		cfg:          config.Config{AskProvider: config.ProviderOpenRouter},
+		askProviders: []string{config.ProviderOpenRouter},
 		askLLMs: map[string]llm.Streamer{
-			config.ProviderOpenRouterNoSearch: testLLM(m),
+			config.ProviderOpenRouter: testLLM(m),
 		},
 		shots: shots,
 	}

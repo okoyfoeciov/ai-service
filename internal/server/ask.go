@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"ai-service/internal/config"
 	"ai-service/internal/llm"
 	"ai-service/internal/prompt"
 )
@@ -60,11 +59,9 @@ const (
 // The SSE contract is /api/explain's: `chunk` events carry answer fragments,
 // an optional `error` event carries a user-readable message, and `done` is
 // always the last event. Every Ask starts with a `search` event
-// ({active:false,enabled:bool}); Claude's web choice then sends
-// {active:true/false,enabled:true} around a native search or fetch.
-// OpenRouter's web choice sets enabled:true but has no active transitions, and
-// the no-search choices set enabled:false. HTTP status stays 200 after the
-// stream opens.
+// ({active:false,enabled:true}); Claude then sends {active:true/false,enabled:true}
+// around a native search or fetch. OpenRouter sets enabled:true but has no
+// active transitions. HTTP status stays 200 after the stream opens.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// Resolve the tray choice once. A tray switch while this request is being
@@ -214,28 +211,21 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	var p string
-	if provider == config.ProviderOpenRouter || provider == config.ProviderClaude {
-		p = prompt.BuildAskWeb(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
-	} else {
-		p = prompt.BuildAsk(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
-	}
+	p := prompt.BuildAskWeb(body.Question, body.Items, body.Contexts, body.History, len(images), timeline)
 	// The image tools are client tools: the main model decides whether to call
 	// them, and the backend executes Brave when it does. They are available on
-	// every Ask choice, including the no-search choices, because they are not
-	// the provider's web search. Without a Brave key the tools are simply not
-	// offered.
+	// both Ask choices because they are not the provider's web search. Without
+	// a Brave key the tools are simply not offered.
 	var tools []llm.ToolDef
 	var toolExec llm.ToolExecutor
 	if s.images != nil {
 		tools = askImageTools()
 		toolExec = s.askImageExecutor(len(body.History), send)
 	}
-	// Tell the card whether this choice has web tools at all, so its idle
-	// indicator says "Thinking" for the no-search choices instead of guessing
-	// from words in the answer.
-	searchEnabled := provider == config.ProviderClaude || provider == config.ProviderOpenRouter
-	send("search", map[string]any{"active": false, "enabled": searchEnabled})
+	// Every Ask choice has the provider's web tools. Tell the card so its idle
+	// indicator can say "Searching the web…" instead of guessing from a pause
+	// in the answer.
+	send("search", map[string]any{"active": false, "enabled": true})
 	onText := func(t string) {
 		send("chunk", map[string]any{"text": t})
 	}

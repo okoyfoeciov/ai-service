@@ -25,7 +25,7 @@ func askImageTools() []llm.ToolDef {
 	return []llm.ToolDef{
 		{
 			Name: "search_images",
-			Description: "Search the web for candidate images for a visual request such as a map, photo, diagram, flag, logo, or what something looks like. " +
+			Description: "Search the web for candidate images for a visual request such as a map, photo, diagram, flag, logo, chart, or what something looks like. " +
 				"Use it only when the reader explicitly asks to see an image; do not use it for ordinary questions. " +
 				"It returns candidate IDs and metadata but does NOT display anything. After choosing candidates, call show_images with their IDs. " +
 				"The reader will only see the images you pass to show_images.",

@@ -13,11 +13,10 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
 use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform or
 OpenRouter (DeepSeek V4.1 Flash 1017), each at once with its own tray picker.
-A Claude or OpenRouter Ask key creates a web
-(search + fetch) and a no-search choice; the no-search choice sends no tools and
-uses the plain Ask prompt. Both Ask providers accept images, which `/api/ask`
+A Claude or OpenRouter Ask key creates one web-enabled
+(search + fetch) choice. Both Ask providers accept images, which `/api/ask`
 sends after the prompt in capture order; the image bytes live in
-`/api/screenshot`'s in-memory store, and the client sends ids. The web choices
+`/api/screenshot`'s in-memory store, and the client sends ids. Both choices
 carry OpenRouter's `openrouter:web_search` and `openrouter:web_fetch` server
 tools or Claude's basic web search and fetch tools (direct calls, at most two of
 each per request). When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also
@@ -91,12 +90,7 @@ outcome, item, context and earlier-round counts. Tray switches log
   the native image tools (`{"round":n,"status":"searching"|"empty"|"error"|"ready",…}`);
   `search_images` reports the first three without displaying, `show_images`
   reports `ready`. The stream carries URLs, not image bytes; comart preloads
-  the Brave thumbnail and the original image. The Ask prompt also tells the
-  model to put chart JavaScript in a fenced `chartjs` block; comart extracts
-  that block from the answer and runs it in its own sandbox, so ai-service
-  carries no chart route, tool or renderer. Web choices are told to cite a web
-  source; no-search choices are told they have no web tools and must not cite a
-  URL they cannot see.
+  the Brave thumbnail and the original image.
 - **`/api/screenshot` is Linux/GNOME and macOS.** On Linux it opens
   `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG
   the portal saves under `~/Pictures/Screenshots`, keeps it in memory under an

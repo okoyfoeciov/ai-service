@@ -199,9 +199,9 @@ func TestLoadAskProvider(t *testing.T) {
 		wantOK         bool
 	}{
 		{"no key", nil, nil, "", "", true, true},
-		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderClaudeNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderOpenRouter, "deepseek/deepseek-v4.1-flash-1017", false, true},
-		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderClaudeNoSearch, ProviderOpenRouter, ProviderOpenRouterNoSearch}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "deepseek/deepseek-v4.1-flash-1017", false, true},
+		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,12 +232,6 @@ func TestLoadAskProvider(t *testing.T) {
 					c.AskProvider, c.AskModelFor(c.AskProvider),
 					tc.wantProvider, tc.wantModel)
 			}
-			if got := c.AskModelFor(ProviderClaudeNoSearch); got != "claude-opus-5-5" {
-				t.Errorf("Claude no-search model %q", got)
-			}
-			if got := c.AskModelFor(ProviderOpenRouterNoSearch); got != "deepseek/deepseek-v4.1-flash-1017" {
-				t.Errorf("OpenRouter no-search model %q", got)
-			}
 			gotMissing := false
 			for _, m := range missing {
 				if strings.HasPrefix(m, "ASK_CLAUDE_API_KEY") {
@@ -263,20 +257,19 @@ func TestAskKeysAreIndependentOfExplainKeys(t *testing.T) {
 	}
 	t.Setenv("ASK_CLAUDE_API_KEY", "ask-claude")
 	c, _, err = Load()
-	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 2 {
+	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 1 {
 		t.Fatalf("ask %q providers %v err %v", c.AskProvider, c.AskProviders, err)
 	}
 	// The explain OpenRouter key must not select OpenRouter for Ask.
 	t.Setenv("OPENROUTER_API_KEY", "explain-openrouter")
 	c, _, err = Load()
-	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 2 {
+	if err != nil || c.AskProvider != ProviderClaude || len(c.AskProviders) != 1 {
 		t.Fatalf("ask %q providers %v err %v after setting only the explain OpenRouter key",
 			c.AskProvider, c.AskProviders, err)
 	}
 	t.Setenv("ASK_OPENROUTER_API_KEY", "ask-openrouter")
 	c, _, err = Load()
-	if err != nil || len(c.AskProviders) != 4 || c.AskProviders[2] != ProviderOpenRouter ||
-		c.AskProviders[3] != ProviderOpenRouterNoSearch {
+	if err != nil || len(c.AskProviders) != 2 || c.AskProviders[1] != ProviderOpenRouter {
 		t.Fatalf("ask %q providers %v err %v after adding the ask OpenRouter key",
 			c.AskProvider, c.AskProviders, err)
 	}
@@ -303,7 +296,7 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.AskRoute()
-	for _, want := range []string{"Claude", "OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "4 choices", "tray picker", "starting on Claude Platform", "web search + fetch on", "web search + fetch off"} {
+	for _, want := range []string{"Claude", "OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "2 choices", "tray picker", "starting on Claude Platform", "web search + fetch on"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}

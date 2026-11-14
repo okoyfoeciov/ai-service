@@ -154,34 +154,27 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 		switch provider {
 		case config.ProviderClaude:
 			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", true, hc)
-		case config.ProviderClaudeNoSearch:
-			clients[provider] = newClaude(cfg.AskClaudeAPIKey, cfg.AskModelFor(provider), "ask", false, hc)
 		case config.ProviderOpenRouter:
-			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), true, hc)
-		case config.ProviderOpenRouterNoSearch:
-			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), false, hc)
+			clients[provider] = newOpenRouterAsk(cfg.AskOpenRouterAPIKey, cfg.AskModelFor(provider), hc)
 		}
 	}
 	return clients
 }
 
 // newOpenRouterAsk builds the Ask client for DeepSeek V4.1 Flash 1017. Its
-// thinking level is reasoning.effort (not explain's token budget). With web it
-// carries OpenRouter's web search and web fetch server tools: the model may
-// search when the question needs current information, and open a promising
-// result when the search excerpts are not enough. DeepSeek has no native web
-// tools, so both run through OpenRouter; search uses Exa and fetch uses Exa's
-// Contents API.
-func newOpenRouterAsk(key, model string, web bool, hc *http.Client) llm.Streamer {
+// thinking level is reasoning.effort (not explain's token budget). It carries
+// OpenRouter's web search and web fetch server tools: the model may search when
+// the question needs current information, and open a promising result when the
+// search excerpts are not enough. DeepSeek has no native web tools, so both run
+// through OpenRouter; search uses Exa and fetch uses Exa's Contents API.
+func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 	params := map[string]any{
 		"max_tokens": maxAnswerTokens,
 		"reasoning": map[string]any{
 			"effort":  config.OpenRouterAskReasoningEffort,
 			"exclude": true,
 		},
-	}
-	if web {
-		params["tools"] = []map[string]any{
+		"tools": []map[string]any{
 			{
 				"type": "openrouter:web_search",
 				"parameters": map[string]any{
@@ -198,7 +191,7 @@ func newOpenRouterAsk(key, model string, web bool, hc *http.Client) llm.Streamer
 					"max_content_tokens": config.OpenRouterAskWebFetchTokens,
 				},
 			},
-		}
+		},
 	}
 	return llm.New(llm.Config{
 		Provider: "OpenRouter",

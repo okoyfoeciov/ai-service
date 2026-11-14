@@ -19,11 +19,6 @@ const (
 
 	ProviderOpenRouter = "openrouter"
 	ProviderClaude     = "claude"
-
-	// Ask variants without the provider's web tools. The plain provider names
-	// above stay the web-enabled choices, so a saved tray pick keeps working.
-	ProviderClaudeNoSearch     = "claude-no-search"
-	ProviderOpenRouterNoSearch = "openrouter-no-search"
 )
 
 type Config struct {
@@ -72,9 +67,8 @@ type Config struct {
 	// choice. It is optional: without it, /api/ask answers exactly as before
 	// and simply offers no image tools.
 	BraveSearchAPIKey string
-	// AskProviders lists every configured ask choice in a fixed order
-	// (Claude web/no-web, OpenRouter web/no-web). It is empty when no key is
-	// set.
+	// AskProviders lists every configured ask provider in a fixed order
+	// (Claude, OpenRouter). It is empty when no key is set.
 	AskProviders []string
 	// AskProvider is the provider /api/ask starts on: the first entry of
 	// AskProviders, unless main restores a selection saved by the tray picker.
@@ -288,17 +282,15 @@ func (c Config) ExplainModelFor(provider string) string {
 	return ""
 }
 
-// resolveAsk collects the /api/ask choices. Every key may be set; the tray
-// picker then switches between them. A provider with web tools gets two
-// entries, web and no-web, so the reader can choose a plain answer without
-// changing credentials. An empty key counts as unset, because .env.example
-// ships empty lines. Models are fixed per provider.
+// resolveAsk collects the /api/ask providers. Every key may be set; the tray
+// picker then switches between them. An empty key counts as unset, because
+// .env.example ships empty lines. Models are fixed per provider.
 func (c *Config) resolveAsk() error {
 	if c.AskClaudeAPIKey != "" {
-		c.AskProviders = append(c.AskProviders, ProviderClaude, ProviderClaudeNoSearch)
+		c.AskProviders = append(c.AskProviders, ProviderClaude)
 	}
 	if c.AskOpenRouterAPIKey != "" {
-		c.AskProviders = append(c.AskProviders, ProviderOpenRouter, ProviderOpenRouterNoSearch)
+		c.AskProviders = append(c.AskProviders, ProviderOpenRouter)
 	}
 	if len(c.AskProviders) > 0 {
 		c.AskProvider = c.AskProviders[0]
@@ -309,9 +301,9 @@ func (c *Config) resolveAsk() error {
 // AskModelFor returns the fixed model id for provider.
 func (c Config) AskModelFor(provider string) string {
 	switch provider {
-	case ProviderClaude, ProviderClaudeNoSearch:
+	case ProviderClaude:
 		return defaultClaudeModel
-	case ProviderOpenRouter, ProviderOpenRouterNoSearch:
+	case ProviderOpenRouter:
 		return defaultOpenRouterAskModel
 	}
 	return ""
@@ -411,12 +403,8 @@ func (c Config) AskRoute() string {
 		switch p {
 		case ProviderClaude:
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch on", c.AskModelFor(p), ClaudeEffort))
-		case ProviderClaudeNoSearch:
-			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch off", c.AskModelFor(p), ClaudeEffort))
 		case ProviderOpenRouter:
 			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
-		case ProviderOpenRouterNoSearch:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch off", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		}
 	}
 	switch len(parts) {
@@ -434,12 +422,8 @@ func askProviderName(provider string) string {
 	switch provider {
 	case ProviderClaude:
 		return "Claude Platform (search + fetch)"
-	case ProviderClaudeNoSearch:
-		return "Claude Platform (no search)"
 	case ProviderOpenRouter:
 		return "OpenRouter (search + fetch)"
-	case ProviderOpenRouterNoSearch:
-		return "OpenRouter (no search)"
 	}
 	return provider
 }

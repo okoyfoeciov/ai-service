@@ -308,17 +308,7 @@ else
     say "[d] ai-service.env: $ask_count ask keys are set — /api/ask uses the tray picker (starts on $ask_start_name)"
     say "[d] add any missing ASK_* key by hand to add that provider"
   elif [ "$ask_count" -eq 1 ]; then
-    case "$ask_start" in
-      ASK_CLAUDE_API_KEY)
-        say "[d] ai-service.env: ASK_CLAUDE_API_KEY is set — /api/ask offers Claude Platform with and without web search and fetch in the tray picker"
-        ;;
-      ASK_OPENROUTER_API_KEY)
-        say "[d] ai-service.env: ASK_OPENROUTER_API_KEY is set — /api/ask offers OpenRouter DeepSeek V4.1 Flash 1017 with and without web search and fetch in the tray picker"
-        ;;
-      *)
-        say "[d] ai-service.env: $ask_start is set — /api/ask runs on $ask_start_name"
-        ;;
-    esac
+    say "[d] ai-service.env: $ask_start is set — /api/ask runs on $ask_start_name"
     say "[d] add another ASK_* key by hand to add that provider"
   else
     # None: ask for Claude first, then OpenRouter. All empty leaves /api/ask

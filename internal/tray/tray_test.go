@@ -56,12 +56,7 @@ func TestPickerSectionsAreConditional(t *testing.T) {
 		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil},
 		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{PickTranscribe}},
 		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, []string{PickExplain}},
-		{"two ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderClaudeNoSearch}, []string{PickAsk}},
-		{"three ask", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderClaudeNoSearch, config.ProviderOpenRouter}, []string{PickAsk}},
-		{"four ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{
-			config.ProviderClaude, config.ProviderClaudeNoSearch,
-			config.ProviderOpenRouter, config.ProviderOpenRouterNoSearch,
-		}, []string{PickAsk}},
+		{"two ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickAsk}},
 		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickTranscribe, PickExplain, PickAsk}},
 	}
 	for _, tc := range cases {
@@ -96,9 +91,7 @@ func TestProviderLabels(t *testing.T) {
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter Gemini 3.8 Flash"},
 		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
-		{PickAsk, config.ProviderClaudeNoSearch, "Claude Platform Opus 5.5"},
 		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"},
-		{PickAsk, config.ProviderOpenRouterNoSearch, "OpenRouter DeepSeek V4.1 Flash 1017"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {

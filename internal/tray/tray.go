@@ -122,12 +122,8 @@ func providerLabel(kind, provider string) string {
 		switch provider {
 		case config.ProviderClaude:
 			return "Claude Platform Opus 5.5 (search + fetch)"
-		case config.ProviderClaudeNoSearch:
-			return "Claude Platform Opus 5.5"
 		case config.ProviderOpenRouter:
 			return "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"
-		case config.ProviderOpenRouterNoSearch:
-			return "OpenRouter DeepSeek V4.1 Flash 1017"
 		}
 	}
 	return provider
