@@ -24,6 +24,7 @@ import (
 	"ai-service/internal/llm"
 	"ai-service/internal/memoir"
 	"ai-service/internal/mw"
+	"ai-service/internal/prompt"
 )
 
 func decodeError(t *testing.T, rec *httptest.ResponseRecorder) string {
@@ -1490,4 +1491,148 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// OPENROUTER_API_KEY gives explain two choices. GPT-6.1 Sol runs at reasoning
+// low on OpenAI's fast tier (standard tier as the only fallback) and marks the
+// rules block for caching; Kimi K3.1 Pro runs at reasoning none, pinned to
+// Wafer, and sends one text because Wafer caches the shared prefix by itself.
+func TestExplainOpenRouterChoicesAreSolAndKimi(t *testing.T) {
+	cfg := config.Config{
+		OpenRouterAPIKey: "or",
+		ExplainProviders: []string{config.ProviderOpenRouter, config.ProviderOpenRouterKimi},
+	}
+	for _, tc := range []struct {
+		provider, model, effort string
+		endpoints               []any
+		marked                  bool
+	}{
+		{config.ProviderOpenRouter, "openai/gpt-6.1-sol", "low", []any{"openai/fast", "openai"}, true},
+		{config.ProviderOpenRouterKimi, "moonshotai/kimi-k3.1-pro", "none", []any{"wafer/us", "wafer/mxfp4"}, false},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			m := &captureModel{reply: "ok"}
+			streamer := newExplainLLMs(cfg, &http.Client{Transport: m})[tc.provider]
+			ps, ok := streamer.(llm.PartsStreamer)
+			if !ok {
+				t.Fatalf("%T cannot take a split prompt", streamer)
+			}
+			if res := ps.StreamParts(context.Background(), "RULES", "REQUEST", nil); !res.OK {
+				t.Fatalf("stream failed: %+v", res)
+			}
+			raw, _ := m.body.Load().(string)
+			var body map[string]any
+			if err := json.Unmarshal([]byte(raw), &body); err != nil {
+				t.Fatalf("request body %q: %v", raw, err)
+			}
+			if body["model"] != tc.model || body["max_tokens"] != float64(maxAnswerTokens) {
+				t.Errorf("model %v max_tokens %v", body["model"], body["max_tokens"])
+			}
+			reasoning, _ := body["reasoning"].(map[string]any)
+			if reasoning["effort"] != tc.effort || reasoning["exclude"] != true || reasoning["max_tokens"] != nil {
+				t.Errorf("reasoning %v", reasoning)
+			}
+			routing, _ := body["provider"].(map[string]any)
+			if fmt.Sprint(routing["order"]) != fmt.Sprint(tc.endpoints) || routing["allow_fallbacks"] != false {
+				t.Errorf("provider routing %v", routing)
+			}
+			msgs, _ := body["messages"].([]any)
+			msg, _ := msgs[0].(map[string]any)
+			if !tc.marked {
+				if msg["content"] != "RULESREQUEST" {
+					t.Errorf("content %#v, want one text", msg["content"])
+				}
+				return
+			}
+			content, _ := msg["content"].([]any)
+			if len(content) != 2 {
+				t.Fatalf("content %#v, want two blocks", msg["content"])
+			}
+			static, _ := content[0].(map[string]any)
+			if cc, _ := static["cache_control"].(map[string]any); static["text"] != "RULES" || cc["type"] != "ephemeral" {
+				t.Errorf("static block %v", static)
+			}
+		})
+	}
+}
+
+// Through the handler, the explain request reaches a caching client as the
+// shared rules block (marked) followed by this request's part.
+func TestExplainSendsTheRulesAsACachedPrefix(t *testing.T) {
+	m := &captureModel{reply: "ok"}
+	s := &Server{
+		cfg:              config.Config{ExplainProvider: config.ProviderOpenRouter},
+		explainProviders: []string{config.ProviderOpenRouter},
+		explainLLMs: map[string]llm.Streamer{
+			config.ProviderOpenRouter: llm.New(llm.Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions",
+				Model: "test", CachePrefix: true}, &http.Client{Transport: m}),
+		},
+		mw: mw.New(&fakeCache{}),
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, explainRequest(context.Background(), 1))
+	if out := rec.Body.String(); !strings.Contains(out, `event: chunk`) || strings.Contains(out, "event: error") {
+		t.Fatalf("stream %q", out)
+	}
+	raw, _ := m.body.Load().(string)
+	var body struct {
+		Messages []struct {
+			Content []struct {
+				Text         string         `json:"text"`
+				CacheControl map[string]any `json:"cache_control"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil || len(body.Messages) != 1 || len(body.Messages[0].Content) != 2 {
+		t.Fatalf("request body %q: %v", raw, err)
+	}
+	static, dynamic := body.Messages[0].Content[0], body.Messages[0].Content[1]
+	if want := prompt.BuildParts("", nil, nil, nil).Static; static.Text != want || static.CacheControl["type"] != "ephemeral" {
+		t.Errorf("first block is not the marked rules block (marked=%v)", static.CacheControl)
+	}
+	if !strings.HasPrefix(dynamic.Text, "# CHOSEN ITEMS\n\n") || !strings.Contains(dynamic.Text, "# SELECTION\n\nt") ||
+		!strings.Contains(dynamic.Text, "# YOUR TASK") || dynamic.CacheControl != nil {
+		t.Errorf("second block %q", dynamic.Text)
+	}
+}
+
+// promptRecorder is a Streamer that takes only one text, like the Claude
+// client: it keeps the prompt it was given and answers "ok".
+type promptRecorder struct{ prompt atomic.Value }
+
+func (p *promptRecorder) Stream(_ context.Context, prompt string, onText func(string)) llm.Result {
+	p.prompt.Store(prompt)
+	if onText != nil {
+		onText("ok")
+	}
+	return llm.Result{OK: true}
+}
+
+// A client without StreamParts (the Claude explain choice) gets the whole
+// prompt as one text: the rules first, the request, then the closing task.
+func TestExplainSendsTheWholePromptToAOneTextClient(t *testing.T) {
+	rec := &promptRecorder{}
+	s := &Server{
+		cfg:              config.Config{ExplainProvider: config.ProviderClaude},
+		explainProviders: []string{config.ProviderClaude},
+		explainLLMs:      map[string]llm.Streamer{config.ProviderClaude: rec},
+		mw:               mw.New(&fakeCache{}),
+	}
+	if _, isParts := any(rec).(llm.PartsStreamer); isParts {
+		t.Fatal("the recorder must not take a split prompt")
+	}
+	out := httptest.NewRecorder()
+	s.ServeHTTP(out, explainRequest(context.Background(), 1))
+	if body := out.Body.String(); !strings.Contains(body, "event: chunk") || strings.Contains(body, "event: error") {
+		t.Fatalf("stream %q", body)
+	}
+	got, _ := rec.prompt.Load().(string)
+	static := prompt.BuildParts("", nil, nil, nil).Static
+	if !strings.HasPrefix(got, static) {
+		t.Fatal("prompt does not start with the rules")
+	}
+	rest := got[len(static):]
+	if !strings.HasPrefix(rest, "# CHOSEN ITEMS\n\n") || !strings.Contains(rest, "# SELECTION\n\nt") || !strings.Contains(rest, "\n\n# YOUR TASK\n\n") {
+		t.Errorf("request part %q", rest)
+	}
 }

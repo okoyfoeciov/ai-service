@@ -261,3 +261,71 @@ func TestStreamWithToolsRunsTheNativeToolLoop(t *testing.T) {
 		t.Errorf("tool result %v", tool)
 	}
 }
+
+// With CachePrefix on, StreamParts sends the prompt as two text blocks in
+// order and marks only the static one for caching.
+func TestStreamPartsMarksOnlyTheStaticPart(t *testing.T) {
+	ft := &fakeTransport{statuses: []int{200}, bodies: []string{sse(
+		`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)}}
+	c := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m",
+		CachePrefix: true, Params: map[string]any{"max_tokens": 10}}, &http.Client{Transport: ft})
+	var sb strings.Builder
+	if res := c.StreamParts(context.Background(), "RULES", "REQUEST", func(s string) { sb.WriteString(s) }); !res.OK || sb.String() != "ok" {
+		t.Fatalf("got %q %+v", sb.String(), res)
+	}
+	sent := ft.sent[0]
+	if sent["model"] != "m" || sent["stream"] != true || sent["max_tokens"] != float64(10) {
+		t.Errorf("request body %v", sent)
+	}
+	msgs, _ := sent["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages %v", sent["messages"])
+	}
+	msg, _ := msgs[0].(map[string]any)
+	content, _ := msg["content"].([]any)
+	if msg["role"] != "user" || len(content) != 2 {
+		t.Fatalf("message %v", msg)
+	}
+	static, _ := content[0].(map[string]any)
+	dynamic, _ := content[1].(map[string]any)
+	if static["type"] != "text" || static["text"] != "RULES" || dynamic["type"] != "text" || dynamic["text"] != "REQUEST" {
+		t.Errorf("blocks %v", content)
+	}
+	if cc, _ := static["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("static block not marked for caching: %v", static)
+	}
+	if _, marked := dynamic["cache_control"]; marked {
+		t.Errorf("dynamic block must not be marked: %v", dynamic)
+	}
+}
+
+// Without CachePrefix, StreamParts sends exactly what Stream would: one text,
+// static first.
+func TestStreamPartsWithoutCachePrefixSendsOneText(t *testing.T) {
+	ft := &fakeTransport{statuses: []int{200}, bodies: []string{sse(
+		`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)}}
+	c := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m"},
+		&http.Client{Transport: ft})
+	if res := c.StreamParts(context.Background(), "RULES", "REQUEST", nil); !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	msgs, _ := ft.sent[0]["messages"].([]any)
+	msg, _ := msgs[0].(map[string]any)
+	if msg["content"] != "RULESREQUEST" {
+		t.Errorf("content %#v, want one text", msg["content"])
+	}
+}
+
+// A retryable failure before any text is retried on the split path too.
+func TestStreamPartsRetriesBusyUpstream(t *testing.T) {
+	prev := retryDelays
+	retryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { retryDelays = prev })
+	ft := &fakeTransport{statuses: []int{503, 200}, bodies: []string{`{"error":{"message":"busy"}}`, sse(
+		`{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`, `[DONE]`)}}
+	c := New(Config{Provider: "Test", URL: "https://test.invalid/v1/chat/completions", APIKey: "k", Model: "m", CachePrefix: true},
+		&http.Client{Transport: ft})
+	if res := c.StreamParts(context.Background(), "RULES", "REQUEST", nil); !res.OK || ft.calls.Load() != 2 {
+		t.Fatalf("res %+v after %d calls", res, ft.calls.Load())
+	}
+}

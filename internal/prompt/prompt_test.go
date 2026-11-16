@@ -3,6 +3,8 @@ package prompt
 import (
 	"strings"
 	"testing"
+
+	"ai-service/internal/mw"
 )
 
 // itemsList writes each phrase as a JSON string with & < > left as they are
@@ -134,11 +136,71 @@ func TestBuildItemsListNoHTMLEscape(t *testing.T) {
 		{Phrase: "R&D", Words: []string{"R&D"}},
 		{Phrase: `<team> "lead"`, Words: []string{"team", "lead"}},
 	}, nil, nil)
-	want := part1 + `- "R&D"` + "\n" + `- "<team> \"lead\""` + part2
+	want := part1 + part2 + "# CHOSEN ITEMS\n\n" + `- "R&D"` + "\n" + `- "<team> \"lead\""` + "\n\n# SELECTION\n\n"
 	if !strings.HasPrefix(p, want) {
-		t.Fatalf("items list not JSON.stringify-shaped; prompt starts:\n%q", p[len(part1):min(len(p), len(part1)+80)])
+		start := len(part1 + part2)
+		t.Fatalf("items list not JSON.stringify-shaped; dynamic part starts:\n%q", p[start:min(len(p), start+120)])
 	}
 	if strings.Contains(p, `\u0026`) || strings.Contains(p, `\u003c`) || strings.Contains(p, `\u003e`) {
 		t.Fatalf("items list is HTML-escaped")
+	}
+}
+
+// The rules are the shared prefix that providers cache: two unrelated requests
+// must produce byte-identical Static parts, and nothing from a request may leak
+// into Static. One changed byte there would make every request pay for the
+// full rules again.
+func TestBuildPartsKeepsTheRulesAsASharedPrefix(t *testing.T) {
+	a := BuildParts("She bore his slights with forbearance.", []Item{{Phrase: "forbearance", Words: []string{"forbearance"}}}, nil, nil)
+	b := BuildParts("Bags of refuse lined the streets.", []Item{{Phrase: "refuse", Words: []string{"refuse"}}},
+		[]string{"an earlier reply"}, map[string]mw.Bundle{"refuse": {Hword: "refuse", Variants: []mw.Variant{{PosList: []string{"noun"}, IPA: "ˈre-ˌfyüs"}}}})
+	if a.Static != b.Static {
+		t.Fatal("Static differs between requests")
+	}
+	if a.Static != part1+part2 {
+		t.Fatal("Static is not part1 + part2")
+	}
+	for _, leak := range []string{"forbearance.", "refuse", "an earlier reply", "ˈre-ˌfyüs"} {
+		if strings.Contains(b.Static, leak) && !strings.Contains(part1+part2, leak) {
+			t.Errorf("request content %q leaked into Static", leak)
+		}
+	}
+	if got := Build("Bags of refuse lined the streets.", []Item{{Phrase: "refuse", Words: []string{"refuse"}}},
+		[]string{"an earlier reply"}, map[string]mw.Bundle{"refuse": {Hword: "refuse", Variants: []mw.Variant{{PosList: []string{"noun"}, IPA: "ˈre-ˌfyüs"}}}}); got != b.String() {
+		t.Error("Build is not Static + Dynamic")
+	}
+}
+
+// The judged layout: rules, then the chosen items, the passage, the earlier
+// replies and the pronunciations, then the closing task. part1 points at the
+// sections by name because the list no longer follows it.
+func TestBuildPartsLayout(t *testing.T) {
+	p := BuildParts("The board refused to sanction the merger.",
+		[]Item{{Phrase: "sanction", Words: []string{"sanction"}}},
+		[]string{"**draconian**: far too harsh"},
+		map[string]mw.Bundle{"sanction": {Hword: "sanction", Variants: []mw.Variant{{PosList: []string{"noun", "verb"}, IPA: "ˈsaŋ(k)-shən"}}}})
+	if !strings.Contains(part1, "listed under # CHOSEN ITEMS below") || !strings.Contains(part1, "under # SELECTION below") {
+		t.Error("part1 does not point at the CHOSEN ITEMS and SELECTION sections")
+	}
+	if strings.HasSuffix(part2, "# SELECTION\n\n") {
+		t.Error("part2 still ends with the SELECTION heading, which belongs to the dynamic part")
+	}
+	order := []string{"# CHOSEN ITEMS\n\n- \"sanction\"", "# SELECTION\n\nThe board refused", "# EARLIER EXPLANATIONS", "# PRONUNCIATIONS", "# YOUR TASK"}
+	last := -1
+	for _, want := range order {
+		i := strings.Index(p.Dynamic, want)
+		if i < 0 {
+			t.Fatalf("dynamic part missing %q", want)
+		}
+		if i < last {
+			t.Fatalf("%q is out of order", want)
+		}
+		last = i
+	}
+	if !strings.HasSuffix(p.Dynamic, task) || !strings.HasPrefix(task, "# YOUR TASK\n\n") {
+		t.Error("dynamic part does not end with the closing task")
+	}
+	if n := strings.Count(p.String(), "# SELECTION\n\n"); n != 1 {
+		t.Errorf("prompt has %d SELECTION headings, want 1", n)
 	}
 }

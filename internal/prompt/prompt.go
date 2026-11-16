@@ -1,6 +1,7 @@
 // Package prompt assembles the vocabulary-coach prompt for /api/explain. The
 // large static skeleton (including the Merriam-Webster pronunciation key) lives
-// in part1.txt/part2.txt; only the dynamic pieces are assembled here.
+// in part1.txt/part2.txt, and the closing reminder in task.txt; only the
+// dynamic pieces are assembled here.
 package prompt
 
 import (
@@ -18,6 +19,9 @@ var part1 string
 //go:embed part2.txt
 var part2 string
 
+//go:embed task.txt
+var task string
+
 // Item is one chosen word or phrase from the explain request.
 type Item struct {
 	Phrase string   `json:"phrase"`
@@ -32,11 +36,42 @@ type Context struct {
 	Text   string `json:"text"`
 }
 
-// Build lays the prompt out as:
+// Parts is the explain prompt split for prompt caching. Static is the same
+// bytes on every request (all the rules and the Merriam-Webster key, about
+// 9,000 tokens), so a provider can reuse its processed form from the last
+// request. Dynamic is this request: the chosen items, the passage, the earlier
+// replies, the pronunciations and the closing reminder. The model reads
+// Static + Dynamic as one text.
+type Parts struct {
+	Static  string
+	Dynamic string
+}
+
+// String is the whole prompt, for a client that sends it as one text.
+func (p Parts) String() string { return p.Static + p.Dynamic }
+
+// BuildParts lays the prompt out as:
 //
-//	part1 + itemsList + part2 + text + "\n" + earlierSection + pronSection
+//	Static:  part1 + part2
+//	Dynamic: "# CHOSEN ITEMS" + itemsList + "# SELECTION" + text + "\n" +
+//	         earlierSection + pronSection, then "\n\n" + task
+//
+// Nothing that changes between requests may go into Static: one changed byte
+// there ends the shared prefix and every request pays for the full rules
+// again. task restates the core rules after the passage; with the passage
+// last and no reminder, answers slipped back into literal-sense-first glosses.
+func BuildParts(text string, items []Item, priorReplies []string, pronBundle map[string]mw.Bundle) Parts {
+	body := text + "\n" + earlierSection(priorReplies) + pronSection(items, pronBundle)
+	return Parts{
+		Static: part1 + part2,
+		Dynamic: "# CHOSEN ITEMS\n\n" + itemsList(items) + "\n\n# SELECTION\n\n" +
+			strings.TrimRight(body, "\n") + "\n\n" + task,
+	}
+}
+
+// Build is BuildParts as one string.
 func Build(text string, items []Item, priorReplies []string, pronBundle map[string]mw.Bundle) string {
-	return part1 + itemsList(items) + part2 + text + "\n" + earlierSection(priorReplies) + pronSection(items, pronBundle)
+	return BuildParts(text, items, priorReplies, pronBundle).String()
 }
 
 // AskRound is one earlier question and the answer the model gave for it. A

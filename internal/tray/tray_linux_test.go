@@ -41,7 +41,7 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 	}
 	wantLabels := []string{
 		"Transcribe with", "AssemblyAI Universal-3.5 Pro", "Deepgram Nova-3",
-		"Explain with", "Claude Platform Opus 5.5", "OpenRouter Gemini 3.8 Flash",
+		"Explain with", "Claude Platform Opus 5.5", "OpenRouter GPT-6.1 Sol (fast)",
 		"Ask with", "Claude Platform Opus 5.5 (search + fetch)", "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)",
 	}
 	for i, want := range wantLabels {

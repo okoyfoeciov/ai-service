@@ -262,31 +262,32 @@ else
   if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe-verbatim runs on OpenRouter MAI-Transcribe-2"
   fi
-  explain_count=0
-  explain_start=""
-  # The start order matches resolveExplain: Claude, then OpenRouter.
-  for explain_key_name in CLAUDE_API_KEY OPENROUTER_API_KEY; do
-    if env_set "$explain_key_name"; then
-      explain_count=$((explain_count + 1))
-      if [ -z "$explain_start" ]; then
-        explain_start="$explain_key_name"
-      fi
+  # Count explain choices, not keys: OPENROUTER_API_KEY alone gives two (GPT-6.1
+  # Sol and Kimi K3.1 Pro), so it already enables the picker. The start order
+  # matches resolveExplain: Claude, then OpenRouter's GPT-6.1 Sol.
+  explain_choices=0
+  explain_start_name=""
+  if env_set CLAUDE_API_KEY; then
+    explain_choices=$((explain_choices + 1))
+    explain_start_name="the Claude Platform"
+  fi
+  if env_set OPENROUTER_API_KEY; then
+    explain_choices=$((explain_choices + 2))
+    if [ -z "$explain_start_name" ]; then
+      explain_start_name="OpenRouter GPT-6.1 Sol"
     fi
-  done
-  case "$explain_start" in
-    CLAUDE_API_KEY) explain_start_name="the Claude Platform" ;;
-    OPENROUTER_API_KEY) explain_start_name="OpenRouter" ;;
-    *) explain_start_name="" ;;
-  esac
-  if [ "$explain_count" -ge 2 ]; then
-    say "[d] ai-service.env: $explain_count explain keys are set — /api/explain uses the tray picker (starts on $explain_start_name)"
-    say "[d] add any missing explain key by hand to add that provider"
-  elif [ "$explain_count" -eq 1 ]; then
-    say "[d] ai-service.env: $explain_start is set — /api/explain runs on $explain_start_name"
-    say "[d] add another explain key by hand to enable the explain picker"
+  fi
+  if [ "$explain_choices" -ge 2 ]; then
+    say "[d] ai-service.env: /api/explain has $explain_choices choices — the tray picker chooses (starts on $explain_start_name)"
+    if ! env_set CLAUDE_API_KEY; then
+      say "[d] add CLAUDE_API_KEY by hand to add the Claude choice"
+    fi
+  elif [ "$explain_choices" -eq 1 ]; then
+    say "[d] ai-service.env: CLAUDE_API_KEY is set — /api/explain runs on the Claude Platform"
+    say "[d] add OPENROUTER_API_KEY by hand to add the GPT-6.1 Sol and Kimi K3.1 Pro choices and the explain picker"
   else
     # None: ask for OpenRouter first, and an empty answer there means Claude.
-    ask_key OPENROUTER_API_KEY "word explanations via OpenRouter. Leave it empty to use a Claude key instead" 1 ||
+    ask_key OPENROUTER_API_KEY "word explanations via OpenRouter (GPT-6.1 Sol and Kimi K3.1 Pro). Leave it empty to use a Claude key instead" 1 ||
       ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
   fi
   ask_count=0

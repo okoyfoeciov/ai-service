@@ -19,6 +19,10 @@ const (
 
 	ProviderOpenRouter = "openrouter"
 	ProviderClaude     = "claude"
+	// ProviderOpenRouterKimi is /api/explain's second OpenRouter choice (Kimi
+	// K3.1 Pro). It uses the same OPENROUTER_API_KEY as ProviderOpenRouter,
+	// which on explain is GPT-6.1 Sol; it does not exist on any other route.
+	ProviderOpenRouterKimi = "openrouter-kimi"
 )
 
 type Config struct {
@@ -44,13 +48,15 @@ type Config struct {
 	TranscribeProvider string
 
 	// Word explanations (/api/explain) run on Claude Platform or OpenRouter.
-	// Both may be configured at once; the tray picker then chooses which one
+	// OPENROUTER_API_KEY enables two choices, GPT-6.1 Sol and Kimi K3.1 Pro.
+	// All may be configured at once; the tray picker then chooses which one
 	// answers. At least one key is needed for the feature, but a missing key
 	// only makes the handler report it at request time.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
 	// ExplainProviders lists every configured explain provider in a fixed
-	// order (Claude, OpenRouter). It is empty when no key is set.
+	// order (Claude, OpenRouter GPT-6.1 Sol, OpenRouter Kimi K3.1 Pro). It is
+	// empty when no key is set.
 	ExplainProviders []string
 	// ExplainProvider is the provider /api/explain starts on: the first entry
 	// of ExplainProviders, unless main restores a selection saved by the tray
@@ -91,18 +97,24 @@ type Config struct {
 // every start and every tray switch must answer with the same model and the
 // same reasoning depth.
 const (
-	defaultOpenRouterModel    = "google/gemini-3.8-flash"
-	defaultOpenRouterAskModel = "deepseek/deepseek-v4.1-flash-1017"
-	defaultClaudeModel        = "claude-opus-5-5"
+	defaultOpenRouterExplainModel = "openai/gpt-6.1-sol"
+	defaultOpenRouterKimiModel    = "moonshotai/kimi-k3.1-pro"
+	defaultOpenRouterAskModel     = "deepseek/deepseek-v4.1-flash-1017"
+	defaultClaudeModel            = "claude-opus-5-5"
 
 	// ClaudeEffort is Claude's output_config.effort (low, medium, high, xhigh
 	// or max), the only thinking control a Claude model takes. Current models
 	// reject a separate thinking-token budget, while max_tokens still caps the
 	// answer.
 	ClaudeEffort = "medium"
-	// OpenRouterReasoningTokens is OpenRouter's thinking budget
-	// (reasoning.max_tokens, Gemini's thinkingBudget). Thinking is never shown.
-	OpenRouterReasoningTokens = 1024
+	// OpenRouterExplainReasoningEffort is GPT-6.1 Sol's thinking level on
+	// /api/explain (reasoning.effort). Sol cannot turn thinking off; at low it
+	// thinks a few dozen tokens per answer. Thinking is never shown.
+	OpenRouterExplainReasoningEffort = "low"
+	// OpenRouterKimiReasoningEffort is Kimi K3.1 Pro's thinking level on
+	// /api/explain. none answers at once; low already thinks thousands of
+	// tokens (tens of seconds) for no measured gain.
+	OpenRouterKimiReasoningEffort = "none"
 	// OpenRouterAskReasoningEffort is the Ask model's thinking level
 	// (reasoning.effort). DeepSeek V4.1 Flash 1017 supports max, high, low and
 	// none, and defaults to high.
@@ -258,12 +270,17 @@ func (c *Config) resolveTranscribe() error {
 // resolveExplain collects the /api/explain providers. Any key may be set; the
 // tray picker then switches between them. An empty key counts as unset, because
 // .env.example ships empty lines. Models are fixed per provider.
+//
+// OPENROUTER_API_KEY adds two choices. GPT-6.1 Sol keeps the "openrouter" id
+// that Gemini 3.8 Flash used, so a tray choice saved for the old OpenRouter
+// entry moves to Sol instead of falling back to the first provider. Kimi goes
+// after it, so it only adds a tray choice.
 func (c *Config) resolveExplain() error {
 	if c.ClaudeAPIKey != "" {
 		c.ExplainProviders = append(c.ExplainProviders, ProviderClaude)
 	}
 	if c.OpenRouterAPIKey != "" {
-		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter)
+		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter, ProviderOpenRouterKimi)
 	}
 	if len(c.ExplainProviders) > 0 {
 		c.ExplainProvider = c.ExplainProviders[0]
@@ -277,7 +294,9 @@ func (c Config) ExplainModelFor(provider string) string {
 	case ProviderClaude:
 		return defaultClaudeModel
 	case ProviderOpenRouter:
-		return defaultOpenRouterModel
+		return defaultOpenRouterExplainModel
+	case ProviderOpenRouterKimi:
+		return defaultOpenRouterKimiModel
 	}
 	return ""
 }
@@ -372,7 +391,9 @@ func (c Config) ExplainRoute() string {
 		case ProviderClaude:
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.ExplainModelFor(p), ClaudeEffort))
 		case ProviderOpenRouter:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, %d thinking tokens", c.ExplainModelFor(p), OpenRouterReasoningTokens))
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, OpenAI fast tier", c.ExplainModelFor(p), OpenRouterExplainReasoningEffort))
+		case ProviderOpenRouterKimi:
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, pinned to Wafer", c.ExplainModelFor(p), OpenRouterKimiReasoningEffort))
 		}
 	}
 	switch len(parts) {
@@ -391,7 +412,9 @@ func explainProviderName(provider string) string {
 	case ProviderClaude:
 		return "Claude Platform"
 	case ProviderOpenRouter:
-		return "OpenRouter"
+		return "OpenRouter GPT-6.1 Sol"
+	case ProviderOpenRouterKimi:
+		return "OpenRouter Kimi K3.1 Pro"
 	}
 	return provider
 }

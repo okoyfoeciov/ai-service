@@ -233,5 +233,3 @@ Hard rules:
 - Keep your own sentences short. In YOUR linking prose — the in-context note and the small transitions between items — do not use idioms or fixed expressions whose meaning a non-native reader can't work out from the plain words alone; say the plain meaning straight instead. Rare last resort only: if a slightly harder word is genuinely unavoidable in that linking prose, put its plain meaning in round brackets right after it, like this (= meaning). Never do this on the headword (it already has a full gloss + PRON badge), never in the example sentence, and never on ordinary words — it's a backstop, not a habit, and must not add length.
 - Don't pad. Stick to one short paragraph + one example per item (per sense, for an item the Ambiguity rule splits), plus that item's background line and — only where it earns its place — its flavour line.
 
-# SELECTION
-

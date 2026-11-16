@@ -196,7 +196,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. Set this and/or `CLAUDE_API_KEY`; with both, the tray picker chooses. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds two explain choices: GPT-6.1 Sol (OpenAI fast tier) and Kimi K3.1 Pro (pinned to Wafer). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It adds the Claude search + fetch choice to the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
@@ -206,9 +206,9 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
 Models and thinking depth are fixed in `internal/config`, not environment
-settings: Claude uses `output_config.effort` `medium`; OpenRouter uses a
-1024-token thinking budget for `/api/explain` and `reasoning.effort` `high`
-for `/api/ask`. A Claude or
+settings: Claude uses `output_config.effort` `medium`; OpenRouter uses
+`reasoning.effort` `low` for GPT-6.1 Sol and `none` for Kimi K3.1 Pro on
+`/api/explain`, and `reasoning.effort` `high` for `/api/ask`. A Claude or
 OpenRouter Ask key creates one tray choice and always sends the provider's web
 tools (Claude's basic direct search and fetch, max 2 of each with 30k tokens
 per fetch; OpenRouter Exa, up to 10 results and two searches per request, plus
@@ -358,7 +358,8 @@ appears when `/api/transcribe/stream`, `/api/explain` or `/api/ask` has at
 least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5 and OpenRouter Gemini 3.8 Flash.
+- **Explain with** — Claude Platform Opus 5.5, OpenRouter GPT-6.1 Sol (fast)
+  and OpenRouter Kimi K3.1 Pro.
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch) and OpenRouter
   DeepSeek V4.1 Flash 1017 (search + fetch).
 
@@ -472,7 +473,8 @@ Request limits:
 | Used by | Provider | Model | Reasoning |
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
-| `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `google/gemini-3.8-flash` | 1024-token thinking budget |
+| `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `openai/gpt-6.1-sol` (OpenAI fast tier, standard tier as fallback) | effort `low` |
+| `/api/explain` | OpenRouter, same key | `moonshotai/kimi-k3.1-pro` (pinned to Wafer) | effort `none` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; web search + fetch on |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
@@ -480,17 +482,36 @@ Request limits:
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
-When more than one `/api/explain` key is set, its tray section chooses between
-the Claude and OpenRouter rows. The Ask keys and tray section are otherwise
+`OPENROUTER_API_KEY` alone already gives `/api/explain` two choices, so its
+tray section chooses between the Claude row (with `CLAUDE_API_KEY`) and the two
+OpenRouter rows. GPT-6.1 Sol keeps the `openrouter` id that Gemini 3.8 Flash
+used, so a saved Gemini choice moves to Sol. The Ask keys and tray section are otherwise
 independent of explain's; its Claude and OpenRouter keys each add one
 search-enabled (search + fetch) choice.
 
 OpenRouter speaks OpenAI's streaming chat completions, so one client
 (`internal/llm`'s `Client`) serves it. The request fields for the token budget
 and reasoning are fixed for every route in `internal/config`:
-OpenRouter explain takes `max_tokens` and `reasoning: {max_tokens: 1024, exclude}`;
+OpenRouter explain takes `max_tokens`, `reasoning: {effort, exclude}` and a
+`provider` list with `allow_fallbacks: false`, so a request never leaves the
+listed endpoints (Sol: `openai/fast`, then `openai`; Kimi: `wafer/us`, then
+`wafer/mxfp4`);
 OpenRouter ask takes `max_tokens` and `reasoning: {effort: "high", exclude}`, and
 also adds the `openrouter:web_search` and `openrouter:web_fetch` server tools.
+
+**Prompt caching on explain.** The explain prompt puts every fixed byte first
+(`part1.txt` + `part2.txt`, about 9,000 tokens of rules) and everything that
+changes after it: the chosen items, the passage, earlier replies,
+pronunciations, and the closing `task.txt`. A provider reuses the processed
+form of an identical prefix for several minutes (at least 12 in tests), so after
+the first click only the short request part is billed in full. GPT-6.1 Sol
+reuses the prefix only when it is marked, so its client sends the prompt as two
+text blocks with `cache_control: {type: "ephemeral"}` on the rules block; Kimi
+on Wafer caches the shared prefix by itself and gets one text. Measured on 12
+cases: Sol fell from about $0.026 to $0.0045 per click on the standard tier
+(the fast tier costs twice as much per token); Kimi stayed near $0.004 and
+showed its first text 0.4 s sooner. Claude caches only with an explicit marker,
+which its client does not send yet.
 
 **Ask's native image tools.** When `BRAVE_SEARCH_API_KEY` is set, every Ask
 choice carries `search_images` and `show_images` as client tools alongside the
@@ -546,9 +567,15 @@ How a call works:
   is already whole. So neither the panel nor Memoir's parser takes a partial
   answer for a whole one.
 
-**Why these models** (measured 2026-09-29 on 12 cases per route, blind-judged):
-on explain, Gemini 3.8 Flash clearly beat the alternatives at every reasoning
-level. Memoir runs on Claude Opus 5.5.
+**Why these models** (explain measured 2026-11-15 on 12 cases, three runs
+each, blind-judged by two judges with a verifier): GPT-6.1 Sol at `low` wrote
+the best explanations of every model fast enough for the route, about one
+point (of 10) above Gemini 3.8 Flash with no verified major error; Kimi K3.1
+Pro with thinking off matched Gemini 4 Hydrogen's quality at about 2.5 s per
+answer. Grok 4.7 and Qwen 3.8 Max cannot turn thinking off and took 40–120 s;
+DeepSeek V4.1 Flash 1017 beat Gemini 3.8 Flash only with thinking on (15–70 s).
+The cache-friendly layout and its closing reminder scored the same as the old
+layout for both models. Memoir runs on Claude Opus 5.5.
 
 ## Merriam-Webster
 
@@ -582,7 +609,7 @@ internal/server     HTTP routing, the security guard, the handlers, the in-memor
                     screenshot store, its Linux/GNOME D-Bus portal and macOS screencapture
 internal/tray       the provider pickers for /api/transcribe/stream, /api/explain and /api/ask (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
-internal/prompt     the explain prompt (part1.txt, part2.txt)
+internal/prompt     the explain prompt (part1.txt, part2.txt, task.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
 internal/llm        streaming model clients: chat completions (OpenRouter) and Claude
 contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 1

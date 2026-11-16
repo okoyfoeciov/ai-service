@@ -1,6 +1,7 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
-// endpoints: OpenRouter for /api/explain (Gemini) and /api/ask (DeepSeek). Any
+// endpoints: OpenRouter for /api/explain (GPT-6.1 Sol or Kimi K3.1 Pro) and
+// /api/ask (DeepSeek). Any
 // route can instead run on Claude, which has its own type (see claude.go)
 // because the Messages API streams differently.
 //
@@ -34,6 +35,12 @@ type Config struct {
 	// budget and the reasoning settings (see server.New). They must not set
 	// model, messages or stream.
 	Params map[string]any
+	// CachePrefix makes StreamParts send the static part of a prompt as its
+	// own text block marked cache_control "ephemeral", so the provider keeps
+	// it for the next request. GPT-6.1 Sol reuses the shared prefix only when
+	// it is marked like this. Leave it off for a provider that caches a shared
+	// prefix by itself (Kimi on Wafer): StreamParts then sends one text.
+	CachePrefix bool
 }
 
 // Result is how a completion ended. Code is a short machine tag
@@ -57,6 +64,14 @@ func (r Result) UserMessage() string {
 // satisfy it.
 type Streamer interface {
 	Stream(ctx context.Context, prompt string, onText func(string)) Result
+}
+
+// PartsStreamer is a Streamer that can take a prompt in two parts: static, the
+// same on every request, and dynamic, this request. The model reads
+// static + dynamic as one text either way; the split only lets a client mark
+// the static part for prompt caching.
+type PartsStreamer interface {
+	StreamParts(ctx context.Context, static, dynamic string, onText func(string)) Result
 }
 
 // SearchStreamer is a Streamer that can report a server-side web tool to the
@@ -103,26 +118,46 @@ func (c *Client) Stream(ctx context.Context, prompt string, onText func(string))
 // the prompt says how to read that order. It is a content array only when
 // there are images, so every text-only request keeps the old wire shape.
 func (c *Client) StreamImages(ctx context.Context, prompt string, images []Image, onText func(string)) Result {
+	if len(images) == 0 {
+		return c.streamMessages(ctx, []map[string]string{{"role": "user", "content": prompt}}, onText)
+	}
+	parts := make([]map[string]any, 0, len(images)+1)
+	parts = append(parts, map[string]any{"type": "text", "text": prompt})
+	for _, img := range images {
+		parts = append(parts, map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url": "data:" + img.MediaType + ";base64," + img.Data,
+			},
+		})
+	}
+	return c.streamMessages(ctx, []map[string]any{{"role": "user", "content": parts}}, onText)
+}
+
+// StreamParts is Stream for a prompt split into a static and a dynamic part.
+// With CachePrefix on, the user message carries two text blocks and the
+// static one is marked for caching; otherwise the two parts go as one text,
+// exactly like Stream(static + dynamic).
+func (c *Client) StreamParts(ctx context.Context, static, dynamic string, onText func(string)) Result {
+	if !c.cfg.CachePrefix || static == "" {
+		return c.Stream(ctx, static+dynamic, onText)
+	}
+	content := []map[string]any{
+		{"type": "text", "text": static, "cache_control": map[string]any{"type": "ephemeral"}},
+		{"type": "text", "text": dynamic},
+	}
+	return c.streamMessages(ctx, []map[string]any{{"role": "user", "content": content}}, onText)
+}
+
+// streamMessages sends one streaming chat request with these messages and
+// reads the answer, retrying a busy or broken upstream before any text came.
+func (c *Client) streamMessages(ctx context.Context, messages any, onText func(string)) Result {
 	body := map[string]any{}
 	for k, v := range c.cfg.Params {
 		body[k] = v
 	}
 	body["model"] = c.cfg.Model
-	if len(images) == 0 {
-		body["messages"] = []map[string]string{{"role": "user", "content": prompt}}
-	} else {
-		parts := make([]map[string]any, 0, len(images)+1)
-		parts = append(parts, map[string]any{"type": "text", "text": prompt})
-		for _, img := range images {
-			parts = append(parts, map[string]any{
-				"type": "image_url",
-				"image_url": map[string]any{
-					"url": "data:" + img.MediaType + ";base64," + img.Data,
-				},
-			})
-		}
-		body["messages"] = []map[string]any{{"role": "user", "content": parts}}
-	}
+	body["messages"] = messages
 	body["stream"] = true
 	payload, err := json.Marshal(body)
 	if err != nil {

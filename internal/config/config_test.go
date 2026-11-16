@@ -66,9 +66,11 @@ func TestLoadExplainProvider(t *testing.T) {
 		wantOK             bool
 	}{
 		{"neither key", nil, nil, "", "", true, true},
-		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "google/gemini-3.8-flash", false, true},
+		// OPENROUTER_API_KEY adds two explain choices: GPT-6.1 Sol (keeping the
+		// old "openrouter" id) and Kimi K3.1 Pro after it.
+		{"openrouter", map[string]string{"OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter, ProviderOpenRouterKimi}, ProviderOpenRouter, "openai/gpt-6.1-sol", false, true},
 		{"claude", map[string]string{"CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"both", map[string]string{"OPENROUTER_API_KEY": "or", "CLAUDE_API_KEY": "cl"}, []string{ProviderClaude, ProviderOpenRouter, ProviderOpenRouterKimi}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,10 +134,21 @@ func TestExplainRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.ExplainRoute()
-	for _, want := range []string{"Claude", "OpenRouter", "2 providers", "tray picker", "starting on Claude Platform"} {
+	for _, want := range []string{"Claude", "openai/gpt-6.1-sol", "OpenAI fast tier", "moonshotai/kimi-k3.1-pro", "pinned to Wafer",
+		"3 providers", "tray picker", "starting on Claude Platform"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "gemini") {
+		t.Errorf("route %q still names Gemini", got)
+	}
+	if c.ExplainModelFor(ProviderOpenRouterKimi) != "moonshotai/kimi-k3.1-pro" {
+		t.Errorf("kimi model %q", c.ExplainModelFor(ProviderOpenRouterKimi))
+	}
+	// Kimi is an explain-only choice: the same key must not add it to Ask.
+	if c.AskModelFor(ProviderOpenRouterKimi) != "" {
+		t.Errorf("ask has a model for %q", ProviderOpenRouterKimi)
 	}
 
 	t.Setenv("OPENROUTER_API_KEY", "")
@@ -176,7 +189,8 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "1024 thinking tokens") {
+	if got := c.ExplainRoute(); !strings.Contains(got, "effort medium") ||
+		!strings.Contains(got, "openai/gpt-6.1-sol, reasoning low") || !strings.Contains(got, "moonshotai/kimi-k3.1-pro, reasoning none") {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.AskRoute(); !strings.Contains(got, "effort medium") ||

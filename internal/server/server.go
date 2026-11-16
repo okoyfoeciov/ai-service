@@ -72,6 +72,19 @@ const (
 	maxAnswerTokens = 32000
 )
 
+// OpenRouter endpoints the explain choices may use, in order. allow_fallbacks
+// is off, so a request never goes to an endpoint outside the list.
+var (
+	// explainSolEndpoints serves GPT-6.1 Sol from OpenAI's fast tier, and from
+	// OpenAI's standard tier only if the fast one is unavailable. The fast tier
+	// costs twice as much per token but answers about as fast as Gemini did.
+	explainSolEndpoints = []string{"openai/fast", "openai"}
+	// explainKimiEndpoints pins Kimi K3.1 Pro to Wafer, the host it was
+	// measured on. Other hosts serve other quantizations at other prices, and
+	// one of them (River) leaked the model's hidden reasoning into answers.
+	explainKimiEndpoints = []string{"wafer/us", "wafer/mxfp4"}
+)
+
 func New(cfg config.Config, st *store.Store) *Server {
 	// Model calls have no overall timeout: a stream can run for minutes and
 	// the request context cancels it.
@@ -132,6 +145,24 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 		case config.ProviderClaude:
 			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", false, hc)
 		case config.ProviderOpenRouter:
+			// GPT-6.1 Sol. It reuses the static rules part of the prompt only
+			// when that part is marked, hence CachePrefix.
+			clients[provider] = llm.New(llm.Config{
+				Provider:    "OpenRouter",
+				URL:         openRouterURL,
+				APIKey:      cfg.OpenRouterAPIKey,
+				Model:       cfg.ExplainModelFor(provider),
+				CachePrefix: true,
+				Params: map[string]any{
+					"max_tokens": maxAnswerTokens,
+					// exclude: the thinking still happens but is not streamed back.
+					"reasoning": map[string]any{"effort": config.OpenRouterExplainReasoningEffort, "exclude": true},
+					"provider":  map[string]any{"order": explainSolEndpoints, "allow_fallbacks": false},
+				},
+			}, hc)
+		case config.ProviderOpenRouterKimi:
+			// Kimi K3.1 Pro. Wafer caches the shared rules prefix by itself, so
+			// the prompt goes as one text (CachePrefix off).
 			clients[provider] = llm.New(llm.Config{
 				Provider: "OpenRouter",
 				URL:      openRouterURL,
@@ -139,8 +170,8 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 				Model:    cfg.ExplainModelFor(provider),
 				Params: map[string]any{
 					"max_tokens": maxAnswerTokens,
-					// exclude: the thinking still happens but is not streamed back.
-					"reasoning": map[string]any{"max_tokens": config.OpenRouterReasoningTokens, "exclude": true},
+					"reasoning":  map[string]any{"effort": config.OpenRouterKimiReasoningEffort, "exclude": true},
+					"provider":   map[string]any{"order": explainKimiEndpoints, "allow_fallbacks": false},
 				},
 			}, hc)
 		}

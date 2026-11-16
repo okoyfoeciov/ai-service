@@ -11,7 +11,9 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
-use Claude Platform or OpenRouter, and `/api/ask` may use Claude Platform or
+use Claude Platform or OpenRouter (one `OPENROUTER_API_KEY` adds two choices:
+GPT-6.1 Sol on OpenAI's fast tier, and Kimi K3.1 Pro pinned to Wafer), and
+`/api/ask` may use Claude Platform or
 OpenRouter (DeepSeek V4.1 Flash 1017), each at once with its own tray picker.
 A Claude or OpenRouter Ask key creates one web-enabled
 (search + fetch) choice. Both Ask providers accept images, which `/api/ask`
@@ -130,13 +132,19 @@ outcome, item, context and earlier-round counts. Tray switches log
   `internal/server/server.go`) and the Content-Type rule on the billed routes
   keep web pages out. Do not weaken them.
 - Models and thinking depth are fixed in `internal/config`, not environment
-  settings: Claude effort `medium`, OpenRouter explain 1024 thinking tokens,
-  OpenRouter ask `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), and Claude
+  settings: Claude effort `medium`, OpenRouter explain `reasoning.effort: low`
+  (GPT-6.1 Sol) and `none` (Kimi K3.1 Pro), OpenRouter ask
+  `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), and Claude
   ask with or without the basic direct web search and fetch tools (max 2 of
   each when on).
-- `internal/prompt/part1.txt`, `part2.txt` and `internal/memoir/check.txt` are
-  product prompts. `TestPromptParity` pins `check.txt` by hash. Do not edit it
-  in passing.
+- `internal/prompt/part1.txt`, `part2.txt`, `task.txt` and
+  `internal/memoir/check.txt` are product prompts. `TestPromptParity` pins
+  `check.txt` by hash. Do not edit it in passing.
+- The explain prompt is laid out for prompt caching: every fixed byte first
+  (`part1.txt` + `part2.txt`, ~9,000 tokens of rules), then the request (chosen
+  items, passage, earlier replies, pronunciations), then `task.txt`. Never put
+  request data into the fixed part: one changed byte there makes every request
+  pay for all the rules again (`TestBuildPartsKeepsTheRulesAsASharedPrefix`).
 
 ## Version control and secrets
 

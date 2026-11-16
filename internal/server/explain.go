@@ -171,10 +171,19 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p := prompt.Build(body.Text, body.Items, body.History, pronBundle)
-	result := streamer.Stream(ctx, p, func(t string) {
+	// The prompt's static rules come first and are the same on every request,
+	// so a client that marks them for caching (llm.PartsStreamer) can let the
+	// provider reuse them. Any other client gets the same text as one string.
+	parts := prompt.BuildParts(body.Text, body.Items, body.History, pronBundle)
+	onChunk := func(t string) {
 		send("chunk", map[string]any{"text": t})
-	})
+	}
+	var result llm.Result
+	if ps, ok := streamer.(llm.PartsStreamer); ok {
+		result = ps.StreamParts(ctx, parts.Static, parts.Dynamic, onChunk)
+	} else {
+		result = streamer.Stream(ctx, parts.String(), onChunk)
+	}
 	if !result.OK {
 		if ctx.Err() != nil {
 			outcome = "client_gone"
