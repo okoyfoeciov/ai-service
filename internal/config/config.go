@@ -9,10 +9,8 @@ import (
 )
 
 // Providers that can serve /api/transcribe/stream, /api/explain, /api/ask and
-// /api/memoir/check. /api/transcribe/stream, /api/explain and /api/ask may each
-// have every configured provider enabled at once; the tray picker selects the
-// active one. Memoir activates exactly one, picked by which environment
-// variable is set (Load refuses both).
+// /api/memoir/check. Each route may have every configured provider enabled at
+// once; the tray picker selects the active one.
 const (
 	ProviderAssemblyAI = "assemblyai"
 	ProviderDeepgram   = "deepgram"
@@ -80,15 +78,24 @@ type Config struct {
 	// AskProviders, unless main restores a selection saved by the tray picker.
 	AskProvider string
 
-	// Memoir (/api/memoir/check) runs on the Claude Platform. Every Memoir
-	// variable starts with MEMOIR_, because the plain CLAUDE_API_KEY already
-	// belongs to /api/explain.
-	MemoirClaudeAPIKey string
-	// MemoirProvider is ProviderClaude, or "" when the key is not set (the
-	// Memoir handlers then report the missing key).
+	// Memoir (/api/memoir/check) runs on Claude Platform or OpenRouter (GPT-6.1
+	// Terra). Both may be configured at once; the tray picker then chooses
+	// which one answers. Every Memoir variable starts with MEMOIR_, because the
+	// plain CLAUDE_API_KEY and OPENROUTER_API_KEY already belong to
+	// /api/explain.
+	MemoirClaudeAPIKey     string
+	MemoirOpenRouterAPIKey string
+	// MemoirProviders lists every configured Memoir provider in a fixed order
+	// (Claude, OpenRouter). It is empty when no key is set; the handler then
+	// reports the missing key.
+	MemoirProviders []string
+	// MemoirProvider is the provider /api/memoir/check starts on: the first
+	// entry of MemoirProviders, unless main restores a selection saved by the
+	// tray picker.
 	MemoirProvider string
-	// MemoirModel is the Claude model id sent to /api/memoir/check
-	// (claude-opus-5-5). When MEMOIR_MODEL is unset it defaults to that.
+	// MemoirModel is the Claude model id for Memoir's Claude choice
+	// (claude-opus-5-5). When MEMOIR_MODEL is unset it defaults to that. The
+	// OpenRouter choice's model is fixed.
 	MemoirModel string
 }
 
@@ -100,6 +107,7 @@ const (
 	defaultOpenRouterExplainModel = "openai/gpt-6.1-sol"
 	defaultOpenRouterKimiModel    = "moonshotai/kimi-k3.1-pro"
 	defaultOpenRouterAskModel     = "deepseek/deepseek-v4.1-flash-1017"
+	defaultOpenRouterMemoirModel  = "openai/gpt-6.1-terra"
 	defaultClaudeModel            = "claude-opus-5-5"
 
 	// ClaudeEffort is Claude's output_config.effort (low, medium, high, xhigh
@@ -115,6 +123,10 @@ const (
 	// /api/explain. none answers at once; low already thinks thousands of
 	// tokens (tens of seconds) for no measured gain.
 	OpenRouterKimiReasoningEffort = "none"
+	// OpenRouterMemoirReasoningEffort is GPT-6.1 Terra's thinking level on
+	// /api/memoir/check. In the 2026-11-16 proofreading benchmark low caught as
+	// many mistakes as medium, at less cost and time.
+	OpenRouterMemoirReasoningEffort = "low"
 	// OpenRouterAskReasoningEffort is the Ask model's thinking level
 	// (reasoning.effort). DeepSeek V4.1 Flash 1017 supports max, high, low and
 	// none, and defaults to high.
@@ -156,8 +168,8 @@ const (
 // keys; the caller only warns, because each handler reports its own missing
 // piece instead of the whole server failing.
 //
-// The error is for a configuration that must not run at all: more than one
-// variable of the Memoir route set, neither ASSEMBLYAI_API_KEY nor
+// The error is for a configuration that must not run at all: neither
+// ASSEMBLYAI_API_KEY nor
 // DEEPGRAM_API_KEY set, a retired transcription variable still present
 // (PARAKEET_URL, MAI_TRANSCRIBE_API_KEY, AZURE_SPEECH_KEY,
 // AZURE_SPEECH_ENDPOINT, GROQ_API_KEY, GROQ_MODEL), or a Memoir Claude key
@@ -176,8 +188,9 @@ func Load() (Config, []string, error) {
 		AskOpenRouterAPIKey: os.Getenv("ASK_OPENROUTER_API_KEY"),
 		BraveSearchAPIKey:   os.Getenv("BRAVE_SEARCH_API_KEY"),
 
-		MemoirClaudeAPIKey: os.Getenv("MEMOIR_CLAUDE_API_KEY"),
-		MemoirModel:        os.Getenv("MEMOIR_MODEL"),
+		MemoirClaudeAPIKey:     os.Getenv("MEMOIR_CLAUDE_API_KEY"),
+		MemoirOpenRouterAPIKey: os.Getenv("MEMOIR_OPENROUTER_API_KEY"),
+		MemoirModel:            os.Getenv("MEMOIR_MODEL"),
 	}
 
 	// Parakeet was removed. Ignoring a leftover URL silently would leave a
@@ -240,7 +253,7 @@ func Load() (Config, []string, error) {
 	for _, k := range []struct{ name, val string }{
 		{"OPENROUTER_API_KEY or CLAUDE_API_KEY", c.ExplainProvider},
 		{"ASK_CLAUDE_API_KEY or ASK_OPENROUTER_API_KEY", c.AskProvider},
-		{"MEMOIR_CLAUDE_API_KEY", c.MemoirProvider},
+		{"MEMOIR_CLAUDE_API_KEY or MEMOIR_OPENROUTER_API_KEY", c.MemoirProvider},
 		{"OPENROUTER_TRANSCRIBE_API_KEY", c.OpenRouterTranscribeAPIKey},
 	} {
 		if k.val == "" {
@@ -342,13 +355,36 @@ func settleClaudeModel(model *string, keyVar, modelVar string) error {
 	return nil
 }
 
-// resolveMemoir settles the Memoir provider key and model.
+// resolveMemoir collects the /api/memoir/check providers and settles the
+// Claude model. Both keys may be set; the tray picker then switches between
+// them. An empty key counts as unset, because .env.example ships empty lines.
+// MEMOIR_MODEL applies to the Claude choice only.
 func (c *Config) resolveMemoir() error {
-	if c.MemoirClaudeAPIKey == "" {
-		return nil
+	if c.MemoirClaudeAPIKey != "" {
+		if err := settleClaudeModel(&c.MemoirModel, "MEMOIR_CLAUDE_API_KEY", "MEMOIR_MODEL"); err != nil {
+			return err
+		}
+		c.MemoirProviders = append(c.MemoirProviders, ProviderClaude)
 	}
-	c.MemoirProvider = ProviderClaude
-	return settleClaudeModel(&c.MemoirModel, "MEMOIR_CLAUDE_API_KEY", "MEMOIR_MODEL")
+	if c.MemoirOpenRouterAPIKey != "" {
+		c.MemoirProviders = append(c.MemoirProviders, ProviderOpenRouter)
+	}
+	if len(c.MemoirProviders) > 0 {
+		c.MemoirProvider = c.MemoirProviders[0]
+	}
+	return nil
+}
+
+// MemoirModelFor returns the model id for provider: MemoirModel for Claude,
+// the fixed GPT-6.1 Terra id for OpenRouter.
+func (c Config) MemoirModelFor(provider string) string {
+	switch provider {
+	case ProviderClaude:
+		return c.MemoirModel
+	case ProviderOpenRouter:
+		return defaultOpenRouterMemoirModel
+	}
+	return ""
 }
 
 // TranscribeRoute is one line saying where /api/transcribe/stream goes, for the startup log.
@@ -453,10 +489,34 @@ func askProviderName(provider string) string {
 
 // MemoirRoute is one line saying where /api/memoir/check goes, for the startup log.
 func (c Config) MemoirRoute() string {
-	if c.MemoirProvider == ProviderClaude {
-		return fmt.Sprintf("Claude Platform, model %s, effort %s", c.MemoirModel, ClaudeEffort)
+	var parts []string
+	for _, p := range c.MemoirProviders {
+		switch p {
+		case ProviderClaude:
+			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.MemoirModelFor(p), ClaudeEffort))
+		case ProviderOpenRouter:
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, OpenAI flex tier", c.MemoirModelFor(p), OpenRouterMemoirReasoningEffort))
+		}
 	}
-	return "none (MEMOIR_CLAUDE_API_KEY is not set)"
+	switch len(parts) {
+	case 0:
+		return "none (neither MEMOIR_CLAUDE_API_KEY nor MEMOIR_OPENROUTER_API_KEY is set)"
+	case 1:
+		return parts[0]
+	}
+	return strings.Join(parts, " and ") +
+		fmt.Sprintf(" (%d choices; tray picker, starting on %s)", len(parts), memoirProviderName(c.MemoirProvider))
+}
+
+// memoirProviderName is the short human name used in the startup log.
+func memoirProviderName(provider string) string {
+	switch provider {
+	case ProviderClaude:
+		return "Claude Platform"
+	case ProviderOpenRouter:
+		return "OpenRouter GPT-6.1 Terra"
+	}
+	return provider
 }
 
 func env(key, def string) string {

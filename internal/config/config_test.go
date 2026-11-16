@@ -50,7 +50,7 @@ func clearAskEnv(t *testing.T) {
 // clearMemoirEnv does the same for the variables that decide the Memoir route.
 func clearMemoirEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"MEMOIR_CLAUDE_API_KEY", "MEMOIR_MODEL", "MEMOIR_EFFORT", "MEMOIR_REASONING_EFFORT"} {
+	for _, k := range []string{"MEMOIR_CLAUDE_API_KEY", "MEMOIR_OPENROUTER_API_KEY", "MEMOIR_MODEL", "MEMOIR_EFFORT", "MEMOIR_REASONING_EFFORT"} {
 		t.Setenv(k, "")
 	}
 }
@@ -171,17 +171,18 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 	clearAskEnv(t)
 	clearMemoirEnv(t)
 	for k, v := range map[string]string{
-		"EXPLAIN_REASONING_TOKENS": "999999",
-		"EXPLAIN_EFFORT":           "turbo",
-		"ASK_EFFORT":               "low",
-		"ASK_REASONING_EFFORT":     "none",
-		"MEMOIR_EFFORT":            "max",
-		"MEMOIR_REASONING_EFFORT":  "low",
-		"OPENROUTER_API_KEY":       "or",
-		"CLAUDE_API_KEY":           "cl",
-		"ASK_CLAUDE_API_KEY":       "cl",
-		"ASK_OPENROUTER_API_KEY":   "or",
-		"MEMOIR_CLAUDE_API_KEY":    "cl",
+		"EXPLAIN_REASONING_TOKENS":  "999999",
+		"EXPLAIN_EFFORT":            "turbo",
+		"ASK_EFFORT":                "low",
+		"ASK_REASONING_EFFORT":      "none",
+		"MEMOIR_EFFORT":             "max",
+		"MEMOIR_REASONING_EFFORT":   "low",
+		"OPENROUTER_API_KEY":        "or",
+		"CLAUDE_API_KEY":            "cl",
+		"ASK_CLAUDE_API_KEY":        "cl",
+		"ASK_OPENROUTER_API_KEY":    "or",
+		"MEMOIR_CLAUDE_API_KEY":     "cl",
+		"MEMOIR_OPENROUTER_API_KEY": "or",
 	} {
 		t.Setenv(k, v)
 	}
@@ -197,7 +198,7 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search + fetch on") {
 		t.Errorf("ask route %q does not use the fixed thinking controls", got)
 	}
-	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") {
+	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "openai/gpt-6.1-terra, reasoning low") {
 		t.Errorf("memoir route %q does not use the fixed thinking controls", got)
 	}
 }
@@ -326,13 +327,17 @@ func TestLoadMemoirProvider(t *testing.T) {
 	cases := []struct {
 		name                      string
 		env                       map[string]string
+		wantProviders             []string
 		wantProvider, wantModel   string
 		wantMissingMemoir, wantOK bool
 	}{
-		{"no key", nil, "", "", true, true},
-		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"claude custom", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "claude-sonnet-5-5"}, ProviderClaude, "claude-sonnet-5-5", false, true},
-		{"claude with a non-Claude model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "not-a-claude-model"}, "", "", false, false},
+		{"no key", nil, nil, "", "", true, true},
+		{"claude defaults", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
+		{"claude custom", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "claude-sonnet-5-5"}, []string{ProviderClaude}, ProviderClaude, "claude-sonnet-5-5", false, true},
+		{"claude with a non-Claude model id", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_MODEL": "not-a-claude-model"}, nil, "", "", false, false},
+		{"openrouter only", map[string]string{"MEMOIR_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "openai/gpt-6.1-terra", false, true},
+		{"both start on claude", map[string]string{"MEMOIR_CLAUDE_API_KEY": "cl", "MEMOIR_OPENROUTER_API_KEY": "or"},
+			[]string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,12 +355,15 @@ func TestLoadMemoirProvider(t *testing.T) {
 			if !tc.wantOK {
 				return
 			}
-			if c.MemoirProvider != tc.wantProvider || c.MemoirModel != tc.wantModel {
-				t.Errorf("got %q %q, want %q %q", c.MemoirProvider, c.MemoirModel, tc.wantProvider, tc.wantModel)
+			if strings.Join(c.MemoirProviders, ",") != strings.Join(tc.wantProviders, ",") || c.MemoirProvider != tc.wantProvider {
+				t.Errorf("providers %v starting %q, want %v starting %q", c.MemoirProviders, c.MemoirProvider, tc.wantProviders, tc.wantProvider)
+			}
+			if got := c.MemoirModelFor(c.MemoirProvider); got != tc.wantModel {
+				t.Errorf("model %q, want %q", got, tc.wantModel)
 			}
 			gotMissing := false
 			for _, m := range missing {
-				if strings.Contains(m, "MEMOIR_CLAUDE_API_KEY") {
+				if strings.Contains(m, "MEMOIR_CLAUDE_API_KEY") && strings.Contains(m, "MEMOIR_OPENROUTER_API_KEY") {
 					gotMissing = true
 				}
 			}
@@ -363,6 +371,23 @@ func TestLoadMemoirProvider(t *testing.T) {
 				t.Errorf("missing %v, want memoir missing=%v", missing, tc.wantMissingMemoir)
 			}
 		})
+	}
+}
+
+// The plain OPENROUTER_API_KEY belongs to /api/explain alone, like
+// CLAUDE_API_KEY: it must not add a Memoir choice.
+func TestMemoirOpenRouterKeyIsSeparateFromExplains(t *testing.T) {
+	clearTranscribeEnv(t)
+	clearExplainEnv(t)
+	clearMemoirEnv(t)
+	clearAskEnv(t)
+	t.Setenv("OPENROUTER_API_KEY", "or")
+	c, _, err := Load()
+	if err != nil || len(c.MemoirProviders) != 0 || c.ExplainProvider != ProviderOpenRouter {
+		t.Fatalf("memoir %v explain %q err %v", c.MemoirProviders, c.ExplainProvider, err)
+	}
+	if got := c.MemoirModelFor(ProviderOpenRouter); got != "openai/gpt-6.1-terra" {
+		t.Errorf("OpenRouter Memoir model %q", got)
 	}
 }
 
@@ -397,6 +422,20 @@ func TestMemoirRouteNamesTheProviderAndModel(t *testing.T) {
 	}
 	if got := c.MemoirRoute(); !strings.Contains(got, "Claude") || !strings.Contains(got, "claude-opus-5-5") || !strings.Contains(got, "medium") {
 		t.Errorf("route %q", got)
+	}
+	t.Setenv("MEMOIR_OPENROUTER_API_KEY", "or")
+	c, _, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.MemoirRoute(); !strings.Contains(got, "openai/gpt-6.1-terra, reasoning low, OpenAI flex tier") ||
+		!strings.Contains(got, "2 choices; tray picker, starting on Claude Platform") {
+		t.Errorf("two-choice route %q", got)
+	}
+	clearMemoirEnv(t)
+	c, _, _ = Load()
+	if got := c.MemoirRoute(); !strings.Contains(got, "MEMOIR_CLAUDE_API_KEY") || !strings.Contains(got, "MEMOIR_OPENROUTER_API_KEY") {
+		t.Errorf("unconfigured route %q does not name both keys", got)
 	}
 }
 

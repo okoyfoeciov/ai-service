@@ -30,6 +30,7 @@ const (
 	savedTranscribeProviderKey = "transcribe:provider"
 	savedExplainProviderKey    = "explain:provider"
 	savedAskProviderKey        = "ask:provider"
+	savedMemoirProviderKey     = "memoir:provider"
 )
 
 func main() {
@@ -76,7 +77,8 @@ func main() {
 	multiTranscribe := len(cfg.TranscribeProviders) > 1
 	multiExplain := len(cfg.ExplainProviders) > 1
 	multiAsk := len(cfg.AskProviders) > 1
-	picker := multiTranscribe || multiExplain || multiAsk
+	multiMemoir := len(cfg.MemoirProviders) > 1
+	picker := multiTranscribe || multiExplain || multiAsk || multiMemoir
 	if multiTranscribe {
 		if saved, ok := st.Get(savedTranscribeProviderKey); ok && app.SetTranscribeProvider(saved) {
 			cfg.TranscribeProvider = saved
@@ -93,6 +95,12 @@ func main() {
 		if saved, ok := st.Get(savedAskProviderKey); ok && app.SetAskProvider(saved) {
 			cfg.AskProvider = saved
 			log.Printf("ask provider: %s (saved by the tray picker)", saved)
+		}
+	}
+	if multiMemoir {
+		if saved, ok := st.Get(savedMemoirProviderKey); ok && app.SetMemoirProvider(saved) {
+			cfg.MemoirProvider = saved
+			log.Printf("memoir provider: %s (saved by the tray picker)", saved)
 		}
 	}
 
@@ -145,7 +153,7 @@ func main() {
 
 	// ListenAndServe blocks, so it runs beside the tray event loop. On macOS
 	// systray.Run must own the main goroutine (Cocoa); on Linux it waits on
-	// D-Bus. When neither route has more than one provider there is nothing to
+	// D-Bus. When no route has more than one provider there is nothing to
 	// pick, so the process simply waits for the signal above.
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -163,6 +171,8 @@ func main() {
 				st.Set(savedExplainProviderKey, provider, 0)
 			case tray.PickAsk:
 				st.Set(savedAskProviderKey, provider, 0)
+			case tray.PickMemoir:
+				st.Set(savedMemoirProviderKey, provider, 0)
 			}
 		})
 		trayActive.Store(false)

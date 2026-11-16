@@ -139,7 +139,7 @@ func postJSON(t *testing.T, s *Server, path string, v any) *httptest.ResponseRec
 }
 
 // The cap counts what the clients count (JS String.length), not UTF-8 bytes.
-// With a nil memoirLLM, a request that passes the length check stops at 503.
+// With no Memoir client, a request that passes the length check stops at 503.
 func TestMemoirCheckCapCountsUTF16(t *testing.T) {
 	s := &Server{}
 	cases := []struct {
@@ -147,7 +147,7 @@ func TestMemoirCheckCapCountsUTF16(t *testing.T) {
 		wantStatus int
 		wantError  string
 	}{
-		{"12000 curly quotes", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "MEMOIR_CLAUDE_API_KEY is not set."},
+		{"12000 curly quotes", strings.Repeat("’", 12000), http.StatusServiceUnavailable, "Neither MEMOIR_CLAUDE_API_KEY nor MEMOIR_OPENROUTER_API_KEY is set."},
 		{"12001 curly quotes", strings.Repeat("’", 12001), http.StatusBadRequest, "entry too long (max 12000 chars)"},
 	}
 	for _, tc := range cases {
@@ -747,7 +747,10 @@ func TestMemoirCheckKeepsEveryIssue(t *testing.T) {
 				issues[i] = memoir.CheckIssue{Category: "grammar", Original: fmt.Sprint("w", i), Suggestion: fmt.Sprint("x", i), Reason: "r"}
 			}
 			reply, _ := json.Marshal(map[string]any{"corrected": content, "issues": issues})
-			s := &Server{memoirLLM: testLLM(fakeModel{reply: string(reply)})}
+			s := &Server{
+				cfg:        config.Config{MemoirProvider: config.ProviderClaude},
+				memoirLLMs: map[string]llm.Streamer{config.ProviderClaude: testLLM(fakeModel{reply: string(reply)})},
+			}
 			rec := postJSON(t, s, "/api/memoir/check", map[string]string{"content": content})
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status %d (body %q)", rec.Code, rec.Body.String())
@@ -827,28 +830,123 @@ func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	}
 }
 
-// New builds Memoir's client from the provider config.Load picked, and leaves
-// it nil (so the handlers report the missing key) when no key is set.
+// New builds one Memoir client per configured provider, and none (so the
+// handler reports the missing keys) when no key is set.
 func TestNewBuildsMemoirClientPerProvider(t *testing.T) {
 	cases := []struct {
-		name    string
-		cfg     config.Config
-		wantNil bool
-		wantTyp string
+		name string
+		cfg  config.Config
+		want map[string]string
 	}{
-		{"no key", config.Config{}, true, ""},
-		{"claude", config.Config{MemoirProvider: config.ProviderClaude, MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5"}, false, "*llm.Claude"},
+		{"no key", config.Config{}, map[string]string{}},
+		{"claude", config.Config{MemoirProviders: []string{config.ProviderClaude}, MemoirProvider: config.ProviderClaude,
+			MemoirClaudeAPIKey: "k", MemoirModel: "claude-opus-5-5"}, map[string]string{config.ProviderClaude: "*llm.Claude"}},
+		{"both", config.Config{MemoirProviders: []string{config.ProviderClaude, config.ProviderOpenRouter}, MemoirProvider: config.ProviderClaude,
+			MemoirClaudeAPIKey: "k", MemoirOpenRouterAPIKey: "or", MemoirModel: "claude-opus-5-5"},
+			map[string]string{config.ProviderClaude: "*llm.Claude", config.ProviderOpenRouter: "*llm.Client"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := New(tc.cfg, nil)
-			if (s.memoirLLM == nil) != tc.wantNil {
-				t.Fatalf("memoirLLM nil = %v, want %v", s.memoirLLM == nil, tc.wantNil)
+			if len(s.memoirLLMs) != len(tc.want) {
+				t.Fatalf("memoirLLMs %v, want %v", s.memoirLLMs, tc.want)
 			}
-			if got := fmt.Sprintf("%T", s.memoirLLM); !tc.wantNil && got != tc.wantTyp {
-				t.Errorf("memoirLLM is %s, want %s", got, tc.wantTyp)
+			for p, typ := range tc.want {
+				if got := fmt.Sprintf("%T", s.memoirLLMs[p]); got != typ {
+					t.Errorf("%s client is %s, want %s", p, got, typ)
+				}
+			}
+			if s.MemoirProvider() != tc.cfg.MemoirProvider {
+				t.Errorf("starts on %q, want %q", s.MemoirProvider(), tc.cfg.MemoirProvider)
 			}
 		})
+	}
+}
+
+// Memoir's OpenRouter choice is GPT-6.1 Terra at reasoning low, served from
+// OpenAI's flex tier with the standard tier as the only fallback, as one text.
+func TestMemoirOpenRouterChoiceIsTerraOnFlex(t *testing.T) {
+	cfg := config.Config{MemoirOpenRouterAPIKey: "or", MemoirProviders: []string{config.ProviderOpenRouter}}
+	m := &captureModel{reply: "ok"}
+	streamer := newMemoirLLMs(cfg, &http.Client{Transport: m})[config.ProviderOpenRouter]
+	if streamer == nil {
+		t.Fatal("no OpenRouter Memoir client")
+	}
+	if res := streamer.Stream(context.Background(), "CHECK THIS", nil); !res.OK {
+		t.Fatalf("stream failed: %+v", res)
+	}
+	raw, _ := m.body.Load().(string)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("request body %q: %v", raw, err)
+	}
+	if body["model"] != "openai/gpt-6.1-terra" || body["max_tokens"] != float64(maxAnswerTokens) {
+		t.Errorf("model %v max_tokens %v", body["model"], body["max_tokens"])
+	}
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "low" || reasoning["exclude"] != true {
+		t.Errorf("reasoning %v", reasoning)
+	}
+	routing, _ := body["provider"].(map[string]any)
+	if fmt.Sprint(routing["order"]) != fmt.Sprint([]any{"openai/flex", "openai"}) || routing["allow_fallbacks"] != false {
+		t.Errorf("provider routing %v", routing)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["content"] != "CHECK THIS" {
+		t.Errorf("messages %#v, want the prompt as one text", msgs)
+	}
+}
+
+// memoirRecorder is a Memoir client that answers reply and counts its calls.
+type memoirRecorder struct {
+	reply  string
+	n      atomic.Int32
+	prompt atomic.Value
+}
+
+func (m *memoirRecorder) Stream(_ context.Context, prompt string, onText func(string)) llm.Result {
+	m.n.Add(1)
+	m.prompt.Store(prompt)
+	if onText != nil {
+		onText(m.reply)
+	}
+	return llm.Result{OK: true}
+}
+
+func (m *memoirRecorder) calls() int { return int(m.n.Load()) }
+
+// The tray picker switches which client answers /api/memoir/check, and a
+// provider without a key is refused.
+func TestMemoirCheckUsesTheSelectedProvider(t *testing.T) {
+	reply := `{"corrected":"I went home.","issues":[{"category":"tense","original":"I go","suggestion":"I went","reason":"past tense needed here"}]}`
+	claude := &memoirRecorder{reply: reply}
+	terra := &memoirRecorder{reply: reply}
+	s := &Server{
+		cfg:             config.Config{MemoirProvider: config.ProviderClaude, MemoirModel: "claude-opus-5-5"},
+		memoirProviders: []string{config.ProviderClaude, config.ProviderOpenRouter},
+		memoirLLMs:      map[string]llm.Streamer{config.ProviderClaude: claude, config.ProviderOpenRouter: terra},
+	}
+	if s.SetMemoirProvider(config.ProviderOpenRouterKimi) {
+		t.Fatal("selected a provider that has no Memoir client")
+	}
+	if !s.SetMemoirProvider(config.ProviderOpenRouter) || s.MemoirProvider() != config.ProviderOpenRouter {
+		t.Fatalf("switch to OpenRouter failed; on %q", s.MemoirProvider())
+	}
+	rec := postJSON(t, s, "/api/memoir/check", map[string]string{"content": "I go home."})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %q", rec.Code, rec.Body.String())
+	}
+	if terra.calls() != 1 || claude.calls() != 0 {
+		t.Fatalf("terra %d calls, claude %d calls; want 1 and 0", terra.calls(), claude.calls())
+	}
+	if p, _ := terra.prompt.Load().(string); !strings.Contains(p, "I go home.") {
+		t.Error("the entry did not reach the selected client")
+	}
+	var got struct {
+		Issues []memoir.CheckIssue `json:"issues"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got.Issues) != 1 || got.Issues[0].Suggestion != "I went" {
+		t.Fatalf("issues %+v err %v", got.Issues, err)
 	}
 }
 

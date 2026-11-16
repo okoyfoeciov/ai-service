@@ -8,9 +8,9 @@
 // deliberately lenient: it strips a code fence, salvages the {...} span, and
 // never hands unparsed model text back as a correction.
 //
-// The model is Server.memoirLLM, separate from /api/explain's. This package is
-// pure text — it never touches the network, so the prompt contract stays
-// unit-testable without billing a turn.
+// The clients are Server.memoirLLMs, separate from /api/explain's. This
+// package is pure text — it never touches the network, so the prompt contract
+// stays unit-testable without billing a turn.
 package memoir
 
 import (

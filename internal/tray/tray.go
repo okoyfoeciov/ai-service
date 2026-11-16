@@ -42,6 +42,7 @@ const (
 	PickTranscribe = "transcribe"
 	PickExplain    = "explain"
 	PickAsk        = "ask"
+	PickMemoir     = "memoir"
 )
 
 // Controller is the part of *server.Server the pickers need.
@@ -55,6 +56,9 @@ type Controller interface {
 	AskProviders() []string
 	AskProvider() string
 	SetAskProvider(string) bool
+	MemoirProviders() []string
+	MemoirProvider() string
+	SetMemoirProvider(string) bool
 }
 
 // section is one picker group in the menu.
@@ -97,6 +101,15 @@ func pickerSections(c Controller) []section {
 			current:   c.AskProvider(),
 		})
 	}
+	if providers := c.MemoirProviders(); len(providers) > 1 {
+		sections = append(sections, section{
+			kind:      PickMemoir,
+			title:     "Memoir with",
+			tip:       "The provider /api/memoir/check uses",
+			providers: providers,
+			current:   c.MemoirProvider(),
+		})
+	}
 	return sections
 }
 
@@ -127,6 +140,15 @@ func providerLabel(kind, provider string) string {
 		case config.ProviderOpenRouter:
 			return "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"
 		}
+	case PickMemoir:
+		switch provider {
+		case config.ProviderClaude:
+			// MEMOIR_MODEL may name another Claude model; the startup log
+			// prints the exact id.
+			return "Claude Platform"
+		case config.ProviderOpenRouter:
+			return "OpenRouter GPT-6.1 Terra (flex)"
+		}
 	}
 	return provider
 }
@@ -139,6 +161,8 @@ func setProvider(c Controller, kind, provider string) bool {
 		return c.SetExplainProvider(provider)
 	case PickAsk:
 		return c.SetAskProvider(provider)
+	case PickMemoir:
+		return c.SetMemoirProvider(provider)
 	}
 	return false
 }

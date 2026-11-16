@@ -30,15 +30,17 @@ type Server struct {
 	// explainProviders is every provider config.Load found, and
 	// explainProvider is the one /api/explain uses now. The tray picker may
 	// change it while requests are running, hence atomic. askLLMs,
-	// askProviders and askProvider do the same for /api/ask. memoirLLM is
-	// Memoir's one client.
+	// askProviders and askProvider do the same for /api/ask, and memoirLLMs,
+	// memoirProviders and memoirProvider for /api/memoir/check.
 	explainLLMs      map[string]llm.Streamer
 	explainProviders []string
 	explainProvider  atomic.Value // string
 	askLLMs          map[string]llm.Streamer
 	askProviders     []string
 	askProvider      atomic.Value // string
-	memoirLLM        llm.Streamer
+	memoirLLMs       map[string]llm.Streamer
+	memoirProviders  []string
+	memoirProvider   atomic.Value // string
 
 	// shots holds the transient screenshots the Ask card is using. The client
 	// keeps only ids and thumbnails; the bytes are released when the card is
@@ -83,6 +85,11 @@ var (
 	// measured on. Other hosts serve other quantizations at other prices, and
 	// one of them (River) leaked the model's hidden reasoning into answers.
 	explainKimiEndpoints = []string{"wafer/us", "wafer/mxfp4"}
+	// memoirTerraEndpoints serves GPT-6.1 Terra from OpenAI's flex tier (half
+	// the standard price, slower and queued when OpenAI is busy), and from the
+	// standard tier only if flex is unavailable. A Memoir check is not
+	// interactive; Cairn and comart wait up to five minutes for it.
+	memoirTerraEndpoints = []string{"openai/flex", "openai"}
 )
 
 func New(cfg config.Config, st *store.Store) *Server {
@@ -104,6 +111,8 @@ func New(cfg config.Config, st *store.Store) *Server {
 		explainLLMs:         newExplainLLMs(cfg, hc),
 		askProviders:        append([]string(nil), cfg.AskProviders...),
 		askLLMs:             newAskLLMs(cfg, hc),
+		memoirProviders:     append([]string(nil), cfg.MemoirProviders...),
+		memoirLLMs:          newMemoirLLMs(cfg, hc),
 		shots:               newScreenshotStore(screenshotTTL, screenshotMaxBytes, screenshotMaxShots),
 	}
 	if cfg.BraveSearchAPIKey != "" {
@@ -118,7 +127,9 @@ func New(cfg config.Config, st *store.Store) *Server {
 	if cfg.AskProvider != "" {
 		s.askProvider.Store(cfg.AskProvider)
 	}
-	s.memoirLLM = newMemoirLLM(cfg, hc)
+	if cfg.MemoirProvider != "" {
+		s.memoirProvider.Store(cfg.MemoirProvider)
+	}
 	return s
 }
 
@@ -233,11 +244,29 @@ func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 	}, hc)
 }
 
-func newMemoirLLM(cfg config.Config, hc *http.Client) llm.Streamer {
-	if cfg.MemoirProvider == config.ProviderClaude {
-		return newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModel, "memoir", false, hc)
+func newMemoirLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
+	clients := make(map[string]llm.Streamer, len(cfg.MemoirProviders))
+	for _, provider := range cfg.MemoirProviders {
+		switch provider {
+		case config.ProviderClaude:
+			clients[provider] = newClaude(cfg.MemoirClaudeAPIKey, cfg.MemoirModelFor(provider), "memoir", false, hc)
+		case config.ProviderOpenRouter:
+			// GPT-6.1 Terra. The prompt is one text: checks are minutes apart,
+			// so a cached prefix would rarely still be warm.
+			clients[provider] = llm.New(llm.Config{
+				Provider: "OpenRouter",
+				URL:      openRouterURL,
+				APIKey:   cfg.MemoirOpenRouterAPIKey,
+				Model:    cfg.MemoirModelFor(provider),
+				Params: map[string]any{
+					"max_tokens": maxAnswerTokens,
+					"reasoning":  map[string]any{"effort": config.OpenRouterMemoirReasoningEffort, "exclude": true},
+					"provider":   map[string]any{"order": memoirTerraEndpoints, "allow_fallbacks": false},
+				},
+			}, hc)
+		}
 	}
-	return nil
+	return clients
 }
 
 // Drain waits, within ctx, for the handlers still running. main calls this

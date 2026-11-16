@@ -7,8 +7,8 @@ import (
 )
 
 type fakeController struct {
-	transcribe, explain, ask     []string
-	currentT, currentE, currentA string
+	transcribe, explain, ask, memoir       []string
+	currentT, currentE, currentA, currentM string
 }
 
 func (f *fakeController) TranscribeProviders() []string { return f.transcribe }
@@ -45,23 +45,37 @@ func (f *fakeController) SetAskProvider(p string) bool {
 	return false
 }
 
+func (f *fakeController) MemoirProviders() []string { return f.memoir }
+func (f *fakeController) MemoirProvider() string    { return f.currentM }
+func (f *fakeController) SetMemoirProvider(p string) bool {
+	for _, v := range f.memoir {
+		if v == p {
+			f.currentM = p
+			return true
+		}
+	}
+	return false
+}
+
 func TestPickerSectionsAreConditional(t *testing.T) {
 	cases := []struct {
 		name       string
 		transcribe []string
 		explain    []string
 		ask        []string
+		memoir     []string
 		want       []string
 	}{
-		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil},
-		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{PickTranscribe}},
-		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, []string{PickExplain}},
-		{"two ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickAsk}},
-		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickTranscribe, PickExplain, PickAsk}},
+		{"one each", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil},
+		{"two transcribe", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, nil, []string{PickTranscribe}},
+		{"two explain", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude}, nil, []string{PickExplain}},
+		{"two ask choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderOpenRouter}, nil, []string{PickAsk}},
+		{"two memoir choices", []string{config.ProviderAssemblyAI}, []string{config.ProviderClaude}, []string{config.ProviderClaude}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickMemoir}},
+		{"two each", []string{config.ProviderAssemblyAI, config.ProviderDeepgram}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{config.ProviderClaude, config.ProviderOpenRouter}, []string{PickTranscribe, PickExplain, PickAsk, PickMemoir}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &fakeController{transcribe: tc.transcribe, explain: tc.explain, ask: tc.ask}
+			c := &fakeController{transcribe: tc.transcribe, explain: tc.explain, ask: tc.ask, memoir: tc.memoir}
 			if len(tc.transcribe) > 0 {
 				c.currentT = tc.transcribe[0]
 			}
@@ -70,6 +84,9 @@ func TestPickerSectionsAreConditional(t *testing.T) {
 			}
 			if len(tc.ask) > 0 {
 				c.currentA = tc.ask[0]
+			}
+			if len(tc.memoir) > 0 {
+				c.currentM = tc.memoir[0]
 			}
 			sections := pickerSections(c)
 			if len(sections) != len(tc.want) {
@@ -93,10 +110,27 @@ func TestProviderLabels(t *testing.T) {
 		{PickExplain, config.ProviderOpenRouterKimi, "OpenRouter Kimi K3.1 Pro"},
 		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
 		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"},
+		{PickMemoir, config.ProviderClaude, "Claude Platform"},
+		{PickMemoir, config.ProviderOpenRouter, "OpenRouter GPT-6.1 Terra (flex)"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {
 			t.Errorf("%s/%s: got %q, want %q", tc.kind, tc.provider, got, tc.want)
 		}
+	}
+}
+
+// A Memoir pick flips the Memoir provider and nothing else; a provider without
+// a key is refused.
+func TestSetProviderMemoir(t *testing.T) {
+	c := &fakeController{
+		explain: []string{config.ProviderClaude, config.ProviderOpenRouter}, currentE: config.ProviderClaude,
+		memoir: []string{config.ProviderClaude, config.ProviderOpenRouter}, currentM: config.ProviderClaude,
+	}
+	if !setProvider(c, PickMemoir, config.ProviderOpenRouter) || c.currentM != config.ProviderOpenRouter || c.currentE != config.ProviderClaude {
+		t.Fatalf("memoir %q explain %q", c.currentM, c.currentE)
+	}
+	if setProvider(c, PickMemoir, config.ProviderOpenRouterKimi) {
+		t.Error("selected a Memoir provider that has no key")
 	}
 }

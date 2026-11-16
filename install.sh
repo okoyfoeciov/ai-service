@@ -198,7 +198,8 @@ ask_key() {
 # /api/transcribe-verbatim uses OPENROUTER_TRANSCRIBE_API_KEY. /api/explain
 # takes OPENROUTER_API_KEY and/or CLAUDE_API_KEY; /api/ask takes
 # ASK_CLAUDE_API_KEY and/or ASK_OPENROUTER_API_KEY, plus the optional
-# BRAVE_SEARCH_API_KEY for image tools; Memoir takes MEMOIR_CLAUDE_API_KEY.
+# BRAVE_SEARCH_API_KEY for image tools; Memoir takes MEMOIR_OPENROUTER_API_KEY
+# and/or MEMOIR_CLAUDE_API_KEY.
 # The blocks below handle all four routes.
 if [ "$DRY_RUN" = 1 ]; then
   # A dry run does not open ai-service.env at all — not even grep -q.
@@ -214,8 +215,8 @@ else
   fi
   chmod 600 "$ENVFILE"
   # /api/transcribe/stream has two providers, AssemblyAI and Deepgram.
-  # /api/explain has two keys, Claude and OpenRouter, and /api/ask has two
-  # keys, Claude and OpenRouter.
+  # /api/explain, /api/ask and /api/memoir/check each have two keys, Claude
+  # and OpenRouter.
   if env_set PARAKEET_URL; then
     die "ai-service.env still sets PARAKEET_URL, which is no longer supported: the local Parakeet integration was removed and the service would refuse to start. Delete the line (or comment it out), then re-run."
   fi
@@ -325,11 +326,25 @@ else
   if env_set BRAVE_SEARCH_API_KEY; then
     say "[d] ai-service.env: BRAVE_SEARCH_API_KEY is set — /api/ask offers native search_images and show_images on every Ask choice"
   fi
-  if env_set MEMOIR_CLAUDE_API_KEY; then
+  # Memoir: OpenRouter (GPT-6.1 Terra on OpenAI's flex tier) is asked for
+  # first, as the cheaper choice that matched Claude in the proofreading
+  # benchmark. With only the Claude key set, Terra is offered as a second
+  # choice. The tray starts on Claude when both are set (resolveMemoir order).
+  if ! env_set MEMOIR_CLAUDE_API_KEY && ! env_set MEMOIR_OPENROUTER_API_KEY; then
+    ask_key MEMOIR_OPENROUTER_API_KEY "Memoir proofreading via OpenRouter GPT-6.1 Terra (it may be the same key as OPENROUTER_API_KEY). Leave it empty to use a Claude key instead" 1 ||
+      ask_key MEMOIR_CLAUDE_API_KEY "Memoir proofreading via the Claude Platform. Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: MEMOIR_OPENROUTER_API_KEY and MEMOIR_CLAUDE_API_KEY left empty — /api/memoir/check stays unconfigured"
+  elif ! env_set MEMOIR_OPENROUTER_API_KEY; then
+    ask_key MEMOIR_OPENROUTER_API_KEY "a second Memoir choice via OpenRouter GPT-6.1 Terra (it may be the same key as OPENROUTER_API_KEY). Leave it empty to skip" 1 ||
+      say "[d] ai-service.env: MEMOIR_OPENROUTER_API_KEY left empty — /api/memoir/check stays on the Claude Platform"
+  fi
+  if env_set MEMOIR_CLAUDE_API_KEY && env_set MEMOIR_OPENROUTER_API_KEY; then
+    say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY and MEMOIR_OPENROUTER_API_KEY are set — /api/memoir/check uses the tray picker (starts on the Claude Platform)"
+  elif env_set MEMOIR_CLAUDE_API_KEY; then
     say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY is set — /api/memoir/check runs on the Claude Platform"
-  else
-    ask_key MEMOIR_CLAUDE_API_KEY "Memoir via the Claude Platform. Leave it empty to skip" 1 ||
-      say "[d] ai-service.env: MEMOIR_CLAUDE_API_KEY left empty — /api/memoir/check stays unconfigured"
+  elif env_set MEMOIR_OPENROUTER_API_KEY; then
+    say "[d] ai-service.env: MEMOIR_OPENROUTER_API_KEY is set — /api/memoir/check runs on OpenRouter GPT-6.1 Terra (flex)"
+    say "[d] add MEMOIR_CLAUDE_API_KEY by hand to add the Claude choice and the Memoir picker"
   fi
 fi
 

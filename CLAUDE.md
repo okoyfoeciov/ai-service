@@ -26,9 +26,12 @@ carries the native client tools `search_images` and `show_images`: the main
 model decides whether to call them, Brave returns ten filtered candidates
 (Claude sees the top five as image blocks; OpenRouter sees ten metadata rows),
 and `show_images` sends the model's chosen IDs to the card as an `images` SSE
-event. Four `search_images` calls per Ask round. `/api/memoir/check` runs on the
-Claude Platform. Every Memoir variable
-starts with `MEMOIR_` (plain `CLAUDE_API_KEY` is `/api/explain`'s); the ask
+event. Four `search_images` calls per Ask round. `/api/memoir/check` runs on
+Claude Platform or OpenRouter (GPT-6.1 Terra on OpenAI's flex tier, standard
+tier as fallback), with its own tray picker when both keys are set. Every
+Memoir variable starts with `MEMOIR_` (`MEMOIR_CLAUDE_API_KEY`,
+`MEMOIR_OPENROUTER_API_KEY`; plain `CLAUDE_API_KEY` and `OPENROUTER_API_KEY`
+are `/api/explain`'s); the ask
 keys are `ASK_CLAUDE_API_KEY` and `ASK_OPENROUTER_API_KEY`;
 `BRAVE_SEARCH_API_KEY` is optional and adds the Ask image tools; the
 transcription
@@ -45,8 +48,9 @@ Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
 `/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body
 to loopback from an extension page, so the WS handler forwards MediaRecorder
 frames to the stream route over loopback. The tray (`internal/tray`) has
-**Transcribe with**, **Explain with** and **Ask with** sections, each shown
-only when that route has more than one configured provider. Linux's tray is a small
+**Transcribe with**, **Explain with**, **Ask with** and **Memoir with**
+sections, each shown only when that route has more than one configured
+provider. Linux's tray is a small
 in-repo D-Bus backend that intentionally omits `Activate`, because GNOME then
 opens the menu on the first click instead of waiting out the double-click
 interval; macOS links Cocoa, so its build needs cgo.
@@ -56,13 +60,15 @@ add its `providerLabel` in `internal/tray`, and add a live case to
 `handleTranscribeStream` in `internal/server/transcribe_stream.go`. There is no
 batch fallback: a provider must implement streaming. To add an explain provider,
 extend `resolveExplain` and `newExplainLLMs` and add its `providerLabel`; the
-ask route follows the same pattern in `resolveAsk` and `newAskLLMs`.
+ask and Memoir routes follow the same pattern in `resolveAsk`/`newAskLLMs` and
+`resolveMemoir`/`newMemoirLLMs`.
 
 Every `/api/explain` request logs provider, model, status, outcome, item count,
 pronunciation lookups and duration; `/api/ask` logs provider, model, status,
-outcome, item, context and earlier-round counts. Tray switches log
+outcome, item, context and earlier-round counts; `/api/memoir/check` logs
+provider, model, status, outcome, issue count and duration. Tray switches log
 `transcribe provider: … (tray)` / `explain provider: … (tray)` /
-`ask provider: … (tray)`.
+`ask provider: … (tray)` / `memoir provider: … (tray)`.
 
 ## This is a BACKEND. The front ends live elsewhere.
 
@@ -134,7 +140,8 @@ outcome, item, context and earlier-round counts. Tray switches log
 - Models and thinking depth are fixed in `internal/config`, not environment
   settings: Claude effort `medium`, OpenRouter explain `reasoning.effort: low`
   (GPT-6.1 Sol) and `none` (Kimi K3.1 Pro), OpenRouter ask
-  `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), and Claude
+  `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), OpenRouter Memoir
+  `reasoning.effort: low` (GPT-6.1 Terra), and Claude
   ask with or without the basic direct web search and fetch tools (max 2 of
   each when on).
 - `internal/prompt/part1.txt`, `part2.txt`, `task.txt` and

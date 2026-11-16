@@ -80,7 +80,7 @@ the build, the env file and the restart):
    `OPENROUTER_API_KEY` and/or `CLAUDE_API_KEY` for `/api/explain`;
    `ASK_CLAUDE_API_KEY` and/or `ASK_OPENROUTER_API_KEY`; the optional
    `BRAVE_SEARCH_API_KEY` for Ask's native image tools; and
-   `MEMOIR_CLAUDE_API_KEY`. The prompt is a macOS dialog; on Linux a zenity
+   `MEMOIR_OPENROUTER_API_KEY` and/or `MEMOIR_CLAUDE_API_KEY`. The prompt is a macOS dialog; on Linux a zenity
    dialog, or a hidden terminal prompt without a display. For the transcribe
    providers it asks for AssemblyAI first; an empty answer there moves on to
    Deepgram, and an empty answer for either optional provider just leaves it
@@ -90,8 +90,10 @@ the build, the env file and the restart):
    moves on to OpenRouter. Each Claude or OpenRouter ask key gives one
    web-enabled (search + fetch) tray choice. If only some of a route's
    keys are present, the missing ones can be added by hand to add that
-   provider. An empty answer for `MEMOIR_CLAUDE_API_KEY` leaves Memoir
-   unconfigured. It stops if `PARAKEET_URL` is still there, if the retired
+   provider. For Memoir, OpenRouter (GPT-6.1 Terra) is asked first; an empty
+   answer there moves on to Claude, and an empty answer for both leaves Memoir
+   unconfigured. With only `MEMOIR_CLAUDE_API_KEY` set, it offers
+   `MEMOIR_OPENROUTER_API_KEY` as a second choice (empty skips it). It stops if `PARAKEET_URL` is still there, if the retired
    `GROQ_API_KEY` or `GROQ_MODEL` is there, or if the retired
    `MAI_TRANSCRIBE_API_KEY`, `AZURE_SPEECH_KEY` or
    `AZURE_SPEECH_ENDPOINT` is there. It also checks that `ffmpeg` is on
@@ -201,14 +203,16 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It adds the Claude search + fetch choice to the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `BRAVE_SEARCH_API_KEY` | (empty) | Optional secret. Brave Search API key for `/api/ask`'s native `search_images` and `show_images` tools. When set, every Ask choice can search for and display images. Empty leaves Ask exactly as before. The image endpoint is queried with `count=10`, `country=ALL`, `search_lang=en`, `safesearch=strict` and `spellcheck=false`. |
-| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
-| `MEMOIR_MODEL` | `claude-opus-5-5` | Model id for `/api/memoir/check`. It must start with `claude-`. |
+| `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this and/or `MEMOIR_OPENROUTER_API_KEY`; with both, the tray picker chooses. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
+| `MEMOIR_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/memoir/check`'s GPT-6.1 Terra choice (OpenAI flex tier). Set this and/or `MEMOIR_CLAUDE_API_KEY`; with both, the tray picker chooses. A separate variable from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
+| `MEMOIR_MODEL` | `claude-opus-5-5` | Model id for `/api/memoir/check`'s Claude choice. It must start with `claude-`. The OpenRouter choice's model is fixed. |
 | `LISTEN_ADDR` | `127.0.0.1:8770` | Keep it. The clients and the health check expect this address. |
 
 Models and thinking depth are fixed in `internal/config`, not environment
 settings: Claude uses `output_config.effort` `medium`; OpenRouter uses
 `reasoning.effort` `low` for GPT-6.1 Sol and `none` for Kimi K3.1 Pro on
-`/api/explain`, and `reasoning.effort` `high` for `/api/ask`. A Claude or
+`/api/explain`, `reasoning.effort` `high` for `/api/ask`, and
+`reasoning.effort` `low` for GPT-6.1 Terra on `/api/memoir/check`. A Claude or
 OpenRouter Ask key creates one tray choice and always sends the provider's web
 tools (Claude's basic direct search and fetch, max 2 of each with 30k tokens
 per fetch; OpenRouter Exa, up to 10 results and two searches per request, plus
@@ -301,8 +305,16 @@ outcome, item count, pronunciation lookups and duration:
 explain[claude]: model=claude-opus-5-5 status=200 outcome=ok items=3 prons=2 duration=1.24s
 ```
 
+Every `/api/memoir/check` request logs the same way, with the number of
+issues it returned:
+
+```text
+memoir[openrouter]: model=openai/gpt-6.1-terra status=200 outcome=ok issues=7 duration=6.1s
+```
+
 Tray switches are logged separately as `transcribe provider: … (tray)`,
-`explain provider: … (tray)` and `ask provider: … (tray)`.
+`explain provider: … (tray)`, `ask provider: … (tray)` and
+`memoir provider: … (tray)`.
 
 `CACHE_DB` is normally not set: `run.sh` defaults it to `data/cache.db`, so the
 folder can move without an edit. On Linux the unit is sandboxed with
@@ -321,7 +333,7 @@ server at start; the service manager retries every 10 s and the error is in
 After an edit, restart the service. A missing API key is only a warning at
 start: `/api/transcribe-verbatim` answers 500, `/api/explain` and `/api/ask`
 send an `error` event and `/api/memoir/check` answers 503, each naming the
-missing key, until it is set. `/api/transcribe/stream` is the exception: without either
+missing key(s), until one is set. `/api/transcribe/stream` is the exception: without either
 `ASSEMBLYAI_API_KEY` or `DEEPGRAM_API_KEY` the service refuses to start.
 
 **The service refuses to start** (it logs `config: …` and exits 1; the service
@@ -354,16 +366,18 @@ re-route the call.
 ### Tray pickers
 
 The tray has one picker section per route with more than one choice. It
-appears when `/api/transcribe/stream`, `/api/explain` or `/api/ask` has at
-least two entries:
+appears when `/api/transcribe/stream`, `/api/explain`, `/api/ask` or
+`/api/memoir/check` has at least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
 - **Explain with** — Claude Platform Opus 5.5, OpenRouter GPT-6.1 Sol (fast)
   and OpenRouter Kimi K3.1 Pro.
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch) and OpenRouter
   DeepSeek V4.1 Flash 1017 (search + fetch).
+- **Memoir with** — Claude Platform (Opus 5.5 unless `MEMOIR_MODEL` names
+  another) and OpenRouter GPT-6.1 Terra (flex).
 
-The Ask picker appears only when both Ask keys are set. With one choice on
+The Ask and Memoir pickers appear only when both of that route's keys are set. With one choice on
 every route there is no icon. The
 tray lives in the macOS menu bar or the Linux status area
 (GNOME's AppIndicator extension, KDE, and anything else implementing
@@ -372,7 +386,8 @@ any client change, because comart keeps calling the same routes.
 
 - Each route starts on its first configured provider and remembers a pick in
   the SQLite cache (`data/cache.db`, keys `transcribe:provider`,
-  `explain:provider` and `ask:provider`), so a restart keeps it.
+  `explain:provider`, `ask:provider` and `memoir:provider`), so a restart
+  keeps it.
 - If a saved pick's key is later removed, that route falls back to its first
   configured provider instead of routing to a service with no credentials.
 - Linux needs the service to have the session D-Bus address; the systemd user
@@ -478,6 +493,7 @@ Request limits:
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; web search + fetch on |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
+| `/api/memoir/check` | OpenRouter, if `MEMOIR_OPENROUTER_API_KEY` is set | `openai/gpt-6.1-terra` (OpenAI flex tier, standard tier as fallback) | effort `low` |
 | `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
@@ -498,6 +514,8 @@ listed endpoints (Sol: `openai/fast`, then `openai`; Kimi: `wafer/us`, then
 `wafer/mxfp4`);
 OpenRouter ask takes `max_tokens` and `reasoning: {effort: "high", exclude}`, and
 also adds the `openrouter:web_search` and `openrouter:web_fetch` server tools.
+OpenRouter Memoir takes `max_tokens`, `reasoning: {effort: "low", exclude}` and
+the provider list `openai/flex`, then `openai`, with `allow_fallbacks: false`.
 
 **Prompt caching on explain.** The explain prompt puts every fixed byte first
 (`part1.txt` + `part2.txt`, about 9,000 tokens of rules) and everything that
@@ -575,7 +593,19 @@ Pro with thinking off matched Gemini 4 Hydrogen's quality at about 2.5 s per
 answer. Grok 4.7 and Qwen 3.8 Max cannot turn thinking off and took 40–120 s;
 DeepSeek V4.1 Flash 1017 beat Gemini 3.8 Flash only with thinking on (15–70 s).
 The cache-friendly layout and its closing reminder scored the same as the old
-layout for both models. Memoir runs on Claude Opus 5.5.
+layout for both models.
+
+**Memoir** (measured 2026-11-16, blind-judged against answer keys on 28
+synthetic journal entries with 221 planted mistakes, plus traps: other
+people's quotes, Vietnamese words, code, an injected instruction, clean
+entries and correct-but-odd sentences): Claude Opus 5.5 caught 220, and
+GPT-6.1 Terra at `low` on OpenAI's flex tier caught 218 with no wrong fix and
+no change to protected text, for about a fifteenth of the cost (about $0.0025
+per check against $0.04). Sol, Sonnet 5.5, Kimi K3.1 Pro, Gemini 4 Hydrogen,
+Haiku 5.5, GPT-6 Luna, Muse Ember and DeepSeek V4.1 Flash 1017 (4-bit and
+official) caught fewer, made more wrong or needless edits, or cost more. Flex
+answered every request in the test; Cairn and comart wait up to five minutes
+for a check.
 
 ## Merriam-Webster
 
@@ -607,7 +637,7 @@ internal/config     configuration from the environment
 internal/store      SQLite cache
 internal/server     HTTP routing, the security guard, the handlers, the in-memory
                     screenshot store, its Linux/GNOME D-Bus portal and macOS screencapture
-internal/tray       the provider pickers for /api/transcribe/stream, /api/explain and /api/ask (macOS menu bar, Linux status area)
+internal/tray       the provider pickers for /api/transcribe/stream, /api/explain, /api/ask and /api/memoir/check (macOS menu bar, Linux status area)
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt, task.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
