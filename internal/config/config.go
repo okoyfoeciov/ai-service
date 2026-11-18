@@ -106,7 +106,7 @@ type Config struct {
 const (
 	defaultOpenRouterExplainModel = "openai/gpt-6.2-sol"
 	defaultOpenRouterKimiModel    = "moonshotai/kimi-k3.1-pro"
-	defaultOpenRouterAskModel     = "deepseek/deepseek-v4.1-flash-1017"
+	defaultOpenRouterAskModel     = "openai/gpt-6.2-sol"
 	defaultOpenRouterMemoirModel  = "openai/gpt-6.1-terra"
 	defaultClaudeModel            = "claude-opus-5-5"
 
@@ -129,12 +129,13 @@ const (
 	// many mistakes as medium, at less cost and time.
 	OpenRouterMemoirReasoningEffort = "low"
 	// OpenRouterAskReasoningEffort is the Ask model's thinking level
-	// (reasoning.effort). DeepSeek V4.1 Flash 1017 supports max, high, low and
-	// none, and defaults to high.
-	OpenRouterAskReasoningEffort = "high"
+	// (reasoning.effort) on GPT-6.2 Sol. It is one step above explain's low:
+	// an Ask answer reasons over picked passages, earlier rounds and web
+	// results. The owner chose medium on 2026-11-18; it was not benchmarked.
+	OpenRouterAskReasoningEffort = "medium"
 	// OpenRouterAskWebResults is the most results one web search may return.
 	// Ten is the most Exa includes in OpenRouter's base per-request price.
-	// DeepSeek has no native search, so OpenRouter runs it on Exa.
+	// OpenRouter runs the search on Exa (see newOpenRouterAsk).
 	OpenRouterAskWebResults = 10
 	// OpenRouterAskWebSearches caps how many searches one Ask request may run.
 	// Two leaves room for a multi-hop question while keeping cost and latency
@@ -464,7 +465,7 @@ func (c Config) AskRoute() string {
 		case ProviderClaude:
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s, web search + fetch on", c.AskModelFor(p), ClaudeEffort))
 		case ProviderOpenRouter:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, web search + fetch on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
+			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, OpenAI standard tier, web search + fetch on", c.AskModelFor(p), OpenRouterAskReasoningEffort))
 		}
 	}
 	switch len(parts) {

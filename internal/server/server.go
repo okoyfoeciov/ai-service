@@ -74,7 +74,7 @@ const (
 	maxAnswerTokens = 32000
 )
 
-// OpenRouter endpoints the explain choices may use, in order. allow_fallbacks
+// OpenRouter endpoints the OpenRouter choices may use, in order. allow_fallbacks
 // is off, so a request never goes to an endpoint outside the list.
 var (
 	// explainSolEndpoints serves GPT-6.2 Sol from OpenAI's fast tier, and from
@@ -91,6 +91,11 @@ var (
 	// standard tier only if flex is unavailable. A Memoir check is not
 	// interactive; Cairn and comart wait up to five minutes for it.
 	memoirTerraEndpoints = []string{"openai/flex", "openai"}
+	// askSolEndpoints serves Ask's GPT-6.2 Sol from OpenAI's standard tier
+	// only. Explain pays double for the fast tier because its answers are
+	// short and frequent; an Ask answer already waits on web search and
+	// medium thinking, so the tier is not what the reader waits for.
+	askSolEndpoints = []string{"openai"}
 )
 
 func New(cfg config.Config, st *store.Store) *Server {
@@ -204,12 +209,13 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 	return clients
 }
 
-// newOpenRouterAsk builds the Ask client for DeepSeek V4.1 Flash 1017. Its
-// thinking level is reasoning.effort (not explain's token budget). It carries
-// OpenRouter's web search and web fetch server tools: the model may search when
-// the question needs current information, and open a promising result when the
-// search excerpts are not enough. DeepSeek has no native web tools, so both run
-// through OpenRouter; search uses Exa and fetch uses Exa's Contents API.
+// newOpenRouterAsk builds the Ask client for GPT-6.2 Sol at
+// config.OpenRouterAskReasoningEffort. It carries OpenRouter's web search and
+// web fetch server tools: the model may search when the question needs current
+// information, and open a promising result when the search excerpts are not
+// enough. Both stay on Exa (search, and Exa's Contents API for fetch), as they
+// were for DeepSeek V4.1 Flash 1017 before 2026-11-18, so the caps and the
+// per-request price in internal/config still describe what runs.
 func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 	params := map[string]any{
 		"max_tokens": maxAnswerTokens,
@@ -217,6 +223,7 @@ func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 			"effort":  config.OpenRouterAskReasoningEffort,
 			"exclude": true,
 		},
+		"provider": map[string]any{"order": askSolEndpoints, "allow_fallbacks": false},
 		"tools": []map[string]any{
 			{
 				"type": "openrouter:web_search",

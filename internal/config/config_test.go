@@ -195,7 +195,7 @@ func TestThinkingControlsAreFixed(t *testing.T) {
 		t.Errorf("explain route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.AskRoute(); !strings.Contains(got, "effort medium") ||
-		!strings.Contains(got, "reasoning high") || !strings.Contains(got, "web search + fetch on") {
+		!strings.Contains(got, "openai/gpt-6.2-sol, reasoning medium") || !strings.Contains(got, "web search + fetch on") {
 		t.Errorf("ask route %q does not use the fixed thinking controls", got)
 	}
 	if got := c.MemoirRoute(); !strings.Contains(got, "effort medium") || !strings.Contains(got, "openai/gpt-6.1-terra, reasoning low") {
@@ -215,7 +215,7 @@ func TestLoadAskProvider(t *testing.T) {
 	}{
 		{"no key", nil, nil, "", "", true, true},
 		{"claude", map[string]string{"ASK_CLAUDE_API_KEY": "cl"}, []string{ProviderClaude}, ProviderClaude, "claude-opus-5-5", false, true},
-		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "deepseek/deepseek-v4.1-flash-1017", false, true},
+		{"openrouter", map[string]string{"ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderOpenRouter}, ProviderOpenRouter, "openai/gpt-6.2-sol", false, true},
 		{"both", map[string]string{"ASK_CLAUDE_API_KEY": "cl", "ASK_OPENROUTER_API_KEY": "or"}, []string{ProviderClaude, ProviderOpenRouter}, ProviderClaude, "claude-opus-5-5", false, true},
 	}
 	for _, tc := range cases {
@@ -311,7 +311,7 @@ func TestAskRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.AskRoute()
-	for _, want := range []string{"Claude", "OpenRouter", "deepseek/deepseek-v4.1-flash-1017", "reasoning high", "2 choices", "tray picker", "starting on Claude Platform", "web search + fetch on"} {
+	for _, want := range []string{"Claude", "OpenRouter", "openai/gpt-6.2-sol", "reasoning medium", "2 choices", "tray picker", "starting on Claude Platform", "web search + fetch on"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("route %q missing %q", got, want)
 		}

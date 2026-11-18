@@ -303,7 +303,7 @@ else
   done
   case "$ask_start" in
     ASK_CLAUDE_API_KEY) ask_start_name="the Claude Platform (search + fetch)" ;;
-    ASK_OPENROUTER_API_KEY) ask_start_name="OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)" ;;
+    ASK_OPENROUTER_API_KEY) ask_start_name="OpenRouter GPT-6.2 Sol (search + fetch)" ;;
     *) ask_start_name="" ;;
   esac
   if [ "$ask_count" -ge 2 ]; then
@@ -316,7 +316,7 @@ else
     # None: ask for Claude first, then OpenRouter. All empty leaves /api/ask
     # unconfigured; the handler names the missing keys.
     ask_key ASK_CLAUDE_API_KEY "spoken questions via the Claude Platform. Leave it empty to use an OpenRouter key instead" 1 ||
-      ask_key ASK_OPENROUTER_API_KEY "spoken questions via OpenRouter DeepSeek V4.1 Flash 1017 (thinking high, web search + fetch on). Leave it empty to skip" 1 ||
+      ask_key ASK_OPENROUTER_API_KEY "spoken questions via OpenRouter GPT-6.2 Sol (thinking medium, web search + fetch on). Leave it empty to skip" 1 ||
       say "[d] ai-service.env: ASK_CLAUDE_API_KEY and ASK_OPENROUTER_API_KEY left empty — /api/ask stays unconfigured"
   fi
   if ! env_set BRAVE_SEARCH_API_KEY; then

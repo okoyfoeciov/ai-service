@@ -30,7 +30,7 @@ additions. Change a route only together with the client that calls it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart; Cairn (EPUB reader) | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
-| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and, for Claude, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter sets `enabled:true` but sends no active transitions. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs DeepSeek's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
+| `POST /api/ask` | comart | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and, for Claude, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter sets `enabled:true` but sends no active transitions. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs GPT-6.2 Sol's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
 | `GET /api/pron?word=&pos=` | comart; Cairn (EPUB reader) | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
 | `POST /api/screenshot` | comart | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
@@ -201,7 +201,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds two explain choices: GPT-6.2 Sol (OpenAI fast tier) and Kimi K3.1 Pro (pinned to Wafer). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It adds the Claude search + fetch choice to the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
-| `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
+| `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s GPT-6.2 Sol provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `BRAVE_SEARCH_API_KEY` | (empty) | Optional secret. Brave Search API key for `/api/ask`'s native `search_images` and `show_images` tools. When set, every Ask choice can search for and display images. Empty leaves Ask exactly as before. The image endpoint is queried with `count=10`, `country=ALL`, `search_lang=en`, `safesearch=strict` and `spellcheck=false`. |
 | `MEMOIR_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform key for `/api/memoir/check`. Set this and/or `MEMOIR_OPENROUTER_API_KEY`; with both, the tray picker chooses. A separate variable from `CLAUDE_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
 | `MEMOIR_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/memoir/check`'s GPT-6.1 Terra choice (OpenAI flex tier). Set this and/or `MEMOIR_CLAUDE_API_KEY`; with both, the tray picker chooses. A separate variable from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), and it may hold the same key. |
@@ -211,7 +211,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 Models and thinking depth are fixed in `internal/config`, not environment
 settings: Claude uses `output_config.effort` `medium`; OpenRouter uses
 `reasoning.effort` `low` for GPT-6.2 Sol and `none` for Kimi K3.1 Pro on
-`/api/explain`, `reasoning.effort` `high` for `/api/ask`, and
+`/api/explain`, `reasoning.effort` `medium` for GPT-6.2 Sol on `/api/ask`, and
 `reasoning.effort` `low` for GPT-6.1 Terra on `/api/memoir/check`. A Claude or
 OpenRouter Ask key creates one tray choice and always sends the provider's web
 tools (Claude's basic direct search and fetch, max 2 of each with 30k tokens
@@ -370,12 +370,16 @@ appears when `/api/transcribe/stream`, `/api/explain`, `/api/ask` or
 `/api/memoir/check` has at least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5, OpenRouter GPT-6.2 Sol (fast)
-  and OpenRouter Kimi K3.1 Pro.
-- **Ask with** — Claude Platform Opus 5.5 (search + fetch) and OpenRouter
-  DeepSeek V4.1 Flash 1017 (search + fetch).
-- **Memoir with** — Claude Platform (Opus 5.5 unless `MEMOIR_MODEL` names
-  another) and OpenRouter GPT-6.1 Terra (flex).
+- **Explain with** — Claude Platform Opus 5.5 (thinking medium), OpenRouter
+  GPT-6.2 Sol (fast, thinking low) and OpenRouter Kimi K3.1 Pro (thinking off).
+- **Ask with** — Claude Platform Opus 5.5 (search + fetch, thinking medium)
+  and OpenRouter GPT-6.2 Sol (search + fetch, thinking medium).
+- **Memoir with** — Claude Platform (thinking medium; Opus 5.5 unless
+  `MEMOIR_MODEL` names another) and OpenRouter GPT-6.1 Terra (flex, thinking
+  low).
+
+Every LLM entry names its thinking effort, read from `internal/config`; the
+transcription models have none.
 
 The Ask and Memoir pickers appear only when both of that route's keys are set. With one choice on
 every route there is no icon. The
@@ -491,7 +495,7 @@ Request limits:
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI fast tier, standard tier as fallback) | effort `low` |
 | `/api/explain` | OpenRouter, same key | `moonshotai/kimi-k3.1-pro` (pinned to Wafer) | effort `none` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
-| `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; web search + fetch on |
+| `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI standard tier only) | effort `medium`; web search + fetch on (Exa) |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | OpenRouter, if `MEMOIR_OPENROUTER_API_KEY` is set | `openai/gpt-6.1-terra` (OpenAI flex tier, standard tier as fallback) | effort `low` |
 | `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
@@ -513,7 +517,8 @@ OpenRouter explain takes `max_tokens`, `reasoning: {effort, exclude}` and a
 `provider` list with `allow_fallbacks: false`, so a request never leaves the
 listed endpoints (Sol: `openai/fast`, then `openai`; Kimi: `wafer/us`, then
 `wafer/mxfp4`);
-OpenRouter ask takes `max_tokens` and `reasoning: {effort: "high", exclude}`, and
+OpenRouter ask takes `max_tokens`, `reasoning: {effort: "medium", exclude}` and
+the provider list `openai` alone with `allow_fallbacks: false`, and
 also adds the `openrouter:web_search` and `openrouter:web_fetch` server tools.
 OpenRouter Memoir takes `max_tokens`, `reasoning: {effort: "low", exclude}` and
 the provider list `openai/flex`, then `openai`, with `allow_fallbacks: false`.
@@ -551,7 +556,7 @@ shape; OpenRouter executes its server tools itself.
 
 `/api/ask` also carries screenshots. Both Ask models are vision-capable:
 Claude accepts image blocks, and OpenRouter lists
-`deepseek/deepseek-v4.1-flash-1017` as `text+image->text`. The clients therefore
+`openai/gpt-6.2-sol` as `text+image+file->text`. The clients therefore
 send one user message with the prompt
 text followed by the images in capture order; the prompt says how to read that
 order. A future Ask provider must implement `llm.ImageStreamer`; otherwise a
@@ -597,7 +602,11 @@ DeepSeek V4.1 Flash 1017 beat Gemini 3.8 Flash only with thinking on (15–70 s)
 The cache-friendly layout and its closing reminder scored the same as the old
 layout for both models. On 2026-11-18 explain moved from GPT-6.1 Sol to
 GPT-6.2 Sol (released 2026-11-17) on the same endpoints at the same per-token
-prices; the benchmark above was not re-run for it.
+prices; the benchmark above was not re-run for it. On the same day Ask's
+OpenRouter choice moved from DeepSeek V4.1 Flash 1017 at `high` to GPT-6.2 Sol
+at `medium` on OpenAI's standard tier, at the owner's choice; it was not
+benchmarked, and Sol's list price per token is far higher ($2 / $10 per
+million against $0.036 / $0.50).
 
 **Memoir** (measured 2026-11-16, blind-judged against answer keys on 28
 synthetic journal entries with 221 planted mistakes, plus traps: other

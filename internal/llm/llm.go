@@ -1,7 +1,7 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
 // endpoints: OpenRouter for /api/explain (GPT-6.2 Sol or Kimi K3.1 Pro) and
-// /api/ask (DeepSeek). Any
+// /api/ask (GPT-6.2 Sol). Any
 // route can instead run on Claude, which has its own type (see claude.go)
 // because the Messages API streams differently.
 //

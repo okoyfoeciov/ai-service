@@ -441,11 +441,10 @@ func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 	}
 }
 
-// The OpenRouter Ask client is DeepSeek V4.1 Flash 1017 at thinking level
-// high, and it carries the web search and web fetch server tools. Its reasoning
-// control is effort, not explain's token budget, and both tools run on Exa
-// because DeepSeek has no native web tools.
-func TestAskOpenRouterUsesDeepSeekHighEffortWithWebTools(t *testing.T) {
+// The OpenRouter Ask client is GPT-6.2 Sol at thinking level medium, pinned to
+// OpenAI's standard tier, and it carries the web search and web fetch server
+// tools, both on Exa.
+func TestAskOpenRouterUsesSolMediumEffortWithWebTools(t *testing.T) {
 	m := &captureModel{reply: "ok"}
 	cfg := config.Config{
 		AskProviders:        []string{config.ProviderOpenRouter},
@@ -465,12 +464,16 @@ func TestAskOpenRouterUsesDeepSeekHighEffortWithWebTools(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &body); err != nil {
 		t.Fatalf("request body %q: %v", raw, err)
 	}
-	if got := body["model"]; got != "deepseek/deepseek-v4.1-flash-1017" {
+	if got := body["model"]; got != "openai/gpt-6.2-sol" {
 		t.Errorf("model %v", got)
 	}
 	reasoning, _ := body["reasoning"].(map[string]any)
-	if reasoning["effort"] != "high" || reasoning["exclude"] != true {
+	if reasoning["effort"] != "medium" || reasoning["exclude"] != true {
 		t.Errorf("reasoning %v", body["reasoning"])
+	}
+	route, _ := body["provider"].(map[string]any)
+	if order, _ := route["order"].([]any); len(order) != 1 || order[0] != "openai" || route["allow_fallbacks"] != false {
+		t.Errorf("provider %v", body["provider"])
 	}
 	tools, _ := body["tools"].([]any)
 	if len(tools) != 2 {

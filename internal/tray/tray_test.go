@@ -105,13 +105,13 @@ func TestProviderLabels(t *testing.T) {
 	cases := []struct{ kind, provider, want string }{
 		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.5 Pro"},
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
-		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
-		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (fast)"},
-		{PickExplain, config.ProviderOpenRouterKimi, "OpenRouter Kimi K3.1 Pro"},
-		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
-		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"},
-		{PickMemoir, config.ProviderClaude, "Claude Platform"},
-		{PickMemoir, config.ProviderOpenRouter, "OpenRouter GPT-6.1 Terra (flex)"},
+		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5 (thinking medium)"},
+		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (fast, thinking low)"},
+		{PickExplain, config.ProviderOpenRouterKimi, "OpenRouter Kimi K3.1 Pro (thinking off)"},
+		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch, thinking medium)"},
+		{PickAsk, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (search + fetch, thinking medium)"},
+		{PickMemoir, config.ProviderClaude, "Claude Platform (thinking medium)"},
+		{PickMemoir, config.ProviderOpenRouter, "OpenRouter GPT-6.1 Terra (flex, thinking low)"},
 	}
 	for _, tc := range cases {
 		if got := providerLabel(tc.kind, tc.provider); got != tc.want {

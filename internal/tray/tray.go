@@ -113,8 +113,19 @@ func pickerSections(c Controller) []section {
 	return sections
 }
 
+// thinking is the part of an LLM entry's label that names its thinking effort,
+// read from internal/config so the menu cannot drift from what is sent.
+func thinking(effort string) string {
+	if effort == "none" {
+		return "thinking off"
+	}
+	return "thinking " + effort
+}
+
 // providerLabel is the menu text for one entry: the provider plus the model it
 // will use, so the picker says which model answers, not just which company.
+// Every LLM entry also names its thinking effort; the transcription models
+// have none.
 func providerLabel(kind, provider string) string {
 	switch kind {
 	case PickTranscribe:
@@ -127,27 +138,27 @@ func providerLabel(kind, provider string) string {
 	case PickExplain:
 		switch provider {
 		case config.ProviderClaude:
-			return "Claude Platform Opus 5.5"
+			return "Claude Platform Opus 5.5 (" + thinking(config.ClaudeEffort) + ")"
 		case config.ProviderOpenRouter:
-			return "OpenRouter GPT-6.2 Sol (fast)"
+			return "OpenRouter GPT-6.2 Sol (fast, " + thinking(config.OpenRouterExplainReasoningEffort) + ")"
 		case config.ProviderOpenRouterKimi:
-			return "OpenRouter Kimi K3.1 Pro"
+			return "OpenRouter Kimi K3.1 Pro (" + thinking(config.OpenRouterKimiReasoningEffort) + ")"
 		}
 	case PickAsk:
 		switch provider {
 		case config.ProviderClaude:
-			return "Claude Platform Opus 5.5 (search + fetch)"
+			return "Claude Platform Opus 5.5 (search + fetch, " + thinking(config.ClaudeEffort) + ")"
 		case config.ProviderOpenRouter:
-			return "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"
+			return "OpenRouter GPT-6.2 Sol (search + fetch, " + thinking(config.OpenRouterAskReasoningEffort) + ")"
 		}
 	case PickMemoir:
 		switch provider {
 		case config.ProviderClaude:
 			// MEMOIR_MODEL may name another Claude model; the startup log
 			// prints the exact id.
-			return "Claude Platform"
+			return "Claude Platform (" + thinking(config.ClaudeEffort) + ")"
 		case config.ProviderOpenRouter:
-			return "OpenRouter GPT-6.1 Terra (flex)"
+			return "OpenRouter GPT-6.1 Terra (flex, " + thinking(config.OpenRouterMemoirReasoningEffort) + ")"
 		}
 	}
 	return provider

@@ -41,8 +41,8 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 	}
 	wantLabels := []string{
 		"Transcribe with", "AssemblyAI Universal-3.5 Pro", "Deepgram Nova-3",
-		"Explain with", "Claude Platform Opus 5.5", "OpenRouter GPT-6.2 Sol (fast)",
-		"Ask with", "Claude Platform Opus 5.5 (search + fetch)", "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)",
+		"Explain with", "Claude Platform Opus 5.5 (thinking medium)", "OpenRouter GPT-6.2 Sol (fast, thinking low)",
+		"Ask with", "Claude Platform Opus 5.5 (search + fetch, thinking medium)", "OpenRouter GPT-6.2 Sol (search + fetch, thinking medium)",
 	}
 	for i, want := range wantLabels {
 		child := root.V2[i].Value().(layout)
@@ -421,7 +421,7 @@ func TestLinuxTrayReconnectsAfterBusRestart(t *testing.T) {
 	client = dialTestBus(t, addr)
 	states := checkItem(t, client, item, 2)
 	if states["AssemblyAI Universal-3.5 Pro"] != 0 || states["Deepgram Nova-3"] != 1 ||
-		states["Claude Platform Opus 5.5"] != 1 {
+		states["Claude Platform Opus 5.5 (thinking medium)"] != 1 {
 		t.Fatalf("menu states after reconnect %v, want Deepgram and Claude checked", states)
 	}
 
