@@ -82,10 +82,6 @@ var (
 	// costs twice as much per token; on it, GPT-6.1 Sol answered about as fast
 	// as Gemini did (measured 2026-11-15, not re-measured for 6.2).
 	explainSolEndpoints = []string{"openai/fast", "openai"}
-	// explainKimiEndpoints pins Kimi K3.1 Pro to Wafer, the host it was
-	// measured on. Other hosts serve other quantizations at other prices, and
-	// one of them (River) leaked the model's hidden reasoning into answers.
-	explainKimiEndpoints = []string{"wafer/us", "wafer/mxfp4"}
 	// memoirTerraEndpoints serves GPT-6.1 Terra from OpenAI's flex tier (half
 	// the standard price, slower and queued when OpenAI is busy), and from the
 	// standard tier only if flex is unavailable. A Memoir check is not
@@ -175,20 +171,6 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 					// exclude: the thinking still happens but is not streamed back.
 					"reasoning": map[string]any{"effort": config.OpenRouterExplainReasoningEffort, "exclude": true},
 					"provider":  map[string]any{"order": explainSolEndpoints, "allow_fallbacks": false},
-				},
-			}, hc)
-		case config.ProviderOpenRouterKimi:
-			// Kimi K3.1 Pro. Wafer caches the shared rules prefix by itself, so
-			// the prompt goes as one text (CachePrefix off).
-			clients[provider] = llm.New(llm.Config{
-				Provider: "OpenRouter",
-				URL:      openRouterURL,
-				APIKey:   cfg.OpenRouterAPIKey,
-				Model:    cfg.ExplainModelFor(provider),
-				Params: map[string]any{
-					"max_tokens": maxAnswerTokens,
-					"reasoning":  map[string]any{"effort": config.OpenRouterKimiReasoningEffort, "exclude": true},
-					"provider":   map[string]any{"order": explainKimiEndpoints, "allow_fallbacks": false},
 				},
 			}, hc)
 		}

@@ -1,6 +1,6 @@
 // Package llm streams a model's answer, calling onText for every fragment as it
 // arrives. ai-service can run Clients over OpenAI-compatible /chat/completions
-// endpoints: OpenRouter for /api/explain (GPT-6.2 Sol or Kimi K3.1 Pro) and
+// endpoints: OpenRouter for /api/explain (GPT-6.2 Sol) and
 // /api/ask (GPT-6.2 Sol). Any
 // route can instead run on Claude, which has its own type (see claude.go)
 // because the Messages API streams differently.
@@ -39,7 +39,7 @@ type Config struct {
 	// own text block marked cache_control "ephemeral", so the provider keeps
 	// it for the next request. Sol reuses the shared prefix only when it is
 	// marked like this (measured on GPT-6.1 Sol). Leave it off for a provider
-	// that caches a shared prefix by itself (Kimi on Wafer): StreamParts then
+	// that caches a shared prefix by itself: StreamParts then
 	// sends one text.
 	CachePrefix bool
 }

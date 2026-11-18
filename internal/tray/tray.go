@@ -141,8 +141,6 @@ func providerLabel(kind, provider string) string {
 			return "Claude Platform Opus 5.5 (" + thinking(config.ClaudeEffort) + ")"
 		case config.ProviderOpenRouter:
 			return "OpenRouter GPT-6.2 Sol (fast, " + thinking(config.OpenRouterExplainReasoningEffort) + ")"
-		case config.ProviderOpenRouterKimi:
-			return "OpenRouter Kimi K3.1 Pro (" + thinking(config.OpenRouterKimiReasoningEffort) + ")"
 		}
 	case PickAsk:
 		switch provider {

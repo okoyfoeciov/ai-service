@@ -107,7 +107,6 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5 (thinking medium)"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (fast, thinking low)"},
-		{PickExplain, config.ProviderOpenRouterKimi, "OpenRouter Kimi K3.1 Pro (thinking off)"},
 		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch, thinking medium)"},
 		{PickAsk, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (search + fetch, thinking medium)"},
 		{PickMemoir, config.ProviderClaude, "Claude Platform (thinking medium)"},
@@ -130,7 +129,7 @@ func TestSetProviderMemoir(t *testing.T) {
 	if !setProvider(c, PickMemoir, config.ProviderOpenRouter) || c.currentM != config.ProviderOpenRouter || c.currentE != config.ProviderClaude {
 		t.Fatalf("memoir %q explain %q", c.currentM, c.currentE)
 	}
-	if setProvider(c, PickMemoir, config.ProviderOpenRouterKimi) {
+	if setProvider(c, PickMemoir, config.ProviderDeepgram) {
 		t.Error("selected a Memoir provider that has no key")
 	}
 }

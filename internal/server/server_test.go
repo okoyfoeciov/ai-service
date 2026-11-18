@@ -929,7 +929,7 @@ func TestMemoirCheckUsesTheSelectedProvider(t *testing.T) {
 		memoirProviders: []string{config.ProviderClaude, config.ProviderOpenRouter},
 		memoirLLMs:      map[string]llm.Streamer{config.ProviderClaude: claude, config.ProviderOpenRouter: terra},
 	}
-	if s.SetMemoirProvider(config.ProviderOpenRouterKimi) {
+	if s.SetMemoirProvider(config.ProviderDeepgram) {
 		t.Fatal("selected a provider that has no Memoir client")
 	}
 	if !s.SetMemoirProvider(config.ProviderOpenRouter) || s.MemoirProvider() != config.ProviderOpenRouter {
@@ -1594,14 +1594,13 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// OPENROUTER_API_KEY gives explain two choices. GPT-6.2 Sol runs at reasoning
+// OPENROUTER_API_KEY gives explain one choice. GPT-6.2 Sol runs at reasoning
 // low on OpenAI's fast tier (standard tier as the only fallback) and marks the
-// rules block for caching; Kimi K3.1 Pro runs at reasoning none, pinned to
-// Wafer, and sends one text because Wafer caches the shared prefix by itself.
-func TestExplainOpenRouterChoicesAreSolAndKimi(t *testing.T) {
+// rules block for caching.
+func TestExplainOpenRouterChoiceIsSol(t *testing.T) {
 	cfg := config.Config{
 		OpenRouterAPIKey: "or",
-		ExplainProviders: []string{config.ProviderOpenRouter, config.ProviderOpenRouterKimi},
+		ExplainProviders: []string{config.ProviderOpenRouter},
 	}
 	for _, tc := range []struct {
 		provider, model, effort string
@@ -1609,7 +1608,6 @@ func TestExplainOpenRouterChoicesAreSolAndKimi(t *testing.T) {
 		marked                  bool
 	}{
 		{config.ProviderOpenRouter, "openai/gpt-6.2-sol", "low", []any{"openai/fast", "openai"}, true},
-		{config.ProviderOpenRouterKimi, "moonshotai/kimi-k3.1-pro", "none", []any{"wafer/us", "wafer/mxfp4"}, false},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			m := &captureModel{reply: "ok"}

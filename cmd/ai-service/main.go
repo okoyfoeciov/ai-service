@@ -86,7 +86,11 @@ func main() {
 		}
 	}
 	if multiExplain {
-		if saved, ok := st.Get(savedExplainProviderKey); ok && app.SetExplainProvider(saved) {
+		saved, ok := st.Get(savedExplainProviderKey)
+		if next, retired := config.RetiredExplainProviders[saved]; ok && retired {
+			saved = next
+		}
+		if ok && app.SetExplainProvider(saved) {
 			cfg.ExplainProvider = saved
 			log.Printf("explain provider: %s (saved by the tray picker)", saved)
 		}

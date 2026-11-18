@@ -11,8 +11,8 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
-use Claude Platform or OpenRouter (one `OPENROUTER_API_KEY` adds two choices:
-GPT-6.2 Sol on OpenAI's fast tier, and Kimi K3.1 Pro pinned to Wafer), and
+use Claude Platform or OpenRouter (GPT-6.2 Sol on OpenAI's fast tier; Kimi
+K3.1 Pro was removed on 2026-11-18 after an accuracy benchmark), and
 `/api/ask` may use Claude Platform or
 OpenRouter (GPT-6.2 Sol on OpenAI's standard tier), each at once with its own tray picker.
 A Claude or OpenRouter Ask key creates one web-enabled
@@ -51,7 +51,7 @@ frames to the stream route over loopback. The tray (`internal/tray`) has
 **Transcribe with**, **Explain with**, **Ask with** and **Memoir with**
 sections, each shown only when that route has more than one configured
 provider. Every LLM entry's label ends with its thinking effort, read from
-`internal/config` ("thinking medium", "thinking off"). Linux's tray is a small
+`internal/config` ("thinking medium", "thinking low"). Linux's tray is a small
 in-repo D-Bus backend that intentionally omits `Activate`, because GNOME then
 opens the menu on the first click instead of waiting out the double-click
 interval; macOS links Cocoa, so its build needs cgo.
@@ -140,7 +140,7 @@ provider, model, status, outcome, issue count and duration. Tray switches log
   keep web pages out. Do not weaken them.
 - Models and thinking depth are fixed in `internal/config`, not environment
   settings: Claude effort `medium`, OpenRouter explain `reasoning.effort: low`
-  (GPT-6.2 Sol) and `none` (Kimi K3.1 Pro), OpenRouter ask
+  (GPT-6.2 Sol), OpenRouter ask
   `reasoning.effort: medium` (GPT-6.2 Sol), OpenRouter Memoir
   `reasoning.effort: low` (GPT-6.1 Terra), and Claude
   ask with or without the basic direct web search and fetch tools (max 2 of

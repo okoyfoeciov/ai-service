@@ -17,11 +17,17 @@ const (
 
 	ProviderOpenRouter = "openrouter"
 	ProviderClaude     = "claude"
-	// ProviderOpenRouterKimi is /api/explain's second OpenRouter choice (Kimi
-	// K3.1 Pro). It uses the same OPENROUTER_API_KEY as ProviderOpenRouter,
-	// which on explain is GPT-6.2 Sol; it does not exist on any other route.
-	ProviderOpenRouterKimi = "openrouter-kimi"
 )
+
+// RetiredExplainProviders maps the id of an explain choice that no longer
+// exists to the choice that replaces it, so a tray selection saved for the old
+// one moves there instead of falling back to the first provider. Kimi K3.1 Pro
+// was /api/explain's second OpenRouter choice until 2026-11-18, when a blind
+// accuracy benchmark found serious errors in 29 of its 183 answers against
+// none for GPT-6.2 Sol.
+var RetiredExplainProviders = map[string]string{
+	"openrouter-kimi": ProviderOpenRouter,
+}
 
 type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
@@ -46,14 +52,14 @@ type Config struct {
 	TranscribeProvider string
 
 	// Word explanations (/api/explain) run on Claude Platform or OpenRouter.
-	// OPENROUTER_API_KEY enables two choices, GPT-6.2 Sol and Kimi K3.1 Pro.
-	// All may be configured at once; the tray picker then chooses which one
+	// OPENROUTER_API_KEY enables GPT-6.2 Sol.
+	// Both may be configured at once; the tray picker then chooses which one
 	// answers. At least one key is needed for the feature, but a missing key
 	// only makes the handler report it at request time.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
 	// ExplainProviders lists every configured explain provider in a fixed
-	// order (Claude, OpenRouter GPT-6.2 Sol, OpenRouter Kimi K3.1 Pro). It is
+	// order (Claude, OpenRouter GPT-6.2 Sol). It is
 	// empty when no key is set.
 	ExplainProviders []string
 	// ExplainProvider is the provider /api/explain starts on: the first entry
@@ -105,7 +111,6 @@ type Config struct {
 // same reasoning depth.
 const (
 	defaultOpenRouterExplainModel = "openai/gpt-6.2-sol"
-	defaultOpenRouterKimiModel    = "moonshotai/kimi-k3.1-pro"
 	defaultOpenRouterAskModel     = "openai/gpt-6.2-sol"
 	defaultOpenRouterMemoirModel  = "openai/gpt-6.1-terra"
 	defaultClaudeModel            = "claude-opus-5-5"
@@ -120,10 +125,6 @@ const (
 	// GPT-6.1 Sol thought a few dozen tokens per answer (measured 2026-11-15).
 	// Thinking is never shown.
 	OpenRouterExplainReasoningEffort = "low"
-	// OpenRouterKimiReasoningEffort is Kimi K3.1 Pro's thinking level on
-	// /api/explain. none answers at once; low already thinks thousands of
-	// tokens (tens of seconds) for no measured gain.
-	OpenRouterKimiReasoningEffort = "none"
 	// OpenRouterMemoirReasoningEffort is GPT-6.1 Terra's thinking level on
 	// /api/memoir/check. In the 2026-11-16 proofreading benchmark low caught as
 	// many mistakes as medium, at less cost and time.
@@ -286,16 +287,17 @@ func (c *Config) resolveTranscribe() error {
 // tray picker then switches between them. An empty key counts as unset, because
 // .env.example ships empty lines. Models are fixed per provider.
 //
-// OPENROUTER_API_KEY adds two choices. GPT-6.2 Sol keeps the "openrouter" id
+// OPENROUTER_API_KEY adds one choice. GPT-6.2 Sol keeps the "openrouter" id
 // that GPT-6.1 Sol and Gemini 3.8 Flash used before it, so a tray choice saved
 // for either old OpenRouter entry moves to GPT-6.2 Sol instead of falling back
-// to the first provider. Kimi goes after it, so it only adds a tray choice.
+// to the first provider. RetiredExplainProviders does the same for a choice
+// saved for Kimi K3.1 Pro.
 func (c *Config) resolveExplain() error {
 	if c.ClaudeAPIKey != "" {
 		c.ExplainProviders = append(c.ExplainProviders, ProviderClaude)
 	}
 	if c.OpenRouterAPIKey != "" {
-		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter, ProviderOpenRouterKimi)
+		c.ExplainProviders = append(c.ExplainProviders, ProviderOpenRouter)
 	}
 	if len(c.ExplainProviders) > 0 {
 		c.ExplainProvider = c.ExplainProviders[0]
@@ -310,8 +312,6 @@ func (c Config) ExplainModelFor(provider string) string {
 		return defaultClaudeModel
 	case ProviderOpenRouter:
 		return defaultOpenRouterExplainModel
-	case ProviderOpenRouterKimi:
-		return defaultOpenRouterKimiModel
 	}
 	return ""
 }
@@ -430,8 +430,6 @@ func (c Config) ExplainRoute() string {
 			parts = append(parts, fmt.Sprintf("Claude Platform, model %s, effort %s", c.ExplainModelFor(p), ClaudeEffort))
 		case ProviderOpenRouter:
 			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, OpenAI fast tier", c.ExplainModelFor(p), OpenRouterExplainReasoningEffort))
-		case ProviderOpenRouterKimi:
-			parts = append(parts, fmt.Sprintf("OpenRouter, model %s, reasoning %s, pinned to Wafer", c.ExplainModelFor(p), OpenRouterKimiReasoningEffort))
 		}
 	}
 	switch len(parts) {
@@ -451,8 +449,6 @@ func explainProviderName(provider string) string {
 		return "Claude Platform"
 	case ProviderOpenRouter:
 		return "OpenRouter GPT-6.2 Sol"
-	case ProviderOpenRouterKimi:
-		return "OpenRouter Kimi K3.1 Pro"
 	}
 	return provider
 }

@@ -198,7 +198,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds two explain choices: GPT-6.2 Sol (OpenAI fast tier) and Kimi K3.1 Pro (pinned to Wafer). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds one explain choice: GPT-6.2 Sol (OpenAI fast tier). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It adds the Claude search + fetch choice to the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s GPT-6.2 Sol provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
@@ -210,7 +210,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 Models and thinking depth are fixed in `internal/config`, not environment
 settings: Claude uses `output_config.effort` `medium`; OpenRouter uses
-`reasoning.effort` `low` for GPT-6.2 Sol and `none` for Kimi K3.1 Pro on
+`reasoning.effort` `low` for GPT-6.2 Sol on
 `/api/explain`, `reasoning.effort` `medium` for GPT-6.2 Sol on `/api/ask`, and
 `reasoning.effort` `low` for GPT-6.1 Terra on `/api/memoir/check`. A Claude or
 OpenRouter Ask key creates one tray choice and always sends the provider's web
@@ -370,8 +370,8 @@ appears when `/api/transcribe/stream`, `/api/explain`, `/api/ask` or
 `/api/memoir/check` has at least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5 (thinking medium), OpenRouter
-  GPT-6.2 Sol (fast, thinking low) and OpenRouter Kimi K3.1 Pro (thinking off).
+- **Explain with** — Claude Platform Opus 5.5 (thinking medium) and
+  OpenRouter GPT-6.2 Sol (fast, thinking low).
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch, thinking medium)
   and OpenRouter GPT-6.2 Sol (search + fetch, thinking medium).
 - **Memoir with** — Claude Platform (thinking medium; Opus 5.5 unless
@@ -493,7 +493,6 @@ Request limits:
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI fast tier, standard tier as fallback) | effort `low` |
-| `/api/explain` | OpenRouter, same key | `moonshotai/kimi-k3.1-pro` (pinned to Wafer) | effort `none` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI standard tier only) | effort `medium`; web search + fetch on (Exa) |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
@@ -502,11 +501,11 @@ Request limits:
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
-`OPENROUTER_API_KEY` alone already gives `/api/explain` two choices, so its
-tray section chooses between the Claude row (with `CLAUDE_API_KEY`) and the two
-OpenRouter rows. GPT-6.2 Sol keeps the `openrouter` id that GPT-6.1 Sol and
-Gemini 3.8 Flash used before it, so a saved choice of either moves to GPT-6.2
-Sol. The Ask keys and tray section are otherwise
+Each explain key adds one choice, so the explain tray section appears when
+both `CLAUDE_API_KEY` and `OPENROUTER_API_KEY` are set. GPT-6.2 Sol keeps the
+`openrouter` id that GPT-6.1 Sol and Gemini 3.8 Flash used before it, so a
+saved choice of either moves to GPT-6.2 Sol; a choice saved for Kimi K3.1 Pro
+(removed 2026-11-18) moves there too. The Ask keys and tray section are
 independent of explain's; its Claude and OpenRouter keys each add one
 search-enabled (search + fetch) choice.
 
@@ -515,8 +514,7 @@ OpenRouter speaks OpenAI's streaming chat completions, so one client
 and reasoning are fixed for every route in `internal/config`:
 OpenRouter explain takes `max_tokens`, `reasoning: {effort, exclude}` and a
 `provider` list with `allow_fallbacks: false`, so a request never leaves the
-listed endpoints (Sol: `openai/fast`, then `openai`; Kimi: `wafer/us`, then
-`wafer/mxfp4`);
+listed endpoints (`openai/fast`, then `openai`);
 OpenRouter ask takes `max_tokens`, `reasoning: {effort: "medium", exclude}` and
 the provider list `openai` alone with `allow_fallbacks: false`, and
 also adds the `openrouter:web_search` and `openrouter:web_fetch` server tools.
@@ -531,11 +529,9 @@ form of an identical prefix for several minutes (at least 12 in tests), so after
 the first click only the short request part is billed in full. Sol reuses the
 prefix only when it is marked (measured on GPT-6.1 Sol), so its client sends
 the prompt as two text blocks with `cache_control: {type: "ephemeral"}` on the
-rules block; Kimi on Wafer caches the shared prefix by itself and gets one
-text. Measured on 12 cases: GPT-6.1 Sol fell from about $0.026 to $0.0045 per
+rules block. Measured on 12 cases: GPT-6.1 Sol fell from about $0.026 to $0.0045 per
 click on the standard tier
-(the fast tier costs twice as much per token); Kimi stayed near $0.004 and
-showed its first text 0.4 s sooner. Claude caches only with an explicit marker,
+(the fast tier costs twice as much per token). Claude caches only with an explicit marker,
 which its client does not send yet.
 
 **Ask's native image tools.** When `BRAVE_SEARCH_API_KEY` is set, every Ask
@@ -607,6 +603,21 @@ OpenRouter choice moved from DeepSeek V4.1 Flash 1017 at `high` to GPT-6.2 Sol
 at `medium` on OpenAI's standard tier, at the owner's choice; it was not
 benchmarked, and Sol's list price per token is far higher ($2 / $10 per
 million against $0.036 / $0.50).
+
+**Kimi K3.1 Pro was removed from explain on 2026-11-18** after a new accuracy
+benchmark, built without the earlier data: 61 passages with 105 picked items
+(sense selection, phrasal verbs and idioms, word origins including famous
+false ones, real and apparent ambiguity, part of speech and pronunciation,
+rare and technical words), answer keys checked by a second pass, three runs
+per model at the settings then in use, blind-judged for accuracy only with
+every serious error re-checked by a second judge. GPT-6.2 Sol at `low` had no
+confirmed serious error in 183 answers and 166 answers with no error at all;
+Kimi K3.1 Pro with thinking off had a serious error in 29 of 183 (19 invented
+or folk word origins, 8 wrong pronunciations, 3 wrong meanings, 1 wrong usage
+note) and 51 clean answers. The set is hard on purpose, so Kimi's rate on
+everyday words is lower than that; Kimi with thinking on was not tested. A
+tray choice saved for Kimi moves to GPT-6.2 Sol
+(`config.RetiredExplainProviders`).
 
 **Memoir** (measured 2026-11-16, blind-judged against answer keys on 28
 synthetic journal entries with 221 planted mistakes, plus traps: other
