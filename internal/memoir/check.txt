@@ -8,15 +8,30 @@ Never flag, and never change:
 - URLs, file paths, code, commands, identifiers, anything in backticks, and other technical text (error messages, log lines, config keys).
 - Anything written by another person, even if it has mistakes: a quote ("my manager said ..."), their lines in a pasted chat, a pasted email, post or article.
 - A wrong example the author wrote on purpose to talk about English ("do a decision" is wrong) is the topic, not a mistake.
+- Spoken or emphatic constructions that native speakers also write: a fronted topic ("Me, I like ..."), a sentence fragment ("Rain. Coffee."), a diary sentence with the subject dropped ("Went to the office."), a dropped "that" ("so tired I could cry"), a sentence that starts with "And" or "But", a word repeated for emphasis ("a long, long day"). They are not redundant and not mistakes. Leave them only when the result is something a native speaker would write: "This book I read already", "return back" and "Yesterday went to office" (missing "the") are still mistakes.
 - Emoji, hashtags, and the written form of times, dates, numbers, units and version strings (9:30am, 68kg, v2.3.1) — do not reformat them. A grammar mistake around them is still a mistake: "3 hour" -> "3 hours".
 
-Text the author wrote and pasted in (their own chat lines, emails, Slack messages, code review comments) is the author's writing: check it like the rest of the entry.
+Text the author wrote and pasted in (their own chat lines, emails, Slack messages, code review comments) is the author's writing: check it too, by the kind of writing it is (see below).
+
+KIND OF WRITING
+Judge each passage by the kind of writing it is, and flag what a native speaker writing that same kind of text would not write.
+- The default is an informal personal journal. Contractions, casual words ("gonna", "kinda", "me and Dana went") and a conversational voice are correct there: never push them towards formal English. Spelling, capitals, apostrophes and punctuation are still checked ("i dont" -> "I don't").
+- If part of the entry is plainly another kind of writing, judge that part by its own kind.
+  - A work email or an essay: wording that is too casual or padded is a mistake ("super busy", "a lot of stuff", "due to the fact that"). The fix is the plain professional wording a native colleague would write, not a stiffer one, and it never adds a fact the author did not state. A phrase that is merely friendly or informal but normal in a real work email ("sorry for the late reply", "I feel bad about it") is not a mistake.
+  - A message to a friend or any chat message: a stiff or over-complicated phrase is a mistake, and the fix is the plainer phrase. Loose chat punctuation is correct there: two short sentences joined by a comma, no final full stop. Never flag it.
+  - Fiction or a poem the author is plainly writing as such: an unusual image or rhythm ("the cold had teeth") is not a mistake. Grammar still is.
+- "Unnatural" means native speakers do not say it that way (a wrong collocation, a translated idiom, an odd word pairing), not that you would have picked a different one of several wordings natives do use. Never flag a phrase natives do use.
+- Change the fewest words that fix the problem, and keep the author's voice and sentence shape. Do not widen a span to change something that was already acceptable (a full form into a contraction, "in this company" into "at this company").
+
+Real errors are mistakes in every kind of writing: grammar, tense, articles (an extra or missing article is an error even when the sentence is easy to understand: "nervous in the meetings" -> "in meetings"), prepositions, spelling, word order, a wrong collocation ("strong rain", "make a photo"), a word that plainly means something else than the sentence needs. Report them as usual.
+
+One case gets a special reason. Sometimes an ordinary word sits in a slot where native speakers do not use it, inside a sentence that is otherwise correct, controlled English, and it reads as a possible choice of style: "it will be a big disgust for her", "this is my long regret". Do not stay silent — the author wants to learn what native speakers do not say — and do not treat it as a plain error either. Report it with category naturalness or word_choice and start its "reason" with "unusual, fine if deliberate:" followed by what a native speaker would expect. It is an issue like any other: give "suggestion" and apply it in "corrected". The suggestion must keep the author's meaning and, where possible, their key word ("it will disgust her", "my lasting regret"); never swap in a word with a different meaning. This case is rare: never use it for a real error, and if in doubt it is an ordinary mistake with a plain reason.
 
 OUTPUT
 Reply with one JSON object and nothing else: no prose, no markdown, no code fence. Every value must be real text — never a placeholder, never a description of text, never "...".
 
 "category" is exactly one of these nine words: grammar, spelling, word_choice, preposition, article, tense, naturalness, punctuation, word_order. One category per issue.
-"reason" is one short line in this style: "wrong preposition: on -> at", "past tense needed here", "unnatural phrasing".
+"reason" is one short line in this style: "wrong preposition: on -> at", "past tense needed here", "unnatural phrasing", "unusual, fine if deliberate: natives say 'my lasting regret'". Start it in lower case and do not end it with a full stop.
 "corrected" is the entry reproduced exactly, with only the listed fixes applied. Replacing each issue's "original" with its "suggestion" must reproduce "corrected". Never change anything in "corrected" that is not also listed as an issue. Keep every line break and blank line; do not merge or reflow paragraphs; never include the fence markers.
 
 Worked example (illustrative only — it has nothing to do with the entry below). For the entry:
@@ -37,6 +52,7 @@ SPANS
 - Never use a single common word ("the", "a", "in", "is") as "original", and never start or end a span in the middle of a word. For article and preposition fixes include the noun phrase: "in Monday" -> "on Monday", not "in" -> "on".
 - Never emit an empty "original" or an empty "suggestion". To insert a missing word, widen the span: {"original":"went to store","suggestion":"went to the store"}. To delete an extra word, include a neighbour: {"original":"discussed about","suggestion":"discussed"}. Reading "suggestion" in place of "original" must always leave well-formed text with correct spacing on both sides.
 - Keep spans under 12 words. Never emit an issue whose "original" sits inside another issue's "original"; if one phrase has two problems, emit one issue and name both in "reason".
+- Every issue must be correct when applied alone. If a fix forces another change in the same sentence (a capital letter, a question mark), put both in one issue, and when a fix changes the grammar of a clause, widen "original" to cover every word that has to change with it. "corrected" must contain every listed fix and nothing else.
 - List issues in the order they appear in the entry, earliest first. There is no limit on how many: list every mistake you find.
 - This is private personal writing. Do not judge, advise, sympathise or comment on what the entry is about. Fix language only.
 

@@ -1,10 +1,15 @@
 // Package memoir holds the LLM contract for the Memoir check, served as
 // /api/memoir/check.
 //
-// check.txt follows the owner's language-check rule in ~/.claude/CLAUDE.md:
-// every mistake, correct-but-unnatural phrasing included, no cap on the count
-// in the prompt and no register exemption; keep check.txt in step with that
-// rule. TestPromptParity pins the rendered prompt byte for byte. The parser is
+// check.txt started from the owner's language-check rule in
+// ~/.claude/CLAUDE.md (every mistake, correct-but-unnatural phrasing included,
+// no cap on the count in the prompt) and since 2026-11-18 deliberately differs
+// from it in three ways: spoken and emphatic constructions natives also write
+// are not flagged; each passage is judged by its kind of writing (informal
+// journal by default; work email, essay, chat message, fiction); and a
+// non-native wording that reads as a possible choice of style is still
+// reported, with a reason that starts "unusual, fine if deliberate:".
+// TestPromptParity pins the rendered prompt byte for byte. The parser is
 // deliberately lenient: it strips a code fence, salvages the {...} span, and
 // never hands unparsed model text back as a correction.
 //

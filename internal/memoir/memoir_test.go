@@ -9,11 +9,11 @@ import (
 )
 
 // Prompt baseline, built with tag "K4FZZZX". The check pair pins the current
-// check.txt, which follows the owner's language-check rule (see the package
-// comment).
+// check.txt (see the package comment for how it differs from the owner's
+// language-check rule).
 const (
-	checkLen      = 6231
-	checkSHA      = "933d006e59119dc70d8ad2d01bff9183ecffa67e399fa2f532c9c8af4b8772c8"
+	checkLen      = 10431
+	checkSHA      = "200475606bdd54d4696fdb8f30e2e3d6e420a16c3d519f38e1cd85a02b134478"
 	parityTag     = "K4FZZZX"
 	parityCheckIn = "Yesterday I go to office at morning.\n\nRain. Coffee."
 )
