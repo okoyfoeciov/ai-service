@@ -106,7 +106,7 @@ func TestProviderLabels(t *testing.T) {
 		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.5 Pro"},
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5"},
-		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.1 Sol (fast)"},
+		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (fast)"},
 		{PickExplain, config.ProviderOpenRouterKimi, "OpenRouter Kimi K3.1 Pro"},
 		{PickAsk, config.ProviderClaude, "Claude Platform Opus 5.5 (search + fetch)"},
 		{PickAsk, config.ProviderOpenRouter, "OpenRouter DeepSeek V4.1 Flash 1017 (search + fetch)"},

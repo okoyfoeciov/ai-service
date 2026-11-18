@@ -198,7 +198,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 | `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
-| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds two explain choices: GPT-6.1 Sol (OpenAI fast tier) and Kimi K3.1 Pro (pinned to Wafer). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
+| `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds two explain choices: GPT-6.2 Sol (OpenAI fast tier) and Kimi K3.1 Pro (pinned to Wafer). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
 | `CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/explain`. Set this and/or `OPENROUTER_API_KEY`; with both, the tray picker chooses. |
 | `ASK_CLAUDE_API_KEY` | (empty) | Secret. Claude Platform (`api.anthropic.com`) key for `/api/ask`. It adds the Claude search + fetch choice to the ask tray. Set this and/or `ASK_OPENROUTER_API_KEY`; any additional key adds its own choice(s). Separate from `CLAUDE_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
 | `ASK_OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/ask`'s DeepSeek V4.1 Flash 1017 provider. It adds the OpenRouter search + fetch choice to the ask tray. Set this and/or `ASK_CLAUDE_API_KEY`; any additional key adds its own choice(s). Separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), though it may hold the same key. |
@@ -210,7 +210,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 Models and thinking depth are fixed in `internal/config`, not environment
 settings: Claude uses `output_config.effort` `medium`; OpenRouter uses
-`reasoning.effort` `low` for GPT-6.1 Sol and `none` for Kimi K3.1 Pro on
+`reasoning.effort` `low` for GPT-6.2 Sol and `none` for Kimi K3.1 Pro on
 `/api/explain`, `reasoning.effort` `high` for `/api/ask`, and
 `reasoning.effort` `low` for GPT-6.1 Terra on `/api/memoir/check`. A Claude or
 OpenRouter Ask key creates one tray choice and always sends the provider's web
@@ -370,7 +370,7 @@ appears when `/api/transcribe/stream`, `/api/explain`, `/api/ask` or
 `/api/memoir/check` has at least two entries:
 
 - **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
-- **Explain with** — Claude Platform Opus 5.5, OpenRouter GPT-6.1 Sol (fast)
+- **Explain with** — Claude Platform Opus 5.5, OpenRouter GPT-6.2 Sol (fast)
   and OpenRouter Kimi K3.1 Pro.
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch) and OpenRouter
   DeepSeek V4.1 Flash 1017 (search + fetch).
@@ -488,7 +488,7 @@ Request limits:
 | Used by | Provider | Model | Reasoning |
 | --- | --- | --- | --- |
 | `/api/explain` | Claude Platform, if `CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
-| `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `openai/gpt-6.1-sol` (OpenAI fast tier, standard tier as fallback) | effort `low` |
+| `/api/explain` | OpenRouter, if `OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI fast tier, standard tier as fallback) | effort `low` |
 | `/api/explain` | OpenRouter, same key | `moonshotai/kimi-k3.1-pro` (pinned to Wafer) | effort `none` |
 | `/api/ask` | Claude Platform, if `ASK_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium`; basic web search + fetch, direct, max 2 each |
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `deepseek/deepseek-v4.1-flash-1017` | effort `high`; web search + fetch on |
@@ -500,8 +500,9 @@ Request limits:
 
 `OPENROUTER_API_KEY` alone already gives `/api/explain` two choices, so its
 tray section chooses between the Claude row (with `CLAUDE_API_KEY`) and the two
-OpenRouter rows. GPT-6.1 Sol keeps the `openrouter` id that Gemini 3.8 Flash
-used, so a saved Gemini choice moves to Sol. The Ask keys and tray section are otherwise
+OpenRouter rows. GPT-6.2 Sol keeps the `openrouter` id that GPT-6.1 Sol and
+Gemini 3.8 Flash used before it, so a saved choice of either moves to GPT-6.2
+Sol. The Ask keys and tray section are otherwise
 independent of explain's; its Claude and OpenRouter keys each add one
 search-enabled (search + fetch) choice.
 
@@ -522,11 +523,12 @@ the provider list `openai/flex`, then `openai`, with `allow_fallbacks: false`.
 changes after it: the chosen items, the passage, earlier replies,
 pronunciations, and the closing `task.txt`. A provider reuses the processed
 form of an identical prefix for several minutes (at least 12 in tests), so after
-the first click only the short request part is billed in full. GPT-6.1 Sol
-reuses the prefix only when it is marked, so its client sends the prompt as two
-text blocks with `cache_control: {type: "ephemeral"}` on the rules block; Kimi
-on Wafer caches the shared prefix by itself and gets one text. Measured on 12
-cases: Sol fell from about $0.026 to $0.0045 per click on the standard tier
+the first click only the short request part is billed in full. Sol reuses the
+prefix only when it is marked (measured on GPT-6.1 Sol), so its client sends
+the prompt as two text blocks with `cache_control: {type: "ephemeral"}` on the
+rules block; Kimi on Wafer caches the shared prefix by itself and gets one
+text. Measured on 12 cases: GPT-6.1 Sol fell from about $0.026 to $0.0045 per
+click on the standard tier
 (the fast tier costs twice as much per token); Kimi stayed near $0.004 and
 showed its first text 0.4 s sooner. Claude caches only with an explicit marker,
 which its client does not send yet.
@@ -593,7 +595,9 @@ Pro with thinking off matched Gemini 4 Hydrogen's quality at about 2.5 s per
 answer. Grok 4.7 and Qwen 3.8 Max cannot turn thinking off and took 40–120 s;
 DeepSeek V4.1 Flash 1017 beat Gemini 3.8 Flash only with thinking on (15–70 s).
 The cache-friendly layout and its closing reminder scored the same as the old
-layout for both models.
+layout for both models. On 2026-11-18 explain moved from GPT-6.1 Sol to
+GPT-6.2 Sol (released 2026-11-17) on the same endpoints at the same per-token
+prices; the benchmark above was not re-run for it.
 
 **Memoir** (measured 2026-11-16, blind-judged against answer keys on 28
 synthetic journal entries with 221 planted mistakes, plus traps: other
@@ -601,9 +605,9 @@ people's quotes, Vietnamese words, code, an injected instruction, clean
 entries and correct-but-odd sentences): Claude Opus 5.5 caught 220, and
 GPT-6.1 Terra at `low` on OpenAI's flex tier caught 218 with no wrong fix and
 no change to protected text, for about a fifteenth of the cost (about $0.0025
-per check against $0.04). Sol, Sonnet 5.5, Kimi K3.1 Pro, Gemini 4 Hydrogen,
-Haiku 5.5, GPT-6 Luna, Muse Ember and DeepSeek V4.1 Flash 1017 (4-bit and
-official) caught fewer, made more wrong or needless edits, or cost more. Flex
+per check against $0.04). GPT-6.1 Sol, Sonnet 5.5, Kimi K3.1 Pro, Gemini 4
+Hydrogen, Haiku 5.5, GPT-6 Luna, Muse Ember and DeepSeek V4.1 Flash 1017 (4-bit
+and official) caught fewer, made more wrong or needless edits, or cost more. Flex
 answered every request in the test; Cairn and comart wait up to five minutes
 for a check.
 

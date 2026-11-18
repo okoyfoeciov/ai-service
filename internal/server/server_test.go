@@ -1591,7 +1591,7 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// OPENROUTER_API_KEY gives explain two choices. GPT-6.1 Sol runs at reasoning
+// OPENROUTER_API_KEY gives explain two choices. GPT-6.2 Sol runs at reasoning
 // low on OpenAI's fast tier (standard tier as the only fallback) and marks the
 // rules block for caching; Kimi K3.1 Pro runs at reasoning none, pinned to
 // Wafer, and sends one text because Wafer caches the shared prefix by itself.
@@ -1605,7 +1605,7 @@ func TestExplainOpenRouterChoicesAreSolAndKimi(t *testing.T) {
 		endpoints               []any
 		marked                  bool
 	}{
-		{config.ProviderOpenRouter, "openai/gpt-6.1-sol", "low", []any{"openai/fast", "openai"}, true},
+		{config.ProviderOpenRouter, "openai/gpt-6.2-sol", "low", []any{"openai/fast", "openai"}, true},
 		{config.ProviderOpenRouterKimi, "moonshotai/kimi-k3.1-pro", "none", []any{"wafer/us", "wafer/mxfp4"}, false},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {

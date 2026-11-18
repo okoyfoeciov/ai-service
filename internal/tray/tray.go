@@ -129,7 +129,7 @@ func providerLabel(kind, provider string) string {
 		case config.ProviderClaude:
 			return "Claude Platform Opus 5.5"
 		case config.ProviderOpenRouter:
-			return "OpenRouter GPT-6.1 Sol (fast)"
+			return "OpenRouter GPT-6.2 Sol (fast)"
 		case config.ProviderOpenRouterKimi:
 			return "OpenRouter Kimi K3.1 Pro"
 		}

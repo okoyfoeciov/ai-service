@@ -12,7 +12,7 @@ Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with
 `verbose_json`, word timestamps and Azure's verbatim style. `/api/explain` may
 use Claude Platform or OpenRouter (one `OPENROUTER_API_KEY` adds two choices:
-GPT-6.1 Sol on OpenAI's fast tier, and Kimi K3.1 Pro pinned to Wafer), and
+GPT-6.2 Sol on OpenAI's fast tier, and Kimi K3.1 Pro pinned to Wafer), and
 `/api/ask` may use Claude Platform or
 OpenRouter (DeepSeek V4.1 Flash 1017), each at once with its own tray picker.
 A Claude or OpenRouter Ask key creates one web-enabled
@@ -139,7 +139,7 @@ provider, model, status, outcome, issue count and duration. Tray switches log
   keep web pages out. Do not weaken them.
 - Models and thinking depth are fixed in `internal/config`, not environment
   settings: Claude effort `medium`, OpenRouter explain `reasoning.effort: low`
-  (GPT-6.1 Sol) and `none` (Kimi K3.1 Pro), OpenRouter ask
+  (GPT-6.2 Sol) and `none` (Kimi K3.1 Pro), OpenRouter ask
   `reasoning.effort: high` (DeepSeek V4.1 Flash 1017), OpenRouter Memoir
   `reasoning.effort: low` (GPT-6.1 Terra), and Claude
   ask with or without the basic direct web search and fetch tools (max 2 of

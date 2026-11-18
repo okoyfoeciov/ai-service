@@ -19,7 +19,7 @@ const (
 	ProviderClaude     = "claude"
 	// ProviderOpenRouterKimi is /api/explain's second OpenRouter choice (Kimi
 	// K3.1 Pro). It uses the same OPENROUTER_API_KEY as ProviderOpenRouter,
-	// which on explain is GPT-6.1 Sol; it does not exist on any other route.
+	// which on explain is GPT-6.2 Sol; it does not exist on any other route.
 	ProviderOpenRouterKimi = "openrouter-kimi"
 )
 
@@ -46,14 +46,14 @@ type Config struct {
 	TranscribeProvider string
 
 	// Word explanations (/api/explain) run on Claude Platform or OpenRouter.
-	// OPENROUTER_API_KEY enables two choices, GPT-6.1 Sol and Kimi K3.1 Pro.
+	// OPENROUTER_API_KEY enables two choices, GPT-6.2 Sol and Kimi K3.1 Pro.
 	// All may be configured at once; the tray picker then chooses which one
 	// answers. At least one key is needed for the feature, but a missing key
 	// only makes the handler report it at request time.
 	OpenRouterAPIKey string
 	ClaudeAPIKey     string
 	// ExplainProviders lists every configured explain provider in a fixed
-	// order (Claude, OpenRouter GPT-6.1 Sol, OpenRouter Kimi K3.1 Pro). It is
+	// order (Claude, OpenRouter GPT-6.2 Sol, OpenRouter Kimi K3.1 Pro). It is
 	// empty when no key is set.
 	ExplainProviders []string
 	// ExplainProvider is the provider /api/explain starts on: the first entry
@@ -104,7 +104,7 @@ type Config struct {
 // every start and every tray switch must answer with the same model and the
 // same reasoning depth.
 const (
-	defaultOpenRouterExplainModel = "openai/gpt-6.1-sol"
+	defaultOpenRouterExplainModel = "openai/gpt-6.2-sol"
 	defaultOpenRouterKimiModel    = "moonshotai/kimi-k3.1-pro"
 	defaultOpenRouterAskModel     = "deepseek/deepseek-v4.1-flash-1017"
 	defaultOpenRouterMemoirModel  = "openai/gpt-6.1-terra"
@@ -115,9 +115,10 @@ const (
 	// reject a separate thinking-token budget, while max_tokens still caps the
 	// answer.
 	ClaudeEffort = "medium"
-	// OpenRouterExplainReasoningEffort is GPT-6.1 Sol's thinking level on
-	// /api/explain (reasoning.effort). Sol cannot turn thinking off; at low it
-	// thinks a few dozen tokens per answer. Thinking is never shown.
+	// OpenRouterExplainReasoningEffort is GPT-6.2 Sol's thinking level on
+	// /api/explain (reasoning.effort). Sol cannot turn thinking off; at low,
+	// GPT-6.1 Sol thought a few dozen tokens per answer (measured 2026-11-15).
+	// Thinking is never shown.
 	OpenRouterExplainReasoningEffort = "low"
 	// OpenRouterKimiReasoningEffort is Kimi K3.1 Pro's thinking level on
 	// /api/explain. none answers at once; low already thinks thousands of
@@ -284,10 +285,10 @@ func (c *Config) resolveTranscribe() error {
 // tray picker then switches between them. An empty key counts as unset, because
 // .env.example ships empty lines. Models are fixed per provider.
 //
-// OPENROUTER_API_KEY adds two choices. GPT-6.1 Sol keeps the "openrouter" id
-// that Gemini 3.8 Flash used, so a tray choice saved for the old OpenRouter
-// entry moves to Sol instead of falling back to the first provider. Kimi goes
-// after it, so it only adds a tray choice.
+// OPENROUTER_API_KEY adds two choices. GPT-6.2 Sol keeps the "openrouter" id
+// that GPT-6.1 Sol and Gemini 3.8 Flash used before it, so a tray choice saved
+// for either old OpenRouter entry moves to GPT-6.2 Sol instead of falling back
+// to the first provider. Kimi goes after it, so it only adds a tray choice.
 func (c *Config) resolveExplain() error {
 	if c.ClaudeAPIKey != "" {
 		c.ExplainProviders = append(c.ExplainProviders, ProviderClaude)
@@ -448,7 +449,7 @@ func explainProviderName(provider string) string {
 	case ProviderClaude:
 		return "Claude Platform"
 	case ProviderOpenRouter:
-		return "OpenRouter GPT-6.1 Sol"
+		return "OpenRouter GPT-6.2 Sol"
 	case ProviderOpenRouterKimi:
 		return "OpenRouter Kimi K3.1 Pro"
 	}

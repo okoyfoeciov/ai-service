@@ -263,9 +263,9 @@ else
   if env_set OPENROUTER_TRANSCRIBE_API_KEY; then
     say "[d] ai-service.env: OPENROUTER_TRANSCRIBE_API_KEY is set — /api/transcribe-verbatim runs on OpenRouter MAI-Transcribe-2"
   fi
-  # Count explain choices, not keys: OPENROUTER_API_KEY alone gives two (GPT-6.1
+  # Count explain choices, not keys: OPENROUTER_API_KEY alone gives two (GPT-6.2
   # Sol and Kimi K3.1 Pro), so it already enables the picker. The start order
-  # matches resolveExplain: Claude, then OpenRouter's GPT-6.1 Sol.
+  # matches resolveExplain: Claude, then OpenRouter's GPT-6.2 Sol.
   explain_choices=0
   explain_start_name=""
   if env_set CLAUDE_API_KEY; then
@@ -275,7 +275,7 @@ else
   if env_set OPENROUTER_API_KEY; then
     explain_choices=$((explain_choices + 2))
     if [ -z "$explain_start_name" ]; then
-      explain_start_name="OpenRouter GPT-6.1 Sol"
+      explain_start_name="OpenRouter GPT-6.2 Sol"
     fi
   fi
   if [ "$explain_choices" -ge 2 ]; then
@@ -285,10 +285,10 @@ else
     fi
   elif [ "$explain_choices" -eq 1 ]; then
     say "[d] ai-service.env: CLAUDE_API_KEY is set — /api/explain runs on the Claude Platform"
-    say "[d] add OPENROUTER_API_KEY by hand to add the GPT-6.1 Sol and Kimi K3.1 Pro choices and the explain picker"
+    say "[d] add OPENROUTER_API_KEY by hand to add the GPT-6.2 Sol and Kimi K3.1 Pro choices and the explain picker"
   else
     # None: ask for OpenRouter first, and an empty answer there means Claude.
-    ask_key OPENROUTER_API_KEY "word explanations via OpenRouter (GPT-6.1 Sol and Kimi K3.1 Pro). Leave it empty to use a Claude key instead" 1 ||
+    ask_key OPENROUTER_API_KEY "word explanations via OpenRouter (GPT-6.2 Sol and Kimi K3.1 Pro). Leave it empty to use a Claude key instead" 1 ||
       ask_key CLAUDE_API_KEY "word explanations via the Claude Platform"
   fi
   ask_count=0

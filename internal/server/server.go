@@ -77,9 +77,10 @@ const (
 // OpenRouter endpoints the explain choices may use, in order. allow_fallbacks
 // is off, so a request never goes to an endpoint outside the list.
 var (
-	// explainSolEndpoints serves GPT-6.1 Sol from OpenAI's fast tier, and from
+	// explainSolEndpoints serves GPT-6.2 Sol from OpenAI's fast tier, and from
 	// OpenAI's standard tier only if the fast one is unavailable. The fast tier
-	// costs twice as much per token but answers about as fast as Gemini did.
+	// costs twice as much per token; on it, GPT-6.1 Sol answered about as fast
+	// as Gemini did (measured 2026-11-15, not re-measured for 6.2).
 	explainSolEndpoints = []string{"openai/fast", "openai"}
 	// explainKimiEndpoints pins Kimi K3.1 Pro to Wafer, the host it was
 	// measured on. Other hosts serve other quantizations at other prices, and
@@ -156,8 +157,8 @@ func newExplainLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer 
 		case config.ProviderClaude:
 			clients[provider] = newClaude(cfg.ClaudeAPIKey, cfg.ExplainModelFor(provider), "explain", false, hc)
 		case config.ProviderOpenRouter:
-			// GPT-6.1 Sol. It reuses the static rules part of the prompt only
-			// when that part is marked, hence CachePrefix.
+			// GPT-6.2 Sol. Sol reuses the static rules part of the prompt only
+			// when that part is marked (measured on GPT-6.1 Sol), hence CachePrefix.
 			clients[provider] = llm.New(llm.Config{
 				Provider:    "OpenRouter",
 				URL:         openRouterURL,
