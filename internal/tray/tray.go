@@ -131,7 +131,7 @@ func providerLabel(kind, provider string) string {
 	case PickTranscribe:
 		switch provider {
 		case config.ProviderAssemblyAI:
-			return "AssemblyAI Universal-3.5 Pro"
+			return "AssemblyAI Universal-3.6 Pro"
 		case config.ProviderDeepgram:
 			return "Deepgram Nova-3"
 		}

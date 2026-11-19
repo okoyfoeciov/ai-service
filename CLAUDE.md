@@ -6,7 +6,7 @@ daily-dictation (`~/daily-dictation`, which uses the streaming transcription
 routes and `/api/transcribe-verbatim`). `README.md` is the full guide: install, service
 management, configuration, security model and models.
 
-In short, `/api/transcribe/stream` runs on AssemblyAI Universal-3.5 Pro or
+In short, `/api/transcribe/stream` runs on AssemblyAI Universal-3.6 Pro or
 Deepgram Nova-3 (both live APIs); at least one of `ASSEMBLYAI_API_KEY` and
 `DEEPGRAM_API_KEY` is required, and the service refuses to start with neither.
 `/api/transcribe-verbatim` still uses OpenRouter's MAI-Transcribe-2, with

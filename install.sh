@@ -233,7 +233,7 @@ else
   # /api/transcribe-verbatim uses OpenRouter's MAI-Transcribe-2. Ask for the
   # required first provider, then offer the other and the optional verbatim key.
   if ! env_set ASSEMBLYAI_API_KEY && ! env_set DEEPGRAM_API_KEY; then
-    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to use Deepgram instead" 1 ||
+    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.6 Pro. Leave it empty to use Deepgram instead" 1 ||
       ask_key DEEPGRAM_API_KEY "microphone transcription via Deepgram Nova-3"
   fi
   if ! env_set DEEPGRAM_API_KEY; then
@@ -241,7 +241,7 @@ else
       say "[d] ai-service.env: DEEPGRAM_API_KEY left empty — /api/transcribe/stream stays on AssemblyAI"
   fi
   if ! env_set ASSEMBLYAI_API_KEY; then
-    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.5 Pro. Leave it empty to skip" 1 ||
+    ask_key ASSEMBLYAI_API_KEY "microphone transcription via AssemblyAI Universal-3.6 Pro. Leave it empty to skip" 1 ||
       say "[d] ai-service.env: ASSEMBLYAI_API_KEY left empty — /api/transcribe/stream stays on Deepgram"
   fi
   if ! env_set OPENROUTER_TRANSCRIBE_API_KEY; then
@@ -256,7 +256,7 @@ else
   if env_set ASSEMBLYAI_API_KEY && env_set DEEPGRAM_API_KEY; then
     say "[d] ai-service.env: ASSEMBLYAI_API_KEY and DEEPGRAM_API_KEY are set — /api/transcribe/stream uses the tray picker (starts on AssemblyAI)"
   elif env_set ASSEMBLYAI_API_KEY; then
-    say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe/stream runs on AssemblyAI Universal-3.5 Pro"
+    say "[d] ai-service.env: ASSEMBLYAI_API_KEY is set — /api/transcribe/stream runs on AssemblyAI Universal-3.6 Pro"
   else
     say "[d] ai-service.env: DEEPGRAM_API_KEY is set — /api/transcribe/stream runs on Deepgram Nova-3"
   fi

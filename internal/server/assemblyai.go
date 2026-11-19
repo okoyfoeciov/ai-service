@@ -1,12 +1,15 @@
 package server
 
 // AssemblyAI's live API: one persistent request while the recording is made.
-// The model is Universal-3.5 Pro; the X-AAI-Model header selects it.
+// The model is Universal-3.6 Pro; the X-AAI-Model header selects it. The Sync
+// API has no server-side default. AssemblyAI retired universal-3-5-pro on Sync
+// and routes it to 3.6, but the response does not say which model served it,
+// so the header names 3.6 directly instead of relying on that routing.
 // /v1/transcribe/live takes raw PCM, so transcribe_stream.go pipes the
 // MediaRecorder stream through ffmpeg first.
 var assemblyAILiveURL = "https://sync.assemblyai.com/v1/transcribe/live"
 
-const assemblyAIModel = "universal-3-5-pro"
+const assemblyAIModel = "universal-3-6-pro"
 
 type assemblyAIResponse struct {
 	Text  string `json:"text"`

@@ -33,7 +33,7 @@ type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
 	// Mic transcription (/api/transcribe/stream, comart's Exscriptor) runs on
-	// AssemblyAI's Universal-3.5 Pro or Deepgram Nova-3, both live APIs. At
+	// AssemblyAI's Universal-3.6 Pro or Deepgram Nova-3, both live APIs. At
 	// least one key is required: Load refuses to start without a provider.
 	AssemblyAIKey  string
 	DeepgramAPIKey string
@@ -395,7 +395,7 @@ func (c Config) TranscribeRoute() string {
 	for _, p := range c.TranscribeProviders {
 		switch p {
 		case ProviderAssemblyAI:
-			parts = append(parts, "AssemblyAI live, model universal-3-5-pro")
+			parts = append(parts, "AssemblyAI live, model universal-3-6-pro")
 		case ProviderDeepgram:
 			parts = append(parts, "Deepgram live, model nova-3")
 		}
@@ -414,7 +414,7 @@ func (c Config) TranscribeRoute() string {
 func transcribeProviderName(provider string) string {
 	switch provider {
 	case ProviderAssemblyAI:
-		return "AssemblyAI Universal-3.5 Pro"
+		return "AssemblyAI Universal-3.6 Pro"
 	case ProviderDeepgram:
 		return "Deepgram Nova-3"
 	}

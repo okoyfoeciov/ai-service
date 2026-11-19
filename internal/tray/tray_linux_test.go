@@ -40,7 +40,7 @@ func TestLinuxMenuHasAllSections(t *testing.T) {
 		t.Fatalf("menu has %d children, want 3 headers and 6 items", len(root.V2))
 	}
 	wantLabels := []string{
-		"Transcribe with", "AssemblyAI Universal-3.5 Pro", "Deepgram Nova-3",
+		"Transcribe with", "AssemblyAI Universal-3.6 Pro", "Deepgram Nova-3",
 		"Explain with", "Claude Platform Opus 5.5 (thinking medium)", "OpenRouter GPT-6.2 Sol (fast, thinking low)",
 		"Ask with", "Claude Platform Opus 5.5 (search + fetch, thinking medium)", "OpenRouter GPT-6.2 Sol (search + fetch, thinking medium)",
 	}
@@ -393,7 +393,7 @@ func TestLinuxTrayReconnectsAfterBusRestart(t *testing.T) {
 	// AssemblyAI 2, Deepgram 3).
 	item := watcher.waitRegistered(t)
 	client := dialTestBus(t, addr)
-	if states := checkItem(t, client, item, 1); states["AssemblyAI Universal-3.5 Pro"] != 1 {
+	if states := checkItem(t, client, item, 1); states["AssemblyAI Universal-3.6 Pro"] != 1 {
 		t.Fatalf("initial menu states %v", states)
 	}
 	click(t, client, item, 3)
@@ -420,7 +420,7 @@ func TestLinuxTrayReconnectsAfterBusRestart(t *testing.T) {
 	item = watcher.waitRegistered(t)
 	client = dialTestBus(t, addr)
 	states := checkItem(t, client, item, 2)
-	if states["AssemblyAI Universal-3.5 Pro"] != 0 || states["Deepgram Nova-3"] != 1 ||
+	if states["AssemblyAI Universal-3.6 Pro"] != 0 || states["Deepgram Nova-3"] != 1 ||
 		states["Claude Platform Opus 5.5 (thinking medium)"] != 1 {
 		t.Fatalf("menu states after reconnect %v, want Deepgram and Claude checked", states)
 	}

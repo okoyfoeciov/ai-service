@@ -103,7 +103,7 @@ func TestPickerSectionsAreConditional(t *testing.T) {
 
 func TestProviderLabels(t *testing.T) {
 	cases := []struct{ kind, provider, want string }{
-		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.5 Pro"},
+		{PickTranscribe, config.ProviderAssemblyAI, "AssemblyAI Universal-3.6 Pro"},
 		{PickTranscribe, config.ProviderDeepgram, "Deepgram Nova-3"},
 		{PickExplain, config.ProviderClaude, "Claude Platform Opus 5.5 (thinking medium)"},
 		{PickExplain, config.ProviderOpenRouter, "OpenRouter GPT-6.2 Sol (fast, thinking low)"},

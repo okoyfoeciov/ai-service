@@ -584,7 +584,7 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := c.TranscribeRoute()
-	for _, w := range []string{"AssemblyAI", "universal-3-5-pro"} {
+	for _, w := range []string{"AssemblyAI", "universal-3-6-pro"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("route %q missing %q", got, w)
 		}
@@ -596,7 +596,7 @@ func TestTranscribeRouteNamesTheProviderAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = c.TranscribeRoute()
-	for _, w := range []string{"AssemblyAI", "Deepgram", "nova-3", "2 providers", "tray picker", "starting on AssemblyAI Universal-3.5 Pro"} {
+	for _, w := range []string{"AssemblyAI", "Deepgram", "nova-3", "2 providers", "tray picker", "starting on AssemblyAI Universal-3.6 Pro"} {
 		if !strings.Contains(got, w) {
 			t.Errorf("route %q missing %q", got, w)
 		}

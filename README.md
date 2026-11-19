@@ -195,7 +195,7 @@ defaults `CACHE_DB` to a path in this folder, and `exec`s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.5 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
+| `ASSEMBLYAI_API_KEY` | (empty) | Secret. AssemblyAI key for Universal-3.6 Pro. Set this and/or `DEEPGRAM_API_KEY`; at least one is required. The streaming path sends the recording to `sync.assemblyai.com/v1/transcribe/live`, with `ffmpeg` decoding MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `DEEPGRAM_API_KEY` | (empty) | Secret. Deepgram key for Nova-3 live transcription. Set this and/or `ASSEMBLYAI_API_KEY`; at least one is required. The stream goes to `wss://api.deepgram.com/v1/listen`; `ffmpeg` decodes MediaRecorder WebM/MP4 to 16 kHz mono PCM. |
 | `OPENROUTER_TRANSCRIBE_API_KEY` | (empty) | Secret. OpenRouter key for MAI-Transcribe-2 on `/api/transcribe-verbatim` only. It is separate from `OPENROUTER_API_KEY` (that one is `/api/explain`'s), so each route keeps its own key. |
 | `OPENROUTER_API_KEY` | (empty) | Secret. OpenRouter key for `/api/explain`. It adds one explain choice: GPT-6.2 Sol (OpenAI fast tier). Set this and/or `CLAUDE_API_KEY`; the tray picker chooses. |
@@ -231,7 +231,10 @@ daily-dictation sends finish far below it; chunk anything much longer.
 **AssemblyAI streaming.** `ASSEMBLYAI_API_KEY` is the `/api/transcribe/stream`
 provider. It uses AssemblyAI's native
 `POST https://sync.assemblyai.com/v1/transcribe/live`, with `X-AAI-Model:
-universal-3-5-pro`. The clients send their MediaRecorder WebM/MP4 stream to
+universal-3-6-pro`. AssemblyAI retired `universal-3-5-pro` on the Sync API and
+routes it to 3.6; the response does not name the model that served it, so the
+header names 3.6 directly. AssemblyAI-STT-3.7 (November 2026) is not on the
+Sync API yet. The clients send their MediaRecorder WebM/MP4 stream to
 `/api/transcribe/stream` while recording; ai-service pipes it through `ffmpeg`
 to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
 part second, and closes the AssemblyAI request when the client body ends. That
@@ -251,8 +254,11 @@ is ignored), so comart keeps its timings. The browser clients reach this route t
 extension page, while a WebSocket to the same host works. The WS handler only
 carries bytes; the decoding is the stream route's.
 
-Measured on this host with a warm connection, the post-stop wait was ~0.35 s for
-a 6 s clip and ~0.9 s for a 30 s clip. Transcripts were identical in 24 paired
+Measured on this host with a warm connection on 2026-10-26, on Universal-3.5
+Pro and before timestamps were on, the post-stop wait was ~0.35 s for a 6 s clip
+and ~0.9 s for a 30 s clip. The service log for 2026-11-12 to 11-19 (253
+requests, timestamps on) shows a median of ~0.24 s up to 10 s and ~0.28 s for
+20–120 s clips. Transcripts were identical in 24 paired
 runs on one clip. Live audio is capped at 120 s by AssemblyAI; the mic clients
 stop at 119 s so the 200ms cap poll and encoder chunking cannot push a clip
 over the provider's hard edge. The live request has a 300 s deadline, but the
@@ -275,9 +281,10 @@ Measured end to end on 2026-10-27 through comart’s exact WebSocket transport
 (`GET /api/transcribe/ws`), with real WebM/Opus chunks fed at 1× real time. The
 timer starts when the client sends the text frame `stop` and stops when the
 final JSON transcript arrives. Deepgram is the median of six runs per clip;
-AssemblyAI is the median of three. Ranges are in parentheses.
+AssemblyAI is the median of three. Ranges are in parentheses. The AssemblyAI
+column is Universal-3.5 Pro, before the move to 3.6.
 
-| Clip | AssemblyAI | Deepgram Nova-3 |
+| Clip | AssemblyAI (3.5 Pro) | Deepgram Nova-3 |
 | --- | --- | --- |
 | 6 s | 394 ms (390–394) | 309 ms (237–346) |
 | 12 s | 520 ms (515–523) | 396 ms (258–440) |
@@ -353,7 +360,7 @@ manager keeps retrying every 10 s) when a route has no usable provider:
 
 Why: with multiple possible providers it is easy to believe one model answers while
 another does. Every start logs the routes it chose, for example
-`transcribe route: AssemblyAI live, model universal-3-5-pro`,
+`transcribe route: AssemblyAI live, model universal-3-6-pro`,
 `explain route: Claude Platform, model claude-opus-5-5, effort medium` (or every
 explain provider with `N providers; tray picker, starting on …`),
 `ask route: …`, and the same for `memoir route: …`, and every Claude request
@@ -369,7 +376,7 @@ The tray has one picker section per route with more than one choice. It
 appears when `/api/transcribe/stream`, `/api/explain`, `/api/ask` or
 `/api/memoir/check` has at least two entries:
 
-- **Transcribe with** — AssemblyAI Universal-3.5 Pro and Deepgram Nova-3.
+- **Transcribe with** — AssemblyAI Universal-3.6 Pro and Deepgram Nova-3.
 - **Explain with** — Claude Platform Opus 5.5 (thinking medium) and
   OpenRouter GPT-6.2 Sol (fast, thinking low).
 - **Ask with** — Claude Platform Opus 5.5 (search + fetch, thinking medium)
@@ -497,7 +504,7 @@ Request limits:
 | `/api/ask` | OpenRouter, if `ASK_OPENROUTER_API_KEY` is set | `openai/gpt-6.2-sol` (OpenAI standard tier only) | effort `medium`; web search + fetch on (Exa) |
 | `/api/memoir/check` | Claude Platform, if `MEMOIR_CLAUDE_API_KEY` is set | `claude-opus-5-5` | effort `medium` |
 | `/api/memoir/check` | OpenRouter, if `MEMOIR_OPENROUTER_API_KEY` is set | `openai/gpt-6.1-terra` (OpenAI flex tier, standard tier as fallback) | effort `low` |
-| `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-5-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
+| `/api/transcribe/stream` | AssemblyAI, if `ASSEMBLYAI_API_KEY` is set | `universal-3-6-pro` (`/v1/transcribe/live`; WebM decoded to PCM by `ffmpeg`) | — |
 | `/api/transcribe/stream` | Deepgram, if `DEEPGRAM_API_KEY` is set | `nova-3` (`wss://api.deepgram.com/v1/listen`; monolingual `language=en`) | — |
 | `/api/transcribe-verbatim` | OpenRouter (`OPENROUTER_TRANSCRIBE_API_KEY`) | `microsoft/mai-transcribe-2` (verbatim, word timestamps) | — |
 
