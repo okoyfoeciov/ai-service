@@ -245,7 +245,12 @@ carries millisecond `start`/`end`; `first_word_ms` and
 `last_word_ms` are the first aligned word's start and the last aligned word's
 end, which comart uses to trim the silence before and after speech. Timestamps are exact
 or absent (AssemblyAI never estimates one), so the field is omitted when no word
-could be aligned; they add roughly 0.1–0.3 s to the post-stop wait. A caller that
+could be aligned. AssemblyAI says the alignment has "an additional latency
+cost" and gives no number. One 8 s clip measured before Universal-3.6 Pro went
+from 598 ms to 504 ms without timestamps (`b63fe17`). But the service log for
+2026-11-14 to 11-21 shows no measurable difference: medians with and without
+timestamps are within about 20 ms of each other, in both directions
+(comart-native's `docs/word-timestamps.md` has the table). A caller that
 only wants the text (voice-typing) sends `?timestamps=0` (or exactly `false`):
 the config part then says `"timestamps":false` and the answer carries neither
 field. The WS transport forwards without a query (a `timestamps` on the WS URL

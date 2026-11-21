@@ -264,10 +264,12 @@ func (s *Server) handleTranscribeWS(w http.ResponseWriter, r *http.Request) {
 
 // wantTimestamps reports whether the caller wants word timings. Only the exact
 // values ?timestamps=0 and ?timestamps=false turn them off: voice-typing
-// inserts the text and never trims audio, and the alignment costs 0.1–0.3 s of
-// post-stop wait. No query, or any other value (FALSE, off, no, " 0"), keeps
-// them on, so comart and the WS transport (which forwards without a query) are
-// unchanged. Deepgram returns no timings either way.
+// inserts the text and never trims audio. The alignment once cost about 0.1 s
+// of post-stop wait on one 8 s clip (b63fe17); on Universal-3.6 Pro the log
+// shows no measurable difference (README). No query, or any other value
+// (FALSE, off, no, " 0"), keeps them on, so comart and the WS transport (which
+// forwards without a query) are unchanged. Deepgram returns no timings either
+// way.
 func wantTimestamps(r *http.Request) bool {
 	switch r.URL.Query().Get("timestamps") {
 	case "0", "false":
