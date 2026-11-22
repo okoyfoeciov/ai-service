@@ -3,9 +3,9 @@
 A small localhost **LLM backend**: one static Go binary on `127.0.0.1:8770`,
 speaking JSON and SSE. It has four clients:
 
-- the **comart Chrome extension** (`~/comart-native/chrome`): word
+- the **comart Chrome extension** (`~/comart/chrome`): word
   explanations and pronunciations (its microphone was removed on 2026-11-21);
-- **comart-native** (`~/comart-native`, the desktop transcript card): mic
+- **comart's desktop app** (`~/comart`, the transcript card): mic
   transcription through `POST /api/transcribe/stream`, streamed by its
   Electron main process, and the card's writing check, Ask and screenshots;
 - **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading of
@@ -19,7 +19,7 @@ static directory or an `embed` back: a served copy of a client would have to be
 kept in step with the real one by hand.
 
 The comart API is deliberately stable: no CORS, no auth, and only the routes
-the clients actually call. `/api/ask` is comart-native's spoken-question route, and
+the clients actually call. `/api/ask` is the desktop app's spoken-question route, and
 `/api/screenshot` is its screen-capture route on Linux and macOS (the image is kept here
 under an id and released by the client); Memoir's `/api/memoir/check` and
 daily-dictation's `/api/transcribe-verbatim` are the other deliberate
@@ -31,14 +31,14 @@ additions. Change a route only together with the client that calls it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart; Cairn (EPUB reader) | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
-| `POST /api/ask` | comart-native | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and, for Claude, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter sets `enabled:true` but sends no active transitions. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs GPT-6.2 Sol's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
+| `POST /api/ask` | comart (desktop app) | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and, for Claude, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter sets `enabled:true` but sends no active transitions. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs GPT-6.2 Sol's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
 | `GET /api/pron?word=&pos=` | comart; Cairn (EPUB reader) | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
-| `POST /api/screenshot` | comart-native | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
-| `POST /api/screenshot/release` | comart-native | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
-| `POST /api/transcribe/stream` | comart-native (its Electron main process) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart-native cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
+| `POST /api/screenshot` | comart (desktop app) | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
+| `POST /api/screenshot/release` | comart (desktop app) | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
+| `POST /api/transcribe/stream` | comart (desktop app, its Electron main process) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
-| `POST /api/memoir/check` | Cairn; comart-native | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
+| `POST /api/memoir/check` | Cairn; comart (desktop app) | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
 The Memoir route does not stream: the client renders the finished result, so
 the server collects the whole answer and replies once.
@@ -234,7 +234,7 @@ provider. It uses AssemblyAI's native
 universal-3-6-pro`. AssemblyAI retired `universal-3-5-pro` on the Sync API and
 routes it to 3.6; the response does not name the model that served it, so the
 header names 3.6 directly. AssemblyAI-STT-3.7 (November 2026) is not on the
-Sync API yet. comart-native sends its MediaRecorder WebM/MP4 stream to
+Sync API yet. comart's desktop app sends its MediaRecorder WebM/MP4 stream to
 `/api/transcribe/stream` while recording; ai-service pipes it through `ffmpeg`
 to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
 part second, and closes the AssemblyAI request when the client body ends. That
@@ -250,18 +250,18 @@ cost" and gives no number. One 8 s clip measured before Universal-3.6 Pro went
 from 598 ms to 504 ms without timestamps (`b63fe17`). But the service log for
 2026-11-14 to 11-21 shows no measurable difference: medians with and without
 timestamps are within about 20 ms of each other, in both directions
-(comart-native's `docs/word-timestamps.md` has the table). A caller that
+(comart's `docs/word-timestamps.md` has the table). A caller that
 only wants the text can send `?timestamps=0` (or exactly `false`): the config
 part then says `"timestamps":false` and the answer carries neither field.
-comart-native sends no query, so it keeps its timings. No client sends the
+comart sends no query, so it keeps its timings. No client sends the
 query today; the option stays because it is cheap to keep, and that page
 discusses it for the takes that play no clip (the white and violet Stops).
 
-comart-native streams straight to this route as one chunked HTTP/1.1 `POST`
-per take. A page cannot: Chromium refuses a streaming `fetch` upload over
-HTTP/1.1. So comart-native's recorder window hands each MediaRecorder chunk to
-its Electron main process over IPC, and main streams them with Node's `http`
-module. There is no WebSocket transport: `GET /api/transcribe/ws`, which
+comart's desktop app streams straight to this route as one chunked HTTP/1.1
+`POST` per take. A page cannot: Chromium refuses a streaming `fetch` upload
+over HTTP/1.1. So the desktop app's recorder window hands each MediaRecorder
+chunk to its Electron main process over IPC, and main streams them with Node's
+`http` module. There is no WebSocket transport: `GET /api/transcribe/ws`, which
 forwarded a page's frames here, was removed on 2026-11-22.
 
 Measured on this host with a warm connection on 2026-10-26, on Universal-3.5
@@ -269,7 +269,7 @@ Pro and before timestamps were on, the post-stop wait was ~0.35 s for a 6 s clip
 and ~0.9 s for a 30 s clip. The service log for 2026-11-12 to 11-19 (253
 requests, timestamps on) shows a median of ~0.24 s up to 10 s and ~0.28 s for
 20–120 s clips. Transcripts were identical in 24 paired
-runs on one clip. Live audio is capped at 120 s by AssemblyAI; comart-native's
+runs on one clip. Live audio is capped at 120 s by AssemblyAI; comart's
 microphone stops at 119 s so the 200ms cap poll and encoder chunking cannot
 push a clip over the provider's hard edge. The live request has a 300 s deadline, but the
 HTTP client that carries it has a 10-minute backstop — a two-minute recording

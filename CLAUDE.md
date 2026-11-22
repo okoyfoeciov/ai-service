@@ -1,8 +1,8 @@
 # ai-service — project notes
 
 One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves four clients: the
-comart Chrome extension (`~/comart-native/chrome`: explanations and
-pronunciations), comart-native (`~/comart-native`: transcription through
+comart Chrome extension (`~/comart/chrome`: explanations and
+pronunciations), comart's desktop app (`~/comart`: transcription through
 `POST /api/transcribe/stream`, the writing check, Ask and screenshots), Cairn's
 Memoir tab (`~/cairn`) and daily-dictation (`~/daily-dictation`:
 `/api/transcribe-verbatim`, `/api/explain`, `/api/pron`, `/api/credits`).
@@ -47,8 +47,8 @@ returning `first_word_ms` / `last_word_ms`, which comart trims the microphone
 clip's lead-in and lead-out to)
 or Deepgram's
 `wss://api.deepgram.com/v1/listen` (`model=nova-3`, `language=en`, which is
-Deepgram's cheaper Nova-3 Monolingual tier). comart-native streams straight to
-that route as one chunked HTTP/1.1 `POST` per take; its recorder
+Deepgram's cheaper Nova-3 Monolingual tier). comart's desktop app streams
+straight to that route as one chunked HTTP/1.1 `POST` per take; its recorder
 window hands its MediaRecorder chunks to its Electron main process over IPC,
 because Chromium refuses a streaming `fetch` upload over HTTP/1.1 from a page.
 There is no WebSocket transport: `GET /api/transcribe/ws` was removed on
@@ -80,8 +80,8 @@ provider, model, status, outcome, issue count and duration. Tray switches log
 
 - **There is no web UI to fix here.** A complaint about how something looks,
   where a button sits or what a panel says belongs to a client: the comart
-  Chrome extension (read `~/comart-native/chrome/CLAUDE.md` and
-  `~/comart-native/chrome/NOTES.md` first), comart-native (`~/comart-native`;
+  Chrome extension (read `~/comart/chrome/CLAUDE.md` and
+  `~/comart/chrome/NOTES.md` first), comart's desktop app (`~/comart`;
   its card's code is in `app/comart/`, its notes in `app/comart/NOTES.md`), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
   (`~/daily-dictation`). The one native UI is the provider pickers, kept for
@@ -124,7 +124,7 @@ provider, model, status, outcome, issue count and duration. Tray switches log
   unit must keep the Screenshots directory in `ReadWritePaths=` or the PNG is
   left on disk. Memoir's
   `/api/memoir/check`, daily-dictation's
-  `/api/transcribe-verbatim` and comart-native's streaming transcription route
+  `/api/transcribe-verbatim` and comart's streaming transcription route
   (`POST /api/transcribe/stream`; AssemblyAI live, buffered for others) are
   the deliberate additions. Change a route only together with the client that
   calls it.

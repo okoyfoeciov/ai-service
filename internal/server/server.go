@@ -1,6 +1,6 @@
 // Package server is the HTTP layer: stdlib net/http routing and handlers.
-// It serves no UI, only JSON and SSE. The clients live in ~/comart-native (the
-// desktop app, and comart's Chrome extension in chrome/), ~/cairn and
+// It serves no UI, only JSON and SSE. The clients live in ~/comart (the
+// desktop app, and the Chrome extension in chrome/), ~/cairn and
 // ~/daily-dictation; README.md has the routes and the security model.
 package server
 

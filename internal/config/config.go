@@ -32,7 +32,7 @@ var RetiredExplainProviders = map[string]string{
 type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
-	// Mic transcription (/api/transcribe/stream: comart-native's microphone)
+	// Mic transcription (/api/transcribe/stream: comart's microphone)
 	// runs on AssemblyAI's Universal-3.6 Pro or Deepgram Nova-3, both live
 	// APIs. At least one key is required: Load refuses to start without a
 	// provider.

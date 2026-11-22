@@ -2,7 +2,7 @@
 # install.sh — build ai-service and keep it running on this machine.
 #
 # ai-service is the localhost LLM backend (127.0.0.1:8770) for comart (its
-# Chrome extension and the comart-native desktop app), Cairn's Memoir tab and
+# Chrome extension and its desktop app), Cairn's Memoir tab and
 # daily-dictation. Nothing fronts the server, so loopback is the trust boundary.
 #
 # Supported hosts, and the service each one gets:
