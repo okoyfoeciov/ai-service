@@ -44,10 +44,12 @@ returning `first_word_ms` / `last_word_ms`, which comart trims the microphone
 clip's lead-in and lead-out to)
 or Deepgram's
 `wss://api.deepgram.com/v1/listen` (`model=nova-3`, `language=en`, which is
-Deepgram's cheaper Nova-3 Monolingual tier). The browser clients use
-`/api/transcribe/ws` for the same stream: Chrome blocks a streaming `fetch` body
-to loopback from an extension page, so the WS handler forwards MediaRecorder
-frames to the stream route over loopback. The tray (`internal/tray`) has
+Deepgram's cheaper Nova-3 Monolingual tier). Every client streams straight to
+that route as one chunked HTTP/1.1 `POST` per take; comart-native's recorder
+window hands its MediaRecorder chunks to its Electron main process over IPC,
+because Chromium refuses a streaming `fetch` upload over HTTP/1.1 from a page.
+There is no WebSocket transport: `GET /api/transcribe/ws` was removed on
+2026-11-22. The tray (`internal/tray`) has
 **Transcribe with**, **Explain with**, **Ask with** and **Memoir with**
 sections, each shown only when that route has more than one configured
 provider. Every LLM entry's label ends with its thinking effort, read from
@@ -117,10 +119,10 @@ provider, model, status, outcome, issue count and duration. Tray switches log
   unit must keep the Screenshots directory in `ReadWritePaths=` or the PNG is
   left on disk. Memoir's
   `/api/memoir/check`, daily-dictation's
-  `/api/transcribe-verbatim` and the clients' streaming transcription routes
-  (`POST /api/transcribe/stream` and its `GET /api/transcribe/ws` transport;
-  AssemblyAI live, buffered for others) are the deliberate additions. Change a
-  route only together with the client that calls it.
+  `/api/transcribe-verbatim` and the clients' streaming transcription route
+  (`POST /api/transcribe/stream`; AssemblyAI live, buffered for others) are
+  the deliberate additions. Change a route only together with the client that
+  calls it.
 
 ## Hosting and security
 

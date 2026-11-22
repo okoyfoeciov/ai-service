@@ -50,7 +50,7 @@ type Server struct {
 	// unset; /api/ask then offers no image tools and behaves as before.
 	images *brave.Client
 
-	httpShort      *http.Client // streaming transcription and the WS transport (10 min backstop)
+	httpShort      *http.Client // streaming transcription (10 min backstop)
 	httpOpenRouter *http.Client // OpenRouter MAI verbatim (10 min backstop)
 
 	// transcribeProviders is every provider config.Load found, and
@@ -289,8 +289,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && p == "/api/transcribe/stream":
 		s.handleTranscribeStream(w, r)
-	case r.Method == http.MethodGet && p == "/api/transcribe/ws":
-		s.handleTranscribeWS(w, r)
 	case r.Method == http.MethodPost && p == "/api/transcribe-verbatim":
 		s.handleTranscribeVerbatim(w, r)
 	case p == "/api/explain" && r.Method == http.MethodPost:

@@ -16,8 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coder/websocket"
-
 	"ai-service/internal/config"
 )
 
@@ -176,100 +174,14 @@ func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleTranscribeWS is the browser transport for the same streamed
-// transcription. Chrome refuses a streaming fetch request body to loopback
-// from an extension page (normal POSTs are fine, streaming to a public host is
-// fine), so the extension sends MediaRecorder chunks over a WebSocket. This
-// handler forwards them to the loopback /api/transcribe/stream route, whose
-// body ending is the stop signal.
-func (s *Server) handleTranscribeWS(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// loopbackOnly already checked Host and Origin before routing.
-		InsecureSkipVerify: true,
-	})
-	if err != nil {
-		return
-	}
-	defer c.CloseNow()
-	c.SetReadLimit(1 << 20)
-
-	contentType := r.URL.Query().Get("type")
-	if !strings.HasPrefix(contentType, "audio/") && !strings.HasPrefix(contentType, "video/") {
-		_ = c.Close(websocket.StatusPolicyViolation, "Content-Type must be an audio type")
-		return
-	}
-
-	ctx := r.Context()
-	pr, pw := io.Pipe()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"http://"+s.cfg.ListenAddr+"/api/transcribe/stream", pr)
-	if err != nil {
-		_ = c.Close(websocket.StatusInternalError, "internal")
-		return
-	}
-	req.Header.Set("Content-Type", contentType)
-
-	type result struct {
-		body []byte
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		res, err := s.shortClient().Do(req)
-		if err != nil {
-			done <- result{err: err}
-			return
-		}
-		defer res.Body.Close()
-		body, err := io.ReadAll(res.Body)
-		done <- result{body: body, err: err}
-	}()
-
-	for {
-		typ, data, err := c.Read(ctx)
-		if err != nil {
-			_ = pw.CloseWithError(err)
-			<-done
-			return
-		}
-		switch typ {
-		case websocket.MessageBinary:
-			if _, err := pw.Write(data); err != nil {
-				_ = c.Close(websocket.StatusInternalError, "stream closed")
-				return
-			}
-		case websocket.MessageText:
-			switch strings.TrimSpace(string(data)) {
-			case "stop":
-				_ = pw.Close()
-				res := <-done
-				if res.err != nil {
-					body, _ := json.Marshal(map[string]string{
-						"error":  "could not reach the transcription service",
-						"detail": res.err.Error(),
-					})
-					_ = c.Write(ctx, websocket.MessageText, body)
-					return
-				}
-				_ = c.Write(ctx, websocket.MessageText, res.body)
-				return
-			case "cancel":
-				_ = pw.CloseWithError(errors.New("cancelled"))
-				<-done
-				return
-			}
-		}
-	}
-}
-
 // wantTimestamps reports whether the caller wants word timings. Only the exact
 // values ?timestamps=0 and ?timestamps=false turn them off: voice-typing
 // inserts the text and never trims audio. The alignment once cost about 0.1 s
 // of post-stop wait on one 8 s clip (b63fe17); on Universal-3.6 Pro the log
 // shows no measurable difference (README). No query, or any other value
-// (FALSE, off, no, " 0"), keeps them on, so comart and the WS transport (which
-// forwards without a query) are unchanged. Deepgram returns no timings either
-// way.
+// (FALSE, off, no, " 0"), keeps them on, so comart-native's microphone, which
+// sends no query, keeps the timings its clip trim needs. Deepgram returns no
+// timings either way.
 func wantTimestamps(r *http.Request) bool {
 	switch r.URL.Query().Get("timestamps") {
 	case "0", "false":
