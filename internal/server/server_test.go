@@ -1722,3 +1722,54 @@ func TestExplainSendsTheWholePromptToAOneTextClient(t *testing.T) {
 		t.Errorf("request part %q", rest)
 	}
 }
+
+// TestMemoirCheckSendsConversation: `context` reaches the prompt as the
+// conversation block, before the entry, and is not the text that is checked.
+func TestMemoirCheckSendsConversation(t *testing.T) {
+	const content = "Which one you mean?"
+	reply, _ := json.Marshal(map[string]any{"corrected": "Which one do you mean?", "issues": []memoir.CheckIssue{
+		{Category: "grammar", Original: "one you mean", Suggestion: "one do you mean", Reason: "question needs 'do'"}}})
+	m := &captureModel{reply: string(reply)}
+	s := &Server{
+		cfg:        config.Config{MemoirProvider: config.ProviderClaude},
+		memoirLLMs: map[string]llm.Streamer{config.ProviderClaude: testLLM(m)},
+	}
+	rec := postJSON(t, s, "/api/memoir/check", map[string]any{
+		"content": content,
+		"context": []map[string]string{{"question": "What are the two readings?", "answer": "A narrow one and a broad one."}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d (body %q)", rec.Code, rec.Body.String())
+	}
+	var req struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	sent, _ := m.body.Load().(string)
+	if err := json.Unmarshal([]byte(sent), &req); err != nil || len(req.Messages) == 0 {
+		t.Fatalf("model request: %v %q", err, sent)
+	}
+	prompt := req.Messages[len(req.Messages)-1].Content
+	conv := strings.Index(prompt, "AUTHOR:\nWhat are the two readings?\n\nASSISTANT:\nA narrow one and a broad one.")
+	entry := strings.Index(prompt, "\n"+content+"\n")
+	if conv < 0 || entry < 0 || conv > entry {
+		t.Fatalf("conversation missing or after the entry:\n%s", prompt)
+	}
+
+	// No context: the plain prompt.
+	rec = postJSON(t, s, "/api/memoir/check", map[string]string{"content": content})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	sent, _ = m.body.Load().(string)
+	if strings.Contains(sent, "AUTHOR:") {
+		t.Fatal("plain check carried a conversation")
+	}
+
+	// A malformed context is a bad request, like malformed JSON.
+	rec = postJSON(t, s, "/api/memoir/check", map[string]any{"content": content, "context": "nope"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad context: status %d", rec.Code)
+	}
+}

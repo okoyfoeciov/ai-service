@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"ai-service/internal/llm"
 	"ai-service/internal/memoir"
@@ -26,17 +25,7 @@ import (
 // is what Cairn measures its Memoir cap in. len(s) counts UTF-8 bytes, which
 // turns a 12000-character entry of curly quotes into 36000. A rune with no
 // UTF-16 form counts as 1 (invalid UTF-8 already decodes to U+FFFD).
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		if l := utf16.RuneLen(r); l > 0 {
-			n += l
-		} else {
-			n++
-		}
-	}
-	return n
-}
+func utf16Len(s string) int { return memoir.UTF16Len(s) }
 
 // MemoirProviders returns the configured Memoir providers, in the order the
 // tray menu shows them. The slice is a copy.
@@ -74,7 +63,13 @@ func memoirComplete(r *http.Request, streamer llm.Streamer, prompt string) (stri
 	return sb.String(), res
 }
 
-// handleMemoirCheck — POST /api/memoir/check {"content": "..."}.
+// handleMemoirCheck — POST /api/memoir/check {"content": "...", "context": [...]}.
+//
+// `context` is optional: the conversation `content` is the latest message of,
+// oldest turn first, as [{"question", "answer"}] (comart's Ask card sends its
+// earlier rounds). It is only read, never checked; FitConversation keeps the
+// newest turns within memoir.ConversationMaxChars. Without it the prompt is
+// the plain journal-entry check every other client gets.
 func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// Resolve the tray choice once, so a switch mid-request cannot pair this
@@ -86,6 +81,7 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 	w = sw
 	outcome := "ok"
 	issueCount := 0
+	contextTurns, contextDropped := 0, 0
 	defer func() {
 		providerName, modelName := provider, model
 		if providerName == "" {
@@ -94,8 +90,15 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		if modelName == "" {
 			modelName = "-"
 		}
-		log.Printf("memoir[%s]: model=%s status=%d outcome=%s issues=%d duration=%s",
-			providerName, modelName, sw.Status(), outcome, issueCount, time.Since(start).Round(time.Millisecond))
+		ctx := ""
+		if contextTurns > 0 || contextDropped > 0 {
+			ctx = fmt.Sprintf(" context=%d", contextTurns)
+			if contextDropped > 0 {
+				ctx += fmt.Sprintf(" context_dropped=%d", contextDropped)
+			}
+		}
+		log.Printf("memoir[%s]: model=%s status=%d outcome=%s issues=%d%s duration=%s",
+			providerName, modelName, sw.Status(), outcome, issueCount, ctx, time.Since(start).Round(time.Millisecond))
 	}()
 
 	if !requireType(w, r, "application/json", isJSON) {
@@ -104,7 +107,8 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	var body struct {
-		Content string `json:"content"`
+		Content string        `json:"content"`
+		Context []memoir.Turn `json:"context"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		outcome = "bad_request"
@@ -127,7 +131,9 @@ func (s *Server) handleMemoirCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawText, res := memoirComplete(r, streamer, memoir.BuildCheckPrompt(body.Content))
+	turns, dropped := memoir.FitConversation(body.Context, memoir.ConversationMaxChars)
+	contextTurns, contextDropped = len(turns), dropped
+	rawText, res := memoirComplete(r, streamer, memoir.BuildCheckPromptInConversation(body.Content, turns))
 	if !res.OK {
 		outcome = "upstream_error"
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": res.UserMessage(), "raw": rawText})

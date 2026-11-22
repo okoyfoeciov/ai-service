@@ -38,7 +38,7 @@ additions. Change a route only together with the client that calls it.
 | `POST /api/screenshot/release` | comart (desktop app) | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
 | `POST /api/transcribe/stream` | comart (desktop app, its Electron main process) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
-| `POST /api/memoir/check` | Cairn; comart (desktop app) | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
+| `POST /api/memoir/check` | Cairn; comart (desktop app) | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Optional `"context": [{"question", "answer"}, …]`: the conversation the entry is the latest message of, oldest first, read for meaning and never checked (comart's Ask card; the newest turns within 24000 UTF-16 code units are kept). Plain JSON. |
 
 The Memoir route does not stream: the client renders the finished result, so
 the server collects the whole answer and replies once.
@@ -323,10 +323,13 @@ explain[claude]: model=claude-opus-5-5 status=200 outcome=ok items=3 prons=2 dur
 ```
 
 Every `/api/memoir/check` request logs the same way, with the number of
-issues it returned:
+issues it returned and, when the request carried a conversation, how many of
+its turns were sent (`context`) and how many old ones did not fit
+(`context_dropped`):
 
 ```text
 memoir[openrouter]: model=openai/gpt-6.1-terra status=200 outcome=ok issues=7 duration=6.1s
+memoir[claude]: model=claude-opus-5-5 status=200 outcome=ok issues=2 context=3 duration=5.4s
 ```
 
 Tray switches are logged separately as `transcribe provider: … (tray)`,
@@ -702,7 +705,9 @@ install.sh, uninstall.sh, run.sh
 
 The prompt `.txt` files are product text. `TestPromptParity` pins the Memoir
 prompt byte for byte, so a change to `internal/memoir/check.txt` must be
-deliberate.
+deliberate. `internal/memoir/conversation.txt` is the block inserted before the
+entry when a request carries `context`; without one the prompt is `check.txt`
+alone.
 
 ## Build and test
 

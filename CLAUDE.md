@@ -76,7 +76,7 @@ ask and Memoir routes follow the same pattern in `resolveAsk`/`newAskLLMs` and
 Every `/api/explain` request logs provider, model, status, outcome, item count,
 pronunciation lookups and duration; `/api/ask` logs provider, model, status,
 outcome, item, context and earlier-round counts; `/api/memoir/check` logs
-provider, model, status, outcome, issue count and duration. Tray switches log
+provider, model, status, outcome, issue count, conversation turns (when sent) and duration. Tray switches log
 `transcribe provider: … (tray)` / `explain provider: … (tray)` /
 `ask provider: … (tray)` / `memoir provider: … (tray)`.
 
