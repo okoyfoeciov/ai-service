@@ -1,9 +1,13 @@
 # ai-service — project notes
 
-One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves three clients: the
-comart Chrome extension (`~/comart`), Cairn's Memoir tab (`~/cairn`) and
-daily-dictation (`~/daily-dictation`, which uses the streaming transcription
-routes and `/api/transcribe-verbatim`). `README.md` is the full guide: install, service
+One Go binary on `127.0.0.1:8770` (JSON and SSE). It serves five clients: the
+comart Chrome extension (`~/comart-native/chrome`: explanations and
+pronunciations), comart-native (`~/comart-native`: transcription through
+`POST /api/transcribe/stream`, the writing check, Ask and screenshots), Cairn's
+Memoir tab (`~/cairn`), daily-dictation (`~/daily-dictation`:
+`/api/transcribe-verbatim`, `/api/explain`, `/api/pron`, `/api/credits`) and
+voice-typing (`~/voice-typing`: `POST /api/transcribe/stream?timestamps=0`).
+`README.md` is the full guide: install, service
 management, configuration, security model and models.
 
 In short, `/api/transcribe/stream` runs on AssemblyAI Universal-3.6 Pro or
@@ -77,7 +81,9 @@ provider, model, status, outcome, issue count and duration. Tray switches log
 
 - **There is no web UI to fix here.** A complaint about how something looks,
   where a button sits or what a panel says belongs to a client: the comart
-  extension (read `~/comart/CLAUDE.md` and `~/comart/NOTES.md` first), Cairn's
+  Chrome extension (read `~/comart-native/chrome/CLAUDE.md` and
+  `~/comart-native/chrome/NOTES.md` first), comart-native (`~/comart-native`;
+  its card's code is in `app/comart/`, its notes in `app/comart/NOTES.md`), Cairn's
   Memoir tab (`~/cairn`, client code in `src/memoir.ts`) or daily-dictation
   (`~/daily-dictation`). The one native UI is the provider pickers, kept for
   future transcribe, explain and ask providers and shown only when a route has

@@ -4,8 +4,9 @@
 # on macOS, a systemd user unit (ai-service.service) on Linux. To run it by
 # hand, stop the service first: both want port 8770.
 #
-# ai-service is the localhost LLM backend (127.0.0.1:8770) for the comart
-# Chrome extension, Cairn's Memoir tab and daily-dictation. Nothing fronts it,
+# ai-service is the localhost LLM backend (127.0.0.1:8770) for comart (its
+# Chrome extension and the comart-native desktop app), Cairn's Memoir tab,
+# daily-dictation and voice-typing. Nothing fronts it,
 # so loopback is the trust boundary.
 #
 # This script loads ai-service.env with bash, so that file must stay plain
