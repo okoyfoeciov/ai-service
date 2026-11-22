@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh — install or remove the optional GNOME Shell extension that keeps
-# the ai-service tray icon at index 1 (second from the left).
+# the ai-service tray icon at index 0 (the leftmost).
 #
 #   ./install.sh              install or update, then enable
 #   ./install.sh --uninstall  disable and remove

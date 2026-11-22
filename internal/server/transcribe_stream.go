@@ -175,13 +175,15 @@ func (s *Server) handleTranscribeStream(w http.ResponseWriter, r *http.Request) 
 }
 
 // wantTimestamps reports whether the caller wants word timings. Only the exact
-// values ?timestamps=0 and ?timestamps=false turn them off: voice-typing
-// inserts the text and never trims audio. The alignment once cost about 0.1 s
-// of post-stop wait on one 8 s clip (b63fe17); on Universal-3.6 Pro the log
-// shows no measurable difference (README). No query, or any other value
-// (FALSE, off, no, " 0"), keeps them on, so comart-native's microphone, which
-// sends no query, keeps the timings its clip trim needs. Deepgram returns no
-// timings either way.
+// values ?timestamps=0 and ?timestamps=false turn them off, for a caller that
+// only inserts the text and never trims audio; no client sends them today,
+// and the option is kept because it is cheap (comart-native's
+// docs/word-timestamps.md weighs it for takes that play no clip). The
+// alignment once cost about 0.1 s of post-stop wait on one 8 s clip
+// (b63fe17); on Universal-3.6 Pro the log shows no measurable difference
+// (README). No query, or any other value (FALSE, off, no, " 0"), keeps them
+// on, so comart-native's microphone, which sends no query, keeps the timings
+// its clip trim needs. Deepgram returns no timings either way.
 func wantTimestamps(r *http.Request) bool {
 	switch r.URL.Query().Get("timestamps") {
 	case "0", "false":

@@ -1,13 +1,15 @@
-// Keep the ai-service StatusNotifierItem at index 1 of GNOME Shell's right
-// panel box. The Voice Typing extension owns index 0.
+// Keep the ai-service StatusNotifierItem at index 0 of GNOME Shell's right
+// panel box: the first, leftmost icon there.
 //
 // GNOME's AppIndicator extension inserts every tray icon at index 1 when it
-// registers, so the slot belongs to whichever icon registered last. This
-// extension watches the panel box instead and moves ai-service back whenever
-// another icon is added or removed, including after a shell restart or after
-// ai-service re-registers on a new session bus. The move runs from an idle
-// callback so the AppIndicator extension can finish its own insertion first,
-// and a light periodic pass catches reorders done without a signal.
+// registers, and Main.panel.addToStatusArea() puts another extension's button
+// at index 0 unless it names a position, so the front slot is not kept by
+// itself. This extension watches the panel box instead and moves ai-service
+// back whenever another icon is added or removed, including after a shell
+// restart or after ai-service re-registers on a new session bus. The move runs
+// from an idle callback so the AppIndicator extension can finish its own
+// insertion first, and a light periodic pass catches reorders done without a
+// signal.
 
 import GLib from 'gi://GLib';
 
@@ -15,7 +17,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const TARGET_ID = 'ai-service';
-const TARGET_INDEX = 1;
+const TARGET_INDEX = 0;
 
 export default class AiServiceTrayPositionExtension extends Extension {
     enable() {
@@ -24,9 +26,10 @@ export default class AiServiceTrayPositionExtension extends Extension {
         this._verifyId = 0;
         this._moving = false;
 
-        // child-added emits when the Voice Typing button or another tray icon
-        // appears; child-removed covers one disappearing above ai-service,
-        // which would otherwise shift ai-service into slot 0.
+        // child-added emits when another extension's button or another tray
+        // icon appears, possibly in front of ai-service; child-removed is one
+        // more cheap chance to repair an order that something else changed
+        // without a signal.
         this._childAddedId = this._box.connect('child-added', () =>
             this._scheduleReorder());
         this._childRemovedId = this._box.connect('child-removed', () =>
@@ -36,9 +39,10 @@ export default class AiServiceTrayPositionExtension extends Extension {
         this._scheduleReorder();
 
         // Other extensions reorder their own indicators with
-        // set_child_at_index(), which emits no signal. The Voice Typing
-        // extension does exactly that to stay at index 0. A cheap verification
-        // pass keeps ai-service at index 1 even when a reorder races ours.
+        // set_child_at_index() or set_child_above_sibling(), which emit no
+        // signal, and one may move its button to the front of the box. A
+        // cheap verification pass keeps ai-service at index 0 even when a
+        // reorder races ours.
         this._verifyId = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT_IDLE, 500, () => {
                 this._pin();
@@ -87,8 +91,9 @@ export default class AiServiceTrayPositionExtension extends Extension {
         const container = this._findContainer();
         if (!container || container.get_parent() !== box)
             return;
-        // set_child_at_index() needs a real destination. With one child there
-        // is no slot 1 yet, and moving the only icon is meaningless anyway.
+        // set_child_at_index() needs a real destination: a slot past the last
+        // child does not exist. Index 0 always does once ai-service is in the
+        // box, but the guard keeps any other TARGET_INDEX safe.
         if (TARGET_INDEX >= box.get_n_children())
             return;
         if (box.get_child_at_index(TARGET_INDEX) === container)

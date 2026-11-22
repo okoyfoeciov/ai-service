@@ -2,9 +2,8 @@
 # install.sh — build ai-service and keep it running on this machine.
 #
 # ai-service is the localhost LLM backend (127.0.0.1:8770) for comart (its
-# Chrome extension and the comart-native desktop app), Cairn's Memoir tab,
-# daily-dictation and voice-typing. Nothing fronts the
-# server, so loopback is the trust boundary.
+# Chrome extension and the comart-native desktop app), Cairn's Memoir tab and
+# daily-dictation. Nothing fronts the server, so loopback is the trust boundary.
 #
 # Supported hosts, and the service each one gets:
 #   macOS  launchd LaunchAgent  ~/Library/LaunchAgents/com.ai-service.backend.plist
@@ -420,7 +419,7 @@ write_unit() {
 # Written by $HERE/install.sh — edit that script, not this file; re-running it
 # overwrites this unit. Remove with $HERE/uninstall.sh.
 [Unit]
-Description=ai-service — localhost LLM backend for comart, Cairn's Memoir tab, daily-dictation and voice-typing
+Description=ai-service — localhost LLM backend for comart, Cairn's Memoir tab and daily-dictation
 Documentation=file://$HERE/README.md
 # No After=network-online.target: that is a system target, which a user unit
 # cannot order against. The server binds loopback, which needs no network.

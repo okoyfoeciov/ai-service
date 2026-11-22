@@ -1,7 +1,7 @@
 # ai-service
 
 A small localhost **LLM backend**: one static Go binary on `127.0.0.1:8770`,
-speaking JSON and SSE. It has five clients:
+speaking JSON and SSE. It has four clients:
 
 - the **comart Chrome extension** (`~/comart-native/chrome`): word
   explanations and pronunciations (its microphone was removed on 2026-11-21);
@@ -11,11 +11,9 @@ speaking JSON and SSE. It has five clients:
 - **Cairn's Memoir tab** (`~/cairn`, `src/memoir.ts`): proofreading of
   journal entries;
 - **daily-dictation** (`~/daily-dictation`): verbatim transcripts through
-  `POST /api/transcribe-verbatim`;
-- **voice-typing** (`~/voice-typing`, GNOME top-bar dictation): text-only
-  transcripts through `POST /api/transcribe/stream?timestamps=0`.
+  `POST /api/transcribe-verbatim`.
 
-**There is no UI here.** All five clients carry their own UI. `GET /`
+**There is no UI here.** All four clients carry their own UI. `GET /`
 answers one line of plain text and nothing else. Do not add a template, a
 static directory or an `embed` back: a served copy of a client would have to be
 kept in step with the real one by hand.
@@ -38,7 +36,7 @@ additions. Change a route only together with the client that calls it.
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
 | `POST /api/screenshot` | comart-native | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
 | `POST /api/screenshot/release` | comart-native | Deletes screenshots by id: `{"ids":[…]}`. Called when a non-Ask Stop discards a take and when the Ask card (the parent of every round) closes. Idempotent; a two-hour idle TTL is the backstop. |
-| `POST /api/transcribe/stream` | comart-native (its Electron main process); voice-typing (`?timestamps=0`) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart-native cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
+| `POST /api/transcribe/stream` | comart-native (its Electron main process) | The body is one recording streamed while it is made (`audio/*` or `video/*`). Sends it to the selected provider's live API: AssemblyAI `/v1/transcribe/live` or Deepgram `wss://api.deepgram.com/v1/listen`, with `ffmpeg` decoding the WebM/Opus stream to PCM. Answer: `{"text": …}`, plus `"first_word_ms"` and `"last_word_ms"` (milliseconds from the first sample) when the provider aligned the words — AssemblyAI does, and comart-native cuts the microphone clip's lead-in/lead-out there. Optional query `timestamps`: exactly `0` or `false` asks AssemblyAI for `"timestamps": false` and the answer is `{"text": …}` only; no query or any other value (`FALSE`, `off`, …) keeps the word timings. Deepgram ignores it. |
 | `POST /api/transcribe-verbatim` | daily-dictation | Multipart field `audio` (one segment file). Sends it to OpenRouter's MAI-Transcribe-2 (verbatim, word timestamps) and returns `{"lines": […], "words": […]}` with seconds timings. |
 | `POST /api/memoir/check` | Cairn; comart-native | Proofreads an entry (`{"content": …}`, max 12000 UTF-16 code units). Plain JSON. |
 
@@ -236,7 +234,7 @@ provider. It uses AssemblyAI's native
 universal-3-6-pro`. AssemblyAI retired `universal-3-5-pro` on the Sync API and
 routes it to 3.6; the response does not name the model that served it, so the
 header names 3.6 directly. AssemblyAI-STT-3.7 (November 2026) is not on the
-Sync API yet. The clients send their MediaRecorder WebM/MP4 stream to
+Sync API yet. comart-native sends its MediaRecorder WebM/MP4 stream to
 `/api/transcribe/stream` while recording; ai-service pipes it through `ffmpeg`
 to 16 kHz mono PCM, sends the multipart `config` part first and the PCM `audio`
 part second, and closes the AssemblyAI request when the client body ends. That
@@ -253,26 +251,27 @@ from 598 ms to 504 ms without timestamps (`b63fe17`). But the service log for
 2026-11-14 to 11-21 shows no measurable difference: medians with and without
 timestamps are within about 20 ms of each other, in both directions
 (comart-native's `docs/word-timestamps.md` has the table). A caller that
-only wants the text (voice-typing) sends `?timestamps=0` (or exactly `false`):
-the config part then says `"timestamps":false` and the answer carries neither
-field. comart-native sends no query, so it keeps its timings.
+only wants the text can send `?timestamps=0` (or exactly `false`): the config
+part then says `"timestamps":false` and the answer carries neither field.
+comart-native sends no query, so it keeps its timings. No client sends the
+query today; the option stays because it is cheap to keep, and that page
+discusses it for the takes that play no clip (the white and violet Stops).
 
-Every client streams straight to this route as one chunked HTTP/1.1 `POST` per
-take. A page cannot: Chromium refuses a streaming `fetch` upload over HTTP/1.1.
-So comart-native's recorder window hands each MediaRecorder chunk to its
-Electron main process over IPC, and main streams them with Node's `http`
-module, as voice-typing's daemon streams its own. There is no WebSocket
-transport: `GET /api/transcribe/ws`, which forwarded a page's frames here, was
-removed on 2026-11-22.
+comart-native streams straight to this route as one chunked HTTP/1.1 `POST`
+per take. A page cannot: Chromium refuses a streaming `fetch` upload over
+HTTP/1.1. So comart-native's recorder window hands each MediaRecorder chunk to
+its Electron main process over IPC, and main streams them with Node's `http`
+module. There is no WebSocket transport: `GET /api/transcribe/ws`, which
+forwarded a page's frames here, was removed on 2026-11-22.
 
 Measured on this host with a warm connection on 2026-10-26, on Universal-3.5
 Pro and before timestamps were on, the post-stop wait was ~0.35 s for a 6 s clip
 and ~0.9 s for a 30 s clip. The service log for 2026-11-12 to 11-19 (253
 requests, timestamps on) shows a median of ~0.24 s up to 10 s and ~0.28 s for
 20–120 s clips. Transcripts were identical in 24 paired
-runs on one clip. Live audio is capped at 120 s by AssemblyAI; the mic clients
-stop at 119 s so the 200ms cap poll and encoder chunking cannot push a clip
-over the provider's hard edge. The live request has a 300 s deadline, but the
+runs on one clip. Live audio is capped at 120 s by AssemblyAI; comart-native's
+microphone stops at 119 s so the 200ms cap poll and encoder chunking cannot
+push a clip over the provider's hard edge. The live request has a 300 s deadline, but the
 HTTP client that carries it has a 10-minute backstop — a two-minute recording
 plus the final answer must not be cut off by the old 120 s client timeout.
 `/api/transcribe/stream` caps the uploaded body at 25 MB.
@@ -435,9 +434,10 @@ any client change, because comart keeps calling the same routes.
   tray icons.
 - GNOME has no per-icon tray-order setting: the AppIndicator extension inserts
   every icon at index 1 when it registers, so the last icon to register gets
-  that slot. The optional extension in `contrib/gnome-shell/` keeps this icon
-  at index 1 (second from the left) while the Voice Typing extension keeps
-  index 0. It is installed and enabled on its own, not by the service's
+  that slot, and another extension's own button takes index 0 unless it names
+  a position. The optional extension in `contrib/gnome-shell/` keeps this icon
+  at index 0, the leftmost icon of the top bar's right-hand box. It is
+  installed and enabled on its own, not by the service's
   `install.sh`; see `contrib/gnome-shell/ai-service-tray@james.local/README.md`.
 - The tray is part of the service process, not an HTTP route. It writes only the
   two cache rows above; no new listening socket, no extra file.
@@ -683,7 +683,7 @@ internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt, task.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
 internal/llm        streaming model clients: chat completions (OpenRouter) and Claude
-contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 1
+contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 0
 install.sh, uninstall.sh, run.sh
 ```
 

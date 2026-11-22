@@ -1,8 +1,7 @@
 // Package server is the HTTP layer: stdlib net/http routing and handlers.
 // It serves no UI, only JSON and SSE. The clients live in ~/comart-native (the
-// desktop app, and comart's Chrome extension in chrome/), ~/cairn,
-// ~/daily-dictation and ~/voice-typing; README.md has the routes and the
-// security model.
+// desktop app, and comart's Chrome extension in chrome/), ~/cairn and
+// ~/daily-dictation; README.md has the routes and the security model.
 package server
 
 import (
@@ -382,7 +381,7 @@ func writeRoot(w http.ResponseWriter) {
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 	_, _ = w.Write([]byte("ai-service. No UI here — clients are comart's Chrome " +
-		"extension and desktop app, Cairn's Memoir tab, daily-dictation and voice-typing. See /api/* and the README.\n"))
+		"extension and desktop app, Cairn's Memoir tab and daily-dictation. See /api/* and the README.\n"))
 }
 
 // maxJSONBody caps the JSON request bodies of /api/explain, /api/ask,

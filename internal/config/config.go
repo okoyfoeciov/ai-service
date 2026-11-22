@@ -32,10 +32,10 @@ var RetiredExplainProviders = map[string]string{
 type Config struct {
 	ListenAddr string // where the Go server binds (loopback; nothing fronts it — loopback is the trust boundary)
 
-	// Mic transcription (/api/transcribe/stream: comart-native's microphone
-	// and voice-typing) runs on AssemblyAI's Universal-3.6 Pro or Deepgram
-	// Nova-3, both live APIs. At least one key is required: Load refuses to
-	// start without a provider.
+	// Mic transcription (/api/transcribe/stream: comart-native's microphone)
+	// runs on AssemblyAI's Universal-3.6 Pro or Deepgram Nova-3, both live
+	// APIs. At least one key is required: Load refuses to start without a
+	// provider.
 	AssemblyAIKey  string
 	DeepgramAPIKey string
 	// OpenRouterTranscribeAPIKey is OpenRouter's key for MAI-Transcribe-2,
