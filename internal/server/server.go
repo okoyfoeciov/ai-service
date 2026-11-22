@@ -65,11 +65,14 @@ type Server struct {
 	inflight sync.WaitGroup
 }
 
-// Model endpoints. OpenRouter speaks OpenAI's streaming chat completions;
-// Claude is the Messages API at its API root.
+// Model endpoints. OpenRouter speaks OpenAI's streaming chat completions, and
+// Ask's OpenRouter choice uses its Responses API, which reports each server-side
+// search and fetch as it runs (internal/llm/responses.go); Claude is the
+// Messages API at its API root.
 const (
-	openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
-	claudeURL     = "https://api.anthropic.com"
+	openRouterURL          = "https://openrouter.ai/api/v1/chat/completions"
+	openRouterResponsesURL = "https://openrouter.ai/api/v1/responses"
+	claudeURL              = "https://api.anthropic.com"
 	// maxAnswerTokens bounds one answer, thinking included. Both prompts need
 	// far less; the cap only stops a runaway reply.
 	maxAnswerTokens = 32000
@@ -199,12 +202,16 @@ func newAskLLMs(cfg config.Config, hc *http.Client) map[string]llm.Streamer {
 // enough. Both stay on Exa (search, and Exa's Contents API for fetch), as they
 // were for DeepSeek V4.1 Flash 1017 before 2026-11-18, so the caps and the
 // per-request price in internal/config still describe what runs.
+//
+// It speaks OpenRouter's Responses API, not chat completions: only there does
+// the stream say when a search or fetch starts and ends, which the card shows
+// as "Searching the web…". The Responses API ignores reasoning.exclude and
+// always returns reasoning items; the client drops them from the answer.
 func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 	params := map[string]any{
-		"max_tokens": maxAnswerTokens,
+		"max_output_tokens": maxAnswerTokens,
 		"reasoning": map[string]any{
-			"effort":  config.OpenRouterAskReasoningEffort,
-			"exclude": true,
+			"effort": config.OpenRouterAskReasoningEffort,
 		},
 		"provider": map[string]any{"order": askSolEndpoints, "allow_fallbacks": false},
 		"tools": []map[string]any{
@@ -226,9 +233,9 @@ func newOpenRouterAsk(key, model string, hc *http.Client) llm.Streamer {
 			},
 		},
 	}
-	return llm.New(llm.Config{
+	return llm.NewResponses(llm.Config{
 		Provider: "OpenRouter",
-		URL:      openRouterURL,
+		URL:      openRouterResponsesURL,
 		APIKey:   key,
 		Model:    model,
 		Params:   params,

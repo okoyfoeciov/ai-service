@@ -3,7 +3,9 @@
 // endpoints: OpenRouter for /api/explain (GPT-6.2 Sol) and
 // /api/ask (GPT-6.2 Sol). Any
 // route can instead run on Claude, which has its own type (see claude.go)
-// because the Messages API streams differently.
+// because the Messages API streams differently. Ask's OpenRouter choice uses
+// OpenRouter's Responses API instead (see responses.go), whose stream reports
+// server-side searches as they run.
 //
 // Both chat-completions providers speak the same streaming shape: SSE `data:`
 // lines holding chunk objects, `: comment` keep-alives, and `data: [DONE]` at

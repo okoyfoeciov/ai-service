@@ -59,9 +59,10 @@ const (
 // The SSE contract is /api/explain's: `chunk` events carry answer fragments,
 // an optional `error` event carries a user-readable message, and `done` is
 // always the last event. Every Ask starts with a `search` event
-// ({active:false,enabled:true}); Claude then sends {active:true/false,enabled:true}
-// around a native search or fetch. OpenRouter sets enabled:true but has no
-// active transitions. HTTP status stays 200 after the stream opens.
+// ({active:false,enabled:true}); both providers then send
+// {active:true/false,enabled:true} around a server-side search or fetch
+// (Claude's server_tool_use blocks, OpenRouter's Responses API server-tool
+// items). HTTP status stays 200 after the stream opens.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	// Resolve the tray choice once. A tray switch while this request is being
@@ -229,8 +230,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	onText := func(t string) {
 		send("chunk", map[string]any{"text": t})
 	}
-	// Claude's native search or fetch runs before it writes the answer. Tell
-	// the card when that happens, so its indicator can say "Searching the
+	// The provider's own search or fetch (Claude's, or OpenRouter's server
+	// tools) runs before the model writes the answer. Tell the card when that
+	// happens, so its indicator can say "Searching the
 	// web…" during the silent part instead of guessing from a pause in the
 	// text.
 	onSearch := func(active bool) {

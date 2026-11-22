@@ -24,7 +24,11 @@ sends after the prompt in capture order; the image bytes live in
 `/api/screenshot`'s in-memory store, and the client sends ids. Both choices
 carry OpenRouter's `openrouter:web_search` and `openrouter:web_fetch` server
 tools or Claude's basic web search and fetch tools (direct calls, at most two of
-each per request). When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also
+each per request). OpenRouter Ask runs on OpenRouter's Responses API
+(`/api/v1/responses`, `internal/llm/responses.go`), not chat completions: only
+its stream marks when a server-side search or fetch starts and ends, which
+`/api/ask` forwards as `search` SSE events for the card's "Searching the web…".
+Explain and Memoir stay on chat completions. When `BRAVE_SEARCH_API_KEY` is set, **every** Ask choice also
 carries the native client tools `search_images` and `show_images`: the main
 model decides whether to call them, Brave returns ten filtered candidates
 (Claude sees the top five as image blocks; OpenRouter sees ten metadata rows),

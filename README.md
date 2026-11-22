@@ -31,7 +31,7 @@ additions. Change a route only together with the client that calls it.
 | --- | --- | --- |
 | `GET /` | health check | One line of `text/plain`. Keep it one line. |
 | `POST /api/explain` | comart; Cairn (EPUB reader) | Explains the chosen words. SSE events: `pron-data`, `chunk`, `error`, `done` (`done` is always last). An error after the stream opens is an `error` event; the HTTP status stays 200. |
-| `POST /api/ask` | comart (desktop app) | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and, for Claude, `{"active":true|false,"enabled":true}` when a native search or fetch starts and its results arrive. OpenRouter sets `enabled:true` but sends no active transitions. It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs GPT-6.2 Sol's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
+| `POST /api/ask` | comart (desktop app) | Answers a spoken question about passages the reader picked. Body: `{"question": …, "items": [{phrase, words}], "contexts": [{phrase, text}], "history": [{question, answer}], "screenshots": [id, …], "timeline": [{"kind":"text","phrase":…} | {"kind":"screenshot","screenshot":id}]}`. `history` is optional and carries the earlier rounds of the same Ask card; `screenshots` is optional and names images stored by `/api/screenshot`, in capture order; `timeline` is optional and lists the selected text and screenshots in the exact order the reader added them this round, so the prompt can interleave them. Same SSE events as `/api/explain` (`chunk`, `error`, `done`), no pronunciation prefetch, plus an initial `search` event for every Ask (`{"active":false,"enabled":true}`) and `{"active":true|false,"enabled":true}` when the provider's own search or fetch starts and its results arrive (Claude's native tools; OpenRouter's server tools, reported by its Responses API). It uses the selected **ask** choice/model (separate from explain), always answers in simple English for a non-native speaker, and asks for Markdown lists with one item per line when the answer is a list. Both Ask providers accept images; the prompt labels them in capture order and treats their text as data. Both can search the web and fetch full pages or PDFs; Claude uses its basic direct tools, and OpenRouter runs GPT-6.2 Sol's on Exa. When `BRAVE_SEARCH_API_KEY` is set, every Ask choice also gets two native client tools: `search_images({"query":…})` and `show_images({"image_ids":[…]})`. The main model decides whether to call them. `search_images` asks Brave's Image Search API for 10 results (`country=ALL`, `search_lang=en`, `safesearch=strict`, `spellcheck=false`) and returns candidate IDs; it never displays anything. `show_images` sends the chosen IDs as an `images` SSE event (`{"round":n,"status":"ready","images":[{id,title,source,page,thumb,original,width,height}]}`) for the card's gallery. Each Ask round is capped at four `search_images` calls. Claude receives the top five candidates as image blocks in its tool result; OpenRouter receives ten metadata rows. Search failures and empty results send a non-fatal `images` event with `status:"error"|"empty"`; the answer continues. |
 | `GET /api/pron?word=&pos=` | comart; Cairn (EPUB reader) | Merriam-Webster pronunciation. 404 `not_found` when MW has none, 502 `mw_unavailable` when MW refuses. |
 | `GET /api/credits` | comart | Always `{"low":false,"remaining":null}`. The server tracks no balance. comart calls it after each explanation. |
 | `POST /api/screenshot` | comart (desktop app) | Linux/GNOME and macOS (other platforms answer 501; macOS needs Screen Recording permission for the service in System Settings → Privacy & Security). Opens the desktop's interactive area selection (the GNOME portal, or macOS `screencapture -i -s`; one drag, captured on mouse release), stores the image in memory under an unguessable id, and returns `{"id", "thumb", "width", "height"}`. The full image never leaves the backend; the client keeps the id and a small thumbnail. The capture file is deleted as soon as it is read, including on a failed or oversized read; on macOS it lives in a private temp directory that is removed on every path, a second request while a selection is open gets 429 (not 409, which comart reads as a cancel), and ending the request kills `screencapture`. One Ask card is capped at 10 screenshots and 8 MiB of base64; images are scaled to a 1200px long edge (PNG under 512 KiB, otherwise JPEG) to keep each request within the Ask models' image limits. |
@@ -527,14 +527,27 @@ independent of explain's; its Claude and OpenRouter keys each add one
 search-enabled (search + fetch) choice.
 
 OpenRouter speaks OpenAI's streaming chat completions, so one client
-(`internal/llm`'s `Client`) serves it. The request fields for the token budget
+(`internal/llm`'s `Client`) serves explain and Memoir. Ask's OpenRouter choice
+uses OpenRouter's Responses API (`/api/v1/responses`, `internal/llm`'s
+`Responses`) instead, because only its stream says when a server-side search
+or fetch starts and ends (`response.output_item.added`/`.done` with item type
+`openrouter:web_search` or `openrouter:web_fetch`), which the card shows as
+"Searching the web…". Chat completions only sends `: OPENROUTER PROCESSING`
+keep-alive comments while a tool runs, and it sends the same comments during a
+long silent reasoning pause (measured 2026-11-22), so they cannot tell a search
+from thinking. The request fields for the token budget
 and reasoning are fixed for every route in `internal/config`:
 OpenRouter explain takes `max_tokens`, `reasoning: {effort, exclude}` and a
 `provider` list with `allow_fallbacks: false`, so a request never leaves the
 listed endpoints (`openai/fast`, then `openai`);
-OpenRouter ask takes `max_tokens`, `reasoning: {effort: "medium", exclude}` and
-the provider list `openai` alone with `allow_fallbacks: false`, and
-also adds the `openrouter:web_search` and `openrouter:web_fetch` server tools.
+OpenRouter ask (Responses API) takes `max_output_tokens`,
+`reasoning: {effort: "medium"}` (the Responses API ignores `exclude` and always
+returns reasoning items; the client drops them) and the provider list `openai`
+alone with `allow_fallbacks: false`, and also adds the `openrouter:web_search`
+and `openrouter:web_fetch` server tools. The API is stateless, so a client-tool
+round (`search_images`, `show_images`) resends the user message, every output
+item so far (reasoning items carry the server tools' results) and one
+`function_call_output` per call.
 OpenRouter Memoir takes `max_tokens`, `reasoning: {effort: "low", exclude}` and
 the provider list `openai/flex`, then `openai`, with `allow_fallbacks: false`.
 
@@ -682,7 +695,7 @@ internal/tray       the provider pickers for /api/transcribe/stream, /api/explai
 internal/mw         Merriam-Webster pronunciation lookup
 internal/prompt     the explain prompt (part1.txt, part2.txt, task.txt)
 internal/memoir     Memoir prompt (check.txt) and result parsing
-internal/llm        streaming model clients: chat completions (OpenRouter) and Claude
+internal/llm        streaming model clients: chat completions and Responses (OpenRouter) and Claude
 contrib/gnome-shell optional GNOME Shell extension that pins the tray icon at index 0
 install.sh, uninstall.sh, run.sh
 ```

@@ -248,6 +248,12 @@ func (f fakeModel) RoundTrip(req *http.Request) (*http.Response, error) {
 		"choices": []any{map[string]any{"delta": map[string]string{"content": f.reply}, "finish_reason": "stop"}},
 	})
 	body := "data: " + string(chunk) + "\n\ndata: [DONE]\n\n"
+	if strings.HasSuffix(req.URL.Path, "/responses") {
+		// OpenRouter's Responses API (Ask's OpenRouter choice).
+		delta, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "delta": f.reply})
+		body = "data: " + string(delta) + "\n\n" +
+			`data: {"type":"response.completed","response":{"status":"completed"}}` + "\n\ndata: [DONE]\n\n"
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": {"text/event-stream"}},
@@ -261,11 +267,13 @@ func (f fakeModel) RoundTrip(req *http.Request) (*http.Response, error) {
 type captureModel struct {
 	reply string
 	body  atomic.Value
+	url   atomic.Value
 }
 
 func (m *captureModel) RoundTrip(req *http.Request) (*http.Response, error) {
 	b, _ := io.ReadAll(req.Body)
 	m.body.Store(string(b))
+	m.url.Store(req.URL.String())
 	return fakeModel{reply: m.reply}.RoundTrip(req)
 }
 
@@ -441,7 +449,8 @@ func TestAskStreamsAnswerWithEarlierConversation(t *testing.T) {
 
 // The OpenRouter Ask client is GPT-6.2 Sol at thinking level medium, pinned to
 // OpenAI's standard tier, and it carries the web search and web fetch server
-// tools, both on Exa.
+// tools, both on Exa. It speaks the Responses API, whose stream reports those
+// tools as they run.
 func TestAskOpenRouterUsesSolMediumEffortWithWebTools(t *testing.T) {
 	m := &captureModel{reply: "ok"}
 	cfg := config.Config{
@@ -457,6 +466,9 @@ func TestAskOpenRouterUsesSolMediumEffortWithWebTools(t *testing.T) {
 		t.Fatalf("stream failed: %+v", res)
 	}
 
+	if got, _ := m.url.Load().(string); got != "https://openrouter.ai/api/v1/responses" {
+		t.Errorf("url %q", got)
+	}
 	raw, _ := m.body.Load().(string)
 	var body map[string]any
 	if err := json.Unmarshal([]byte(raw), &body); err != nil {
@@ -465,8 +477,14 @@ func TestAskOpenRouterUsesSolMediumEffortWithWebTools(t *testing.T) {
 	if got := body["model"]; got != "openai/gpt-6.2-sol" {
 		t.Errorf("model %v", got)
 	}
+	if got := body["max_output_tokens"]; got != float64(maxAnswerTokens) {
+		t.Errorf("max_output_tokens %v", got)
+	}
+	if _, ok := body["max_tokens"]; ok {
+		t.Errorf("chat-completions max_tokens sent to the Responses API: %v", body["max_tokens"])
+	}
 	reasoning, _ := body["reasoning"].(map[string]any)
-	if reasoning["effort"] != "medium" || reasoning["exclude"] != true {
+	if reasoning["effort"] != "medium" {
 		t.Errorf("reasoning %v", body["reasoning"])
 	}
 	route, _ := body["provider"].(map[string]any)
@@ -644,6 +662,56 @@ func TestAskSendsClaudeWebToolStatus(t *testing.T) {
 	}
 }
 
+// /api/ask turns OpenRouter's Responses API server-tool items into SSE
+// `search` events: active while a search or fetch runs, inactive when its
+// item is done. The stream is a trimmed real capture (2026-11-22).
+func TestAskSendsOpenRouterWebToolStatus(t *testing.T) {
+	ev := func(s string) string { return "data: " + s + "\n\n" }
+	body := ": OPENROUTER PROCESSING\n\n" +
+		ev(`{"type":"response.created","response":{"status":"in_progress","output":[]}}`) +
+		ev(`{"type":"response.output_item.added","output_index":0,"item":{"id":"st_tmp_1","type":"openrouter:web_search","status":"in_progress"}}`) +
+		": OPENROUTER PROCESSING\n\n" +
+		ev(`{"type":"response.output_item.done","output_index":0,"item":{"id":"st_tmp_1","type":"openrouter:web_search","status":"completed","action":{"type":"search","query":"q"}}}`) +
+		ev(`{"type":"response.output_item.done","output_index":1,"item":{"id":"rs_1","type":"reasoning","status":"completed","summary":[],"encrypted_content":"x"}}`) +
+		ev(`{"type":"response.output_item.added","output_index":2,"item":{"id":"st_tmp_2","type":"openrouter:web_fetch","status":"in_progress"}}`) +
+		ev(`{"type":"response.output_item.done","output_index":2,"item":{"id":"st_tmp_2","type":"openrouter:web_fetch","status":"completed","url":"https://example.com","content":"page"}}`) +
+		ev(`{"type":"response.output_item.added","output_index":3,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}`) +
+		ev(`{"type":"response.output_text.delta","output_index":3,"item_id":"msg_1","content_index":0,"delta":"the answer"}`) +
+		ev(`{"type":"response.output_item.done","output_index":3,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"the answer"}]}}`) +
+		ev(`{"type":"response.completed","response":{"status":"completed"}}`) +
+		ev(`[DONE]`)
+
+	capture := &claudeToolCapture{body: body}
+	cfg := config.Config{AskProvider: config.ProviderOpenRouter, AskProviders: []string{config.ProviderOpenRouter}, AskOpenRouterAPIKey: "k"}
+	s := &Server{
+		cfg:          cfg,
+		askProviders: cfg.AskProviders,
+		askLLMs:      newAskLLMs(cfg, &http.Client{Transport: capture}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/ask", strings.NewReader(`{"question":"latest news"}`))
+	req.Host = "127.0.0.1:8770"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	out := rec.Body.String()
+	if got := strings.Count(out, `"active":true`); got != 2 {
+		t.Errorf("stream has %d active=true events, want 2 (search + fetch):\n%s", got, out)
+	}
+	if got := strings.Count(out, `"active":false`); got != 3 {
+		t.Errorf("stream has %d active=false events, want 3 (initial + two results):\n%s", got, out)
+	}
+	if !strings.Contains(out, "the answer") || strings.Contains(out, "event: error") {
+		t.Errorf("answer missing or failed:\n%s", out)
+	}
+	if strings.LastIndex(out, "event: search") > strings.Index(out, "event: chunk") {
+		t.Errorf("a search event came after the first chunk:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "event: done\ndata: {}\n\n") {
+		t.Errorf("stream does not end with done:\n%s", out)
+	}
+}
+
 // claudeToolCapture answers a Messages API streaming request and records the
 // JSON body, so a test can see which tools the server built.
 type claudeToolCapture struct {
@@ -817,7 +885,7 @@ func TestNewBuildsAskClientsPerProvider(t *testing.T) {
 	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderClaude]); got != "*llm.Claude" {
 		t.Errorf("claude client is %s", got)
 	}
-	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderOpenRouter]); got != "*llm.Client" {
+	if got := fmt.Sprintf("%T", s.askLLMs[config.ProviderOpenRouter]); got != "*llm.Responses" {
 		t.Errorf("openrouter client is %s", got)
 	}
 	if !s.SetAskProvider(config.ProviderOpenRouter) {
