@@ -104,6 +104,7 @@ fi
 say "[b] go $(go env GOVERSION 2>/dev/null || echo missing)"
 
 # --- c. build ---------------------------------------------------------------
+NEW_BIN="$HERE/bin/ai-service.new"   # macOS only: the build before it is signed
 # Linux's tray is pure D-Bus, so the binary stays static there. macOS needs
 # Cocoa through cgo for the menu-bar item, which needs the Xcode command-line
 # tools (clang). The tray is always compiled in; it appears when either route
@@ -116,11 +117,75 @@ else
     if ! xcrun --find clang >/dev/null 2>&1; then
       die "Xcode Command Line Tools are required to build the menu-bar picker (macOS Cocoa): run 'xcode-select --install', then re-run."
     fi
-    CGO_ENABLED=1 go build -o "$HERE/bin/ai-service" ./cmd/ai-service
+    # Built beside the live binary and moved over it only after step c2 has
+    # signed and checked it: a failed signing then leaves the previous (signed)
+    # bin/ai-service in place for launchd's next restart.
+    rm -f "$NEW_BIN"
+    CGO_ENABLED=1 go build -o "$NEW_BIN" ./cmd/ai-service \
+      || { rm -f "$NEW_BIN"; die "go build failed"; }
+    say "[c] built bin/ai-service.new"
   else
     CGO_ENABLED=0 go build -o "$HERE/bin/ai-service" ./cmd/ai-service
+    say "[c] built bin/ai-service"
   fi
-  say "[c] built bin/ai-service"
+fi
+
+# --- c2. macOS: sign with a stable identity -----------------------------------
+# The Go linker signs ad hoc (Identifier=a.out), so the designated requirement
+# is the cdhash and every rebuild is a new app to TCC: the Screen Recording
+# grant that POST /api/screenshot needs (screencapture) would be lost. Signed
+# with a certificate, the requirement becomes `identifier "com.ai-service.backend"
+# and certificate leaf = H"…"`, which survives rebuilds. No hardened runtime,
+# no secure timestamp (same as comart's mac/build.sh). A missing identity keeps
+# the ad-hoc signature with a warning; it never fails the install.
+SIGN_IDENTITY="VoiceTyping Local Code Signing"
+if [ "$OS" = Darwin ]; then
+  # (Read in full first: grep -q quitting early could make `security` fail with
+  # SIGPIPE, which pipefail would take for a missing identity. No -v: the local
+  # identity is self-signed and untrusted, so -v hides it, yet codesign signs
+  # with it.)
+  IDENTITIES="$(security find-identity -p codesigning 2>/dev/null || true)"
+  case "$IDENTITIES" in
+    *"\"$SIGN_IDENTITY\""*) HAVE_IDENTITY=1 ;;
+    *) HAVE_IDENTITY=0 ;;
+  esac
+  sign_warn="the code-signing identity \"$SIGN_IDENTITY\" is not in the keychain, so bin/ai-service keeps
+   the Go linker's ad-hoc signature. macOS ties Screen Recording to that signature's cdhash: re-grant
+   Screen Recording (System Settings > Privacy & Security) after every rebuild, or create the identity
+   once (Keychain Access: Certificate Assistant > Create a Certificate, type Code Signing) and re-run."
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ "$HAVE_IDENTITY" = 1 ]; then
+      say "[c2] dry run — a real run signs bin/ai-service with \"$SIGN_IDENTITY\" (identifier $LABEL)"
+    else
+      warn "$sign_warn (dry run continues)"
+    fi
+  elif [ "$HAVE_IDENTITY" = 1 ]; then
+    # drop_new <message>: remove the unsigned build and stop; bin/ai-service
+    # is still the previous binary.
+    drop_new() { rm -f "$NEW_BIN"; die "$1 (bin/ai-service was left unchanged)"; }
+    codesign --force --sign "$SIGN_IDENTITY" --identifier "$LABEL" --timestamp=none \
+      "$NEW_BIN" 2>&1 | sed '/: replacing existing signature$/d; s/^/    /' \
+      || drop_new "codesign could not sign the new build with \"$SIGN_IDENTITY\""
+    codesign --verify --strict "$NEW_BIN" \
+      || drop_new "codesign --verify --strict failed for the new build"
+    # Ad-hoc code prints its implicit requirement as a comment ("# designated => cdhash …").
+    dr="$(codesign -d -r- "$NEW_BIN" 2>&1 | grep 'designated =>' || true)"
+    case "$dr" in
+      "designated => identifier \"$LABEL\" and certificate leaf = H\""*) ;;
+      *) drop_new "unexpected designated requirement for the new build (Screen Recording would not survive rebuilds): ${dr:-none}" ;;
+    esac
+    # Same flags check as comart's check_signature: no ad-hoc, no hardened runtime.
+    cdflags="$(codesign -dv "$NEW_BIN" 2>&1 | grep '^CodeDirectory' || true)"
+    case "$cdflags" in
+      ""|*adhoc*|*runtime*) drop_new "the new build is ad hoc or has the hardened runtime: ${cdflags:-no CodeDirectory line}" ;;
+    esac
+    mv -f "$NEW_BIN" "$HERE/bin/ai-service"
+    say "[c2] signed bin/ai-service with \"$SIGN_IDENTITY\": $dr"
+  else
+    warn "$sign_warn"
+    mv -f "$NEW_BIN" "$HERE/bin/ai-service"
+    say "[c2] bin/ai-service keeps its ad-hoc signature"
+  fi
 fi
 
 # --- d. ai-service.env ------------------------------------------------------

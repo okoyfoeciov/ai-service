@@ -71,7 +71,9 @@ the build, the env file and the restart):
    `brew install go`).
 2. Builds `bin/ai-service` (`CGO_ENABLED=0` on Linux; on macOS cgo is on so
    the menu-bar picker can use Cocoa, which needs the Xcode command-line
-   tools).
+   tools). On macOS it then re-signs the binary with the local identity
+   "VoiceTyping Local Code Signing" as `com.ai-service.backend`, so the Screen
+   Recording grant survives rebuilds (see **macOS: Screen Recording** below).
 3. Creates `ai-service.env` from `.env.example` (mode 600) if it is missing.
    For each missing credential it asks in a hidden prompt:
    `ASSEMBLYAI_API_KEY` and/or `DEEPGRAM_API_KEY` for `/api/transcribe/stream`
@@ -138,6 +140,38 @@ absolute paths. `run.sh` finds everything else relative to itself.
   iCloud Drive and `~/Library/CloudStorage`. launchd jobs cannot read those
   folders (privacy protection), so `install.sh` refuses them.
 - Linux: the path must not contain whitespace or `%` (systemd would misread it).
+
+**macOS: Screen Recording.** `POST /api/screenshot` runs `screencapture`, so
+the service needs Screen Recording. macOS keys that grant to the binary's code
+signature. The Go linker signs ad hoc (`Identifier=a.out`), and an ad-hoc
+signature is identified by its hash, so every rebuild would look like a new app
+and lose the grant. `install.sh` therefore re-signs `bin/ai-service` with the
+"VoiceTyping Local Code Signing" identity from the login keychain (the one
+comart's `mac/build.sh` uses), identifier `com.ai-service.backend`, no hardened
+runtime. Its designated requirement is then the identifier plus the
+certificate, which stays the same across rebuilds.
+
+- Grant it once, after the first signed install: in System Settings → Privacy
+  & Security → Screen & System Audio Recording, click "+" and add
+  `~/ai-service/bin/ai-service`, then restart the service
+  (`launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`). The first
+  screenshot may instead show a macOS prompt; that has not been observed for
+  this launchd binary (it has no app bundle and no UI), so if no prompt comes
+  or the capture fails, use "+". Remove any older `ai-service` / `a.out` entry
+  from before signing; it no longer matches.
+- Check the signature:
+
+  ```sh
+  codesign -d -r- bin/ai-service
+  # designated => identifier "com.ai-service.backend" and certificate leaf = H"…"
+  ```
+
+  `cdhash H"…"` instead means the binary is ad hoc and the grant will not
+  survive the next rebuild.
+- No identity in the keychain: `install.sh` keeps the ad-hoc signature, prints
+  a warning and carries on; Screen Recording then has to be granted again after
+  every rebuild. Create the identity once (Keychain Access → Certificate
+  Assistant → Create a Certificate, type Code Signing) and re-run `install.sh`.
 
 ## Manage the running service
 
@@ -721,11 +755,20 @@ go test ./...
 On Linux the result is one static binary with no cgo; macOS links Cocoa for the
 menu-bar picker. At runtime it needs the SQLite
 file it creates on first run; credentials come from `ai-service.env`, and the
-AssemblyAI and Deepgram streaming paths need `ffmpeg` on `PATH`. After a build, restart the service to
-run the new binary
-(`systemctl --user restart ai-service`, or
-`launchctl kickstart -k gui/$(id -u)/com.ai-service.backend`), or just run
-`./install.sh`.
+AssemblyAI and Deepgram streaming paths need `ffmpeg` on `PATH`.
+
+To run the new binary: on Linux, build and then
+`systemctl --user restart ai-service` (or just run `./install.sh`). On macOS,
+run `./install.sh` instead of a hand build plus restart: a hand-built
+`bin/ai-service` is ad hoc, so the service would lose its Screen Recording
+grant (see **macOS: Screen Recording**). If you do build by hand into
+`bin/ai-service`, re-sign it before the restart:
+
+```sh
+codesign --force --sign "VoiceTyping Local Code Signing" \
+  --identifier com.ai-service.backend --timestamp=none bin/ai-service
+launchctl kickstart -k gui/$(id -u)/com.ai-service.backend
+```
 
 ## Version control and secrets
 
