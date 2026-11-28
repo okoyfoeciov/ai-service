@@ -107,9 +107,10 @@ provider, model, status, outcome, issue count, conversation turns (when sent) an
   `timeline` interleaves selected text and those screenshots in the order the
   reader added them. `BuildAsk` renders that order under `# CONTEXT TIMELINE`.
   With `BRAVE_SEARCH_API_KEY` set, the same stream carries `images` events from
-  the native image tools (`{"round":n,"status":"searching"|"empty"|"error"|"ready",…}`);
-  `search_images` reports the first three without displaying, `show_images`
-  reports `ready`. The stream carries URLs, not image bytes; comart preloads
+  the native image tools (`{"round":n,"status":"searching"|"found"|"empty"|"error"|"ready",…}`);
+  `search_images` reports the first four without displaying (`found` carries
+  the candidate `count`, and comart's card reads it as "Choosing images"),
+  `show_images` reports `ready`. The stream carries URLs, not image bytes; comart preloads
   the Brave thumbnail and the original image.
 - **`/api/screenshot` is Linux/GNOME and macOS.** On Linux it opens
   `org.freedesktop.portal.Screenshot` with `interactive: true`, reads the PNG

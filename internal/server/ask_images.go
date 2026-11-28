@@ -175,6 +175,12 @@ func (st *askImageState) search(ctx context.Context, input json.RawMessage, incl
 	}
 	log.Printf("ask[images]: search query=%q results=%d attached=%d duration=%s",
 		query, len(out), len(images), time.Since(start).Round(time.Millisecond))
+	// The search is over and the model is about to choose among the
+	// candidates: comart's card turns "Searching for images" into "Choosing
+	// images". It displays nothing; only show_images does.
+	st.send("images", map[string]any{
+		"round": st.round, "status": "found", "count": len(out),
+	})
 	return llm.ToolResult{Text: prefix + "\n\n" + string(payload), Images: images}
 }
 

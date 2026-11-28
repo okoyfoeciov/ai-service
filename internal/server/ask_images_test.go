@@ -51,8 +51,14 @@ func TestAskImageToolsSearchThenShow(t *testing.T) {
 		strings.Contains(res.Text, "Stock map") {
 		t.Fatalf("search text %q", res.Text)
 	}
-	if len(events) != 1 || events[0]["status"] != "searching" || events[0]["round"] != float64(2) {
+	// searching when Brave is asked, found (with the candidate count, the
+	// stock result filtered out) once the model has them to choose from.
+	if len(events) != 2 || events[0]["status"] != "searching" || events[0]["round"] != float64(2) ||
+		events[1]["status"] != "found" || events[1]["round"] != float64(2) || events[1]["count"] != float64(2) {
 		t.Fatalf("events after search %v", events)
+	}
+	if _, ok := events[1]["images"]; ok {
+		t.Fatalf("found must display nothing: %v", events[1])
 	}
 
 	res = exec(context.Background(), "show_images", json.RawMessage(`{"image_ids":["img_1","img_99"]}`), false)
@@ -60,12 +66,12 @@ func TestAskImageToolsSearchThenShow(t *testing.T) {
 		!strings.Contains(res.Text, "img_99") {
 		t.Fatalf("show result %+v", res)
 	}
-	if len(events) != 2 || events[1]["status"] != "ready" {
+	if len(events) != 3 || events[2]["status"] != "ready" {
 		t.Fatalf("events after show %v", events)
 	}
-	imgs, _ := events[1]["images"].([]any)
+	imgs, _ := events[2]["images"].([]any)
 	if len(imgs) != 1 {
-		t.Fatalf("shown images %v", events[1]["images"])
+		t.Fatalf("shown images %v", events[2]["images"])
 	}
 	img, _ := imgs[0].(map[string]any)
 	if img["id"] != "img_1" || img["thumb"] != "https://imgs.search.brave.com/a" ||
@@ -75,7 +81,7 @@ func TestAskImageToolsSearchThenShow(t *testing.T) {
 
 	// The same ID is not appended twice in one round.
 	res = exec(context.Background(), "show_images", json.RawMessage(`{"image_ids":["img_1"]}`), false)
-	if !res.IsError || len(events) != 2 {
+	if !res.IsError || len(events) != 3 {
 		t.Fatalf("duplicate show %+v events %v", res, events)
 	}
 }
@@ -178,12 +184,68 @@ func TestHandleAskOffersImageToolsAndStreamsTheGallery(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"event: search", "event: images", `"status":"searching"`, `"status":"ready"`,
+		"event: search", "event: images", `"status":"searching"`, `"status":"found"`, `"status":"ready"`,
 		`"id":"img_1"`, `"thumb":"https://imgs.search.brave.com/a"`,
 		"event: chunk", "Here is the map.", "event: done",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("SSE body lacks %q:\n%s", want, body)
 		}
+	}
+}
+
+// found means "candidates to choose from", so a search that found nothing, a
+// Brave failure and the per-round limit must never send it: the card would
+// say "Choosing images" over nothing.
+func TestAskImageSearchSendsFoundOnlyOnSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   []string
+	}{
+		{"empty", http.StatusOK, `{"results":[]}`, []string{"searching", "empty"}},
+		{"brave error", http.StatusInternalServerError, `{}`, []string{"searching", "error"}},
+		{"success", http.StatusOK, imageSearchBody(), []string{"searching", "found"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			s := &Server{images: brave.New("k", srv.Client())}
+			s.images.BaseURL = srv.URL
+			var got []string
+			exec := s.askImageExecutor(0, func(_ string, data any) {
+				got = append(got, data.(map[string]any)["status"].(string))
+			})
+			_ = exec(context.Background(), "search_images", json.RawMessage(`{"query":"map"}`), false)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("events %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// The limit: four searches, then a fifth that sends one error and nothing else.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(imageSearchBody()))
+	}))
+	defer srv.Close()
+	s := &Server{images: brave.New("k", srv.Client())}
+	s.images.BaseURL = srv.URL
+	var got []string
+	exec := s.askImageExecutor(0, func(_ string, data any) {
+		got = append(got, data.(map[string]any)["status"].(string))
+	})
+	for i := 0; i < config.BraveAskImageSearches; i++ {
+		_ = exec(context.Background(), "search_images", json.RawMessage(`{"query":"map"}`), false)
+	}
+	before := len(got)
+	_ = exec(context.Background(), "search_images", json.RawMessage(`{"query":"map"}`), false)
+	if tail := got[before:]; len(tail) != 1 || tail[0] != "error" {
+		t.Fatalf("limit events %v", tail)
 	}
 }
